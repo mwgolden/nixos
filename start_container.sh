@@ -1,4 +1,7 @@
-docker build -t nixos-lab .
+docker build \
+  --build-arg UID="$(id -u)" \
+  --build-arg GID="$(id -g)" \
+  -t nixos-lab .
 
 docker run --rm -it \
   -v "$(pwd):/workspace" \
