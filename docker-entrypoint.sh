@@ -8,6 +8,11 @@ fi
 
 export PATH="$HOME/.nix-profile/bin:$PATH"
 
+if ! command -v nixos-rebuild >/dev/null 2>&1; then
+    echo "Installing nixos-rebuild..."
+    nix profile install nixpkgs#nixos-rebuild
+fi
+
 cd /workspace
 
 git config --global --add safe.directory /workspace
