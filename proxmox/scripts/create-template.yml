@@ -7,6 +7,7 @@
     proxmox_node: "com"
     vm_id: 110
     vm_name: "nixos-template"
+    nixos_iso: "nixos-minimal-26.05.10057.cf9d2fb3e50f-x86_64-linux.iso"
 
     memory_mb: 4096
     cores: 2
@@ -15,7 +16,7 @@
     network_bridge: "vmbr0"
   
   tasks:
-    - name: Create NixOS template VM
+    - name: Create NixOS VM
       community.proxmox.proxmox_kvm:
         api_host: "{{ proxmox_api_host }}"
         api_user: "ansible@pve"
@@ -30,7 +31,20 @@
         scsihw: "virtio-scsi-single"
         scsi: 
           scsi0: "{{ storage }}:{{ disk_size }},format=raw"
+        ide:
+          ide2: "local:iso/{{ nixos_iso }},media=cdrom"
         net: 
           net0: "virtio,bridge={{ network_bridge }}"
+        boot: "order=ide2;scsi0"
         bios: "seabios"
         state: present
+    - name: Start NixOS VM
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "ansible@pve"
+        api_token_id: "automation"
+        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        state: started
