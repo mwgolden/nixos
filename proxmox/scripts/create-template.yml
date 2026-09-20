@@ -1,0 +1,36 @@
+- name: Create NixOS template VM
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    proxmox_api_host: "proxmox.home.lan"
+    proxmox_node: "com"
+    vm_id: 110
+    vm_name: "nixos-template"
+
+    memory_mb: 4096
+    cores: 2
+    disk_size: "20"
+    storage: "local-lvm"
+    network_bridge: "vmbr0"
+  
+  tasks:
+    - name: Create NixOS template VM
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "ansible@pve"
+        api_token_id: "automation"
+        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        name: "{{ vm_name }}"
+        cores: "{{ cores }}"
+        memory: "{{ memory_mb }}"
+        scsihw: "virtio-scsi-single"
+        scsi: 
+          scsi0: "{{ storage }}:{{ disk_size }},format=raw"
+        net: 
+          net0: "virtio,bridge={{ network_bridge }}"
+        bios: "seabios"
+        state: present
