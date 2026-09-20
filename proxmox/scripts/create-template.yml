@@ -7,7 +7,7 @@
     proxmox_node: "com"
     vm_id: 110
     vm_name: "nixos-template"
-    nixos_iso: "nixos-minimal-26.05.10057.cf9d2fb3e50f-x86_64-linux.iso"
+    nixos_iso: "nixos-minimal-26.05.20260918.cf9d2fb-x86_64-linux.iso"
 
     memory_mb: 4096
     cores: 2
