@@ -1,0 +1,48 @@
+- name: Prepare NixOS installer
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    installer_ip: "<ip address>"
+
+  tasks:
+    - name: Add installer to Ansible inventory
+      ansible.builtin.add_host:
+        name: nixos-installer
+        groups: installer
+        ansible_host: "{{ installer_ip }}"
+        ansible_user: root
+        ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_INSTALLER_KEY') }}"
+
+- name: Partition NixOS disk
+  hosts: installer
+  gather_facts: false
+
+  vars:
+    install_disk: /dev/sda
+
+  tasks:
+    - name: Verify installation disk
+      ansible.builtin.assert:
+        that:
+          - install_disk == "/dev/sda"
+        fail_msg: "Refusing to partition unexpected disk: {{ install_disk }}"
+
+    - name: Create BIOS boot partition
+      community.general.parted:
+        device: "{{ install_disk }}"
+        number: 1
+        label: gpt
+        part_start: 1MiB
+        part_end: 2MiB
+        flags:
+          - bios_grub
+        state: present
+
+    - name: Create root partition
+      community.general.parted:
+        device: "{{ install_disk }}"
+        number: 2
+        part_start: 2MiB
+        part_end: 100%
+        state: present
