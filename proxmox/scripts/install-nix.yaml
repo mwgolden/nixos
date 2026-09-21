@@ -3,7 +3,7 @@
   gather_facts: false
 
   vars:
-    installer_ip: "<ip addr>"
+    installer_ip: "192.168.1.210"
 
   tasks:
     - name: Add installer to Ansible inventory
@@ -47,3 +47,66 @@
         part_start: "2MiB"
         part_end: "100%"
         state: present
+
+    - name: Format root partition
+      community.general.filesystem:
+        dev: "{{ install_disk }}2"
+        fstype: ext4
+      
+    - name:  Mount root File system
+      ansible.posix.mount:
+        path: /mnt
+        src: "{{ install_disk }}2"
+        fstype: ext4
+        state: ephemeral
+
+    - name: Generate hardware configuration
+      ansible.builtin.command:
+        cmd: nixos-generate-config --root /mnt
+
+    - name: Create NixOS configuration
+      ansible.builtin.copy:
+        dest: /mnt/etc/nixos/configuration.nix
+        content: |
+          { config, lib, pkgs, ... }:
+    
+          {
+            imports = [
+              ./hardware-configuration.nix
+            ];
+
+            environment.systemPackages = with pkgs; [
+                python3
+                git
+            ];
+
+            # Use the GRUB 2 boot loader.
+            boot.loader.grub.enable = true;
+            # boot.loader.grub.efiSupport = true;
+            # boot.loader.grub.efiInstallAsRemovable = true;
+            # boot.loader.efi.efiSysMountPoint = "/boot/efi";
+            # Define on which hard drive you want to install Grub.
+            boot.loader.grub.device = "/dev/sda"; # or "nodev" for efi only
+    
+            services.openssh.enable = true;
+    
+            users.users.admin = {
+              isNormalUser = true;
+              extraGroups = [ "wheel" ];
+              openssh.authorizedKeys.keys = [
+                "{{ lookup('file', lookup('env', 'NIXOS_DEPLOYMENT_PUBLIC_KEY')) }}"
+              ];
+            };
+
+            security.sudo.wheelNeedsPassword = false;
+          }
+
+    - name: Enable Nix experimental features
+      ansible.builtin.copy:
+        dest: /etc/nix/nix.conf
+        content: |
+          experimental-features = nix-command flakes
+
+    - name: Install NixOS
+      ansible.builtin.command:
+        cmd: nixos-install --root /mnt --no-root-passwd
