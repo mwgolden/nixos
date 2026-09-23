@@ -121,3 +121,5 @@
     - name: Install NixOS
       ansible.builtin.command:
         cmd: nixos-install --root /mnt --no-root-passwd
+      environment:
+        HOME: /root
