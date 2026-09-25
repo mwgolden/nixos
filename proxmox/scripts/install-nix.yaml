@@ -20,6 +20,8 @@
 
   vars:
     install_disk: /dev/sda
+    proxmox_api_host: "proxmox.home.lan"
+    proxmox_node: "com"
 
   tasks:
     - name: Verify installation disk
@@ -123,3 +125,41 @@
         cmd: nixos-install --root /mnt --no-root-passwd
       environment:
         HOME: /root
+
+    - name: Stop VM
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "ansible@pve"
+        api_token_id: "automation"
+        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
+        node: "{{ proxmox_node }}"
+        validate_certs: false
+        vmid: 110
+        state: stopped
+      delegate_to: localhost
+
+    - name: Remove installation media
+      community.proxmox.proxmox_disk:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "ansible@pve"
+        api_token_id: "automation"
+        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
+        validate_certs: false
+        vmid: 110
+        disk: ide2
+        media: cdrom
+        iso_image: none
+        state: present
+      delegate_to: localhost
+
+    - name: Convert VM to template
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "ansible@pve"
+        api_token_id: "automation"
+        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
+        node: "{{ proxmox_node }}"
+        validate_certs: false
+        vmid: 110
+        state: template
+      delegate_to: localhost
