@@ -1,0 +1,104 @@
+- name: Create webserver
+  hosts: localhost
+  gather_facts: false
+
+  vars: 
+    template_name: "nixos-template"
+    webserver_ip: "192.168.1.12"
+    template_ip: "192.168.1.11"
+    proxmox_api_host: "proxmox.home.lan"
+    proxmox_node: "com"
+    proxmox_api_user: "ansible@pve"
+    proxmox_api_token_id: "automation"
+    source_vm_id: 110
+
+  tasks: 
+    - name: Clone webserver from NixOS template
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_api_token_id }}"
+        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
+        node: "{{ proxmox_node }}"
+        clone: "{{ template_name }}"
+        vmid: "{{ source_vm_id }}"
+        newid: 111
+        name: webserver
+        format: unspecified
+        full: false
+        timeout: 300
+        validate_certs: false
+      delegate_to: localhost
+
+    - name: Start webserver
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_api_token_id }}"
+        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
+        node: "{{ proxmox_node }}"
+        name: webserver
+        state: started
+        validate_certs: false
+      delegate_to: localhost
+    
+    - name: Add webserver to inventory
+      ansible.builtin.add_host:
+        name: webserver
+        ansible_host: "{{ template_ip }}"
+        ansible_user: admin
+        ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
+    
+    - name: Wait for webserver SSH
+      ansible.builtin.wait_for:
+        host: "{{ template_ip }}"
+        port: 22
+        delay: 5
+        timeout: 300
+        state: started
+      delegate_to: localhost
+
+    
+- name: Configure webserver
+  hosts: webserver
+  gather_facts: false
+  become: true
+
+  vars: 
+    webserver_ip: "192.168.1.12"
+
+  tasks:
+
+    - name: Install common NixOS configuration
+      ansible.builtin.template:
+        src: ../../modules/common.nix
+        dest: /etc/nixos/common.nix
+      delegate_to: webserver
+
+    - name: Install webserver NixOS configuration
+      ansible.builtin.copy:
+        src: ./configuration.nix
+        dest: /etc/nixos/configuration.nix
+      delegate_to: webserver
+
+    - name: Copy index.html to server
+      ansible.builtin.copy:
+        src: ./index.html
+        dest: /var/www/
+      delegate_to: webserver
+
+    - name: Switch to webserver NixOS configuration
+      ansible.builtin.command:
+        cmd: nixos-rebuild switch
+      async: 60
+      poll: 0
+
+    - name: Wait for webserver on final IP
+      ansible.builtin.wait_for:
+        host: "{{ webserver_ip }}"
+        port: 22
+        delay: 2
+        timeout: 300
+        state: started
+      delegate_to: localhost
+      become: false

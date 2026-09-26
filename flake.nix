@@ -6,11 +6,11 @@
   };
 
   outputs = { self, nixpkgs, ... }: {
-    nixosConfigurations.nixos-lab-01 = nixpkgs.lib.nixosSystem {
+    nixosConfigurations.webserver = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
 
       modules = [
-        ./hosts/nixos-lab-01/configuration.nix
+        ./hosts/webserver/configuration.nix
       ];
     };
 
