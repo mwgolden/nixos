@@ -1,36 +1,31 @@
 # hosts/webserver/configuration.nix
+#
+# Installed to /etc/nixos on the webserver by webserver.yaml, next to
+# common.nix and network.nix (hostname and static IP, generated from vars.yaml).
 
 { config, pkgs, ... }:
 
 {
-    imports = [ 
-        ./common.nix
-        ./hardware-configuration.nix
-    ];
+  imports = [
+    ./hardware-configuration.nix
+    ./common.nix
+    ./network.nix
+  ];
 
-    networking.hostName = "webserver";
+  services.nginx = {
+    enable = true;
 
-    networking.interfaces.ens18.ipv4.addresses = [{
-        address = "192.168.1.12";
-        prefixLength = 24;
-    }];
-
-    networking.defaultGateway = "192.168.1.1";
-
-    networking.nameservers = [
-        "192.168.1.1"
-    ];
-
-    services.nginx = {
-        enable = true;
-
-        virtualHosts."_" = {
-            root = "/var/www";
-        };
+    virtualHosts."_" = {
+      default = true;
+      root = "/var/www";
     };
+  };
 
-    networking.firewall.allowedTCPPorts = [
-        22
-        80
-    ];
+  # Site files are copied here from site/ by webserver.yaml.
+  systemd.tmpfiles.rules = [
+    "d /var/www 0755 root root -"
+  ];
+
+  # SSH (22) is opened automatically by services.openssh.
+  networking.firewall.allowedTCPPorts = [ 80 ];
 }

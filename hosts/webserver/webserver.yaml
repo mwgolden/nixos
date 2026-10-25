@@ -1,104 +1,210 @@
-- name: Create webserver
+# Clones the NixOS template into the webserver VM, installs its NixOS
+# configuration and site files, and checks that it serves HTTP.
+# Safe to re-run: an existing webserver is updated in place.
+#
+#   source proxmox/.env
+#   ansible-playbook hosts/webserver/webserver.yaml
+
+- name: Create webserver VM
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - ../../proxmox/vars.yaml
+    - vars.yaml
 
-  vars: 
-    template_name: "nixos-template"
-    webserver_ip: "192.168.1.12"
-    template_ip: "192.168.1.10"
-    proxmox_api_host: "proxmox.home.lan"
-    proxmox_node: "com"
-    proxmox_api_user: "ansible@pve"
-    proxmox_api_token_id: "automation"
-    source_vm_id: 110
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
 
-  tasks: 
+  tasks:
+    - name: Check required environment variables
+      ansible.builtin.assert:
+        that:
+          - lookup('env', item) | length > 0
+        fail_msg: "{{ item }} is not set. Run 'source proxmox/.env' first."
+        quiet: true
+      loop:
+        - PROXMOX_TOKEN_SECRET
+        - NIXOS_DEPLOYMENT_PUBLIC_KEY
+        - NIXOS_DEPLOYMENT_PRIVATE_KEY
+
+    - name: Look up VMs on the node
+      community.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        type: qemu
+      register: node_vms
+
+    - name: Find existing webserver VM
+      ansible.builtin.set_fact:
+        existing_vm: >-
+          {{ node_vms.proxmox_vms
+             | selectattr('vmid', 'equalto', webserver_vm_id | int)
+             | first | default(none) }}
+
+    - name: Make sure the VM ID belongs to the webserver
+      ansible.builtin.assert:
+        that:
+          - existing_vm.name == webserver_vm_name
+        fail_msg: >-
+          VM {{ webserver_vm_id }} exists but is named '{{ existing_vm.name }}',
+          not '{{ webserver_vm_name }}'. Refusing to configure it.
+      when: existing_vm is not none
+
     - name: Clone webserver from NixOS template
       community.proxmox.proxmox_kvm:
-        api_host: "{{ proxmox_api_host }}"
-        api_user: "{{ proxmox_api_user }}"
-        api_token_id: "{{ proxmox_api_token_id }}"
-        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
         node: "{{ proxmox_node }}"
-        clone: "{{ template_name }}"
-        vmid: "{{ source_vm_id }}"
-        newid: 111
-        name: webserver
-        format: unspecified
-        full: false
+        vmid: "{{ template_vm_id }}"
+        clone: "{{ template_vm_name }}"
+        newid: "{{ webserver_vm_id }}"
+        name: "{{ webserver_vm_name }}"
+        full: "{{ webserver_full_clone }}"
+        format: "{{ omit if webserver_full_clone else 'unspecified' }}"
         timeout: 300
-        validate_certs: false
-      delegate_to: localhost
+      when: existing_vm is none
+
+    # A new clone has the template's host key, which may differ from the key
+    # recorded for this IP by a previous webserver.
+    - name: Forget old SSH host key for the webserver IP
+      ansible.builtin.known_hosts:
+        name: "{{ webserver_ip }}"
+        state: absent
+      when: existing_vm is none
 
     - name: Start webserver
       community.proxmox.proxmox_kvm:
-        api_host: "{{ proxmox_api_host }}"
-        api_user: "{{ proxmox_api_user }}"
-        api_token_id: "{{ proxmox_api_token_id }}"
-        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
         node: "{{ proxmox_node }}"
-        name: webserver
+        vmid: "{{ webserver_vm_id }}"
         state: started
-        validate_certs: false
-      delegate_to: localhost
-    
-    - name: Add webserver to inventory
-      ansible.builtin.add_host:
-        name: webserver
-        ansible_host: "{{ template_ip }}"
-        ansible_user: admin
-        ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
-    
+
+    # An existing webserver is normally on its own IP already. One left over
+    # from an interrupted run may still be on the template IP.
+    - name: Check whether the webserver is on its own IP
+      ansible.builtin.wait_for:
+        host: "{{ webserver_ip }}"
+        port: 22
+        timeout: 60
+      register: on_webserver_ip
+      ignore_errors: true
+      when: existing_vm is not none
+
+    - name: Choose the address to connect to
+      ansible.builtin.set_fact:
+        connect_ip: >-
+          {{ webserver_ip
+             if existing_vm is not none and on_webserver_ip is succeeded
+             else template_ip }}
+
     - name: Wait for webserver SSH
       ansible.builtin.wait_for:
-        host: "{{ template_ip }}"
+        host: "{{ connect_ip }}"
         port: 22
         delay: 5
         timeout: 300
-        state: started
-      delegate_to: localhost
 
-    
+    - name: Add webserver to inventory
+      ansible.builtin.add_host:
+        name: webserver
+        ansible_host: "{{ connect_ip }}"
+        ansible_user: admin
+        ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+        changes_ip: "{{ connect_ip != webserver_ip }}"
+
 - name: Configure webserver
   hosts: webserver
   gather_facts: false
   become: true
-
-  vars: 
-    webserver_ip: "192.168.1.12"
+  vars_files:
+    - ../../proxmox/vars.yaml
+    - vars.yaml
 
   tasks:
+    - name: Wait for login
+      ansible.builtin.wait_for_connection:
+        timeout: 120
 
+    # Rendering fills in the deployment SSH public key.
     - name: Install common NixOS configuration
       ansible.builtin.template:
         src: ../../modules/common.nix
         dest: /etc/nixos/common.nix
-      delegate_to: webserver
+        mode: "0644"
+
+    - name: Install network configuration
+      ansible.builtin.template:
+        src: ../../modules/network.nix.j2
+        dest: /etc/nixos/network.nix
+        mode: "0644"
+      vars:
+        host_name: "{{ webserver_vm_name }}"
+        host_ip: "{{ webserver_ip }}"
 
     - name: Install webserver NixOS configuration
       ansible.builtin.copy:
-        src: ./configuration.nix
+        src: configuration.nix
         dest: /etc/nixos/configuration.nix
-      delegate_to: webserver
+        mode: "0644"
 
-    - name: Copy index.html to server
+    - name: Copy site files
       ansible.builtin.copy:
-        src: ./index.html
+        src: site/
         dest: /var/www/
-      delegate_to: webserver
+        mode: "0644"
+        directory_mode: "0755"
 
-    - name: Switch to webserver NixOS configuration
+    # Building first downloads everything and shows any errors here, so the
+    # switch below is quick and unlikely to fail.
+    - name: Build NixOS configuration
+      ansible.builtin.command:
+        cmd: nixos-rebuild build
+        chdir: /tmp
+      changed_when: false
+
+    - name: Remove build result link
+      ansible.builtin.file:
+        path: /tmp/result
+        state: absent
+
+    - name: Switch to NixOS configuration
       ansible.builtin.command:
         cmd: nixos-rebuild switch
-      async: 60
-      poll: 0
+      when: not (changes_ip | bool)
 
-    - name: Wait for webserver on final IP
+    # Moving to the new IP drops this SSH connection, so start the switch in
+    # the background and look for the webserver on its new IP instead.
+    - name: Switch to NixOS configuration and move to the webserver IP
+      ansible.builtin.command:
+        cmd: nixos-rebuild switch
+      async: 300
+      poll: 0
+      when: changes_ip | bool
+
+    - name: Wait for webserver on its own IP
       ansible.builtin.wait_for:
         host: "{{ webserver_ip }}"
         port: 22
-        delay: 2
+        delay: 5
         timeout: 300
-        state: started
       delegate_to: localhost
       become: false
+
+- name: Check the webserver
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../proxmox/vars.yaml
+    - vars.yaml
+
+  tasks:
+    - name: Check the site is served
+      ansible.builtin.uri:
+        url: "http://{{ webserver_ip }}/"
+        status_code: 200
+      register: site_check
+      retries: 10
+      delay: 3
+      until: site_check is succeeded

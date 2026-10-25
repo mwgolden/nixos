@@ -1,0 +1,10 @@
+# Settings for the webserver VM. Shared Proxmox and network settings
+# (API host, node, template, gateway) come from proxmox/vars.yaml.
+
+webserver_vm_id: 111
+webserver_vm_name: "webserver"
+webserver_ip: "192.168.1.11"
+
+# A linked clone is fast and small, but Proxmox will not delete the template
+# while it exists (bootstrap.sh --force fails). Set true for a full copy.
+webserver_full_clone: false
