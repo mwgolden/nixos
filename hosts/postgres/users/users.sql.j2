@@ -1,0 +1,126 @@
+{#-
+  Rendered by users.yaml and run in one transaction against users_database.
+  Passwords are set in a separate step, so this script holds none.
+
+  Inputs: users_database, group_prefix, admin_user, managed_schemas
+  (list of {name, owner}), managed_users (normalized user list).
+-#}
+{%- set marker = 'managed by hosts/postgres/users (group)' -%}
+{%- set present = managed_users | selectattr('state', 'equalto', 'present') | list -%}
+{%- set absent = managed_users | selectattr('state', 'equalto', 'absent') | list -%}
+{%- macro group(schema, level) -%}{{ group_prefix }}_{{ schema }}_{{ level }}{%- endmacro -%}
+
+-- Schemas
+{% for s in managed_schemas %}
+CREATE SCHEMA IF NOT EXISTS {{ s.name }} AUTHORIZATION "{{ s.owner }}";
+{% endfor %}
+
+-- Access level group roles, one per schema and level
+{% for s in managed_schemas %}
+{% for level in ['read', 'write', 'create', 'execute'] %}
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ group(s.name, level) }}') THEN
+    CREATE ROLE {{ group(s.name, level) }} NOLOGIN;
+  END IF;
+END
+$$;
+COMMENT ON ROLE {{ group(s.name, level) }} IS '{{ marker }}: {{ level }} on {{ users_database }}.{{ s.name }}';
+{% endfor %}
+{% endfor %}
+
+-- Users
+{% for u in present %}
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ u.name }}') THEN
+    CREATE ROLE {{ u.name }} LOGIN;
+  END IF;
+END
+$$;
+ALTER ROLE {{ u.name }} WITH LOGIN NOSUPERUSER NOCREATEROLE {{ 'CREATEDB' if u.createdb else 'NOCREATEDB' }};
+{% endfor %}
+
+-- Privileges for each group. Re-granted on every run, so tables created
+-- since the last run are covered too.
+{% for s in managed_schemas %}
+{#- Default privileges apply to objects created by the admin users and by
+    users with create access on this schema. -#}
+{%- set ns = namespace(creators=['postgres', admin_user]) -%}
+{%- for u in present -%}
+{%- for a in u.schemas if a.schema == s.name and 'create' in a.access -%}
+{%- set ns.creators = ns.creators + [u.name] -%}
+{%- endfor -%}
+{%- endfor %}
+-- {{ s.name }}
+GRANT CONNECT ON DATABASE "{{ users_database }}" TO {{ group(s.name, 'read') }}, {{ group(s.name, 'execute') }};
+GRANT USAGE ON SCHEMA {{ s.name }} TO {{ group(s.name, 'read') }}, {{ group(s.name, 'execute') }};
+GRANT SELECT ON ALL TABLES IN SCHEMA {{ s.name }} TO {{ group(s.name, 'read') }};
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA {{ s.name }} TO {{ group(s.name, 'read') }};
+GRANT {{ group(s.name, 'read') }} TO {{ group(s.name, 'write') }};
+GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {{ s.name }} TO {{ group(s.name, 'write') }};
+GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA {{ s.name }} TO {{ group(s.name, 'write') }};
+GRANT {{ group(s.name, 'write') }} TO {{ group(s.name, 'create') }};
+GRANT CREATE ON SCHEMA {{ s.name }} TO {{ group(s.name, 'create') }};
+GRANT EXECUTE ON ALL ROUTINES IN SCHEMA {{ s.name }} TO {{ group(s.name, 'execute') }};
+-- New objects created by these roles get the same privileges automatically.
+ALTER DEFAULT PRIVILEGES FOR ROLE {{ ns.creators | unique | join(', ') }} IN SCHEMA {{ s.name }}
+  GRANT SELECT ON TABLES TO {{ group(s.name, 'read') }};
+ALTER DEFAULT PRIVILEGES FOR ROLE {{ ns.creators | unique | join(', ') }} IN SCHEMA {{ s.name }}
+  GRANT SELECT ON SEQUENCES TO {{ group(s.name, 'read') }};
+ALTER DEFAULT PRIVILEGES FOR ROLE {{ ns.creators | unique | join(', ') }} IN SCHEMA {{ s.name }}
+  GRANT INSERT, UPDATE, DELETE ON TABLES TO {{ group(s.name, 'write') }};
+ALTER DEFAULT PRIVILEGES FOR ROLE {{ ns.creators | unique | join(', ') }} IN SCHEMA {{ s.name }}
+  GRANT USAGE, UPDATE ON SEQUENCES TO {{ group(s.name, 'write') }};
+ALTER DEFAULT PRIVILEGES FOR ROLE {{ ns.creators | unique | join(', ') }} IN SCHEMA {{ s.name }}
+  GRANT EXECUTE ON ROUTINES TO {{ group(s.name, 'execute') }};
+
+{% endfor %}
+-- Memberships. Each user gets exactly the groups and pg_* roles listed;
+-- others of those kinds are revoked. Other role memberships are left alone.
+{% for u in present %}
+{%- set ns = namespace(wanted=[]) -%}
+{%- for a in u.schemas -%}
+{%- for level in a.access -%}
+{%- set ns.wanted = ns.wanted + [group(a.schema, level)] -%}
+{%- endfor -%}
+{%- endfor -%}
+{%- set wanted = (ns.wanted + u.roles) | unique | list %}
+{% if wanted %}
+GRANT {{ wanted | join(', ') }} TO {{ u.name }};
+{% endif %}
+DO $$
+DECLARE
+  r text;
+BEGIN
+  FOR r IN
+    SELECT g.rolname
+    FROM pg_auth_members m
+    JOIN pg_roles g ON g.oid = m.roleid
+    JOIN pg_roles u ON u.oid = m.member
+    WHERE u.rolname = '{{ u.name }}'
+      AND (g.rolname LIKE 'pg\_%'
+           OR (g.rolname LIKE '{{ group_prefix }}\_%'
+               AND shobj_description(g.oid, 'pg_authid') LIKE '{{ marker }}%'))
+      AND g.rolname <> ALL (ARRAY[{{ ("'" ~ wanted | join("', '") ~ "'") if wanted else '' }}]::text[])
+  LOOP
+    EXECUTE format('REVOKE %I FROM %I', r, '{{ u.name }}');
+    RAISE NOTICE 'Revoked % from {{ u.name }}', r;
+  END LOOP;
+END
+$$;
+{% endfor %}
+
+-- Users to remove. Objects they own in this database go to the admin user.
+{% for u in absent %}
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ u.name }}') THEN
+    REASSIGN OWNED BY {{ u.name }} TO "{{ admin_user }}";
+    DROP OWNED BY {{ u.name }};
+    DROP ROLE {{ u.name }};
+    RAISE NOTICE 'Dropped user {{ u.name }}';
+  END IF;
+END
+$$;
+{% endfor %}

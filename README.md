@@ -115,7 +115,7 @@ Static addresses must stay outside the DHCP pool.
 | `192.168.1.1`  | gateway and DNS                                  |
 | `192.168.1.10` | Installer ISO and the template, on VM 110 (never at the same time). New clones also boot here first. |
 | `192.168.1.11` | webserver (VM 111)                                        |
-| `192.168.1.13` | postgres (VM 112)                                         |
+| `192.168.1.12` | postgres (VM 112)                                         |
 
 Because every new clone starts on `.10`, deploy one VM at a time.
 

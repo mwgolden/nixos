@@ -23,6 +23,7 @@ These values come from `vars.yaml`.
 | `postgres.nix.j2`   | Template for the generated settings: version, port, allowed networks, firewall |
 | `postgres.yaml`     | Deploy playbook                                                         |
 | `destroy.yaml`      | Deletes the VM and its data disk                                        |
+| `users/`            | Database users and their access per schema                              |
 
 Shared settings (Proxmox host, node, template, gateway, DNS) come from `proxmox/vars.yaml`. The hostname and IP file is generated from `modules/network.nix.j2`.
 
@@ -38,6 +39,10 @@ POSTGRES_ADMIN_PASSWORD=...
 If `.env` doesn't exist, copy `.env.example` to `.env` and set a password. The user name may contain lowercase letters, digits and underscores.
 
 The playbook creates this user as a PostgreSQL superuser and sets its password on every run. To change the password, edit `.env` and re-run the playbook. The password is sent to the VM over SSH and is kept out of Ansible's output and out of the NixOS configuration.
+
+## Database users
+
+To create users and give them access to schemas, see [users/README.md](users/README.md). Each user can combine access levels (read, write, create, execute) on any number of schemas with built-in roles such as `pg_monitor`.
 
 ## Deploying
 

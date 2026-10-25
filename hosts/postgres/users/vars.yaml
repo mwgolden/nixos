@@ -1,0 +1,64 @@
+# Database users and their access, applied by users.yaml.
+# Passwords are in .env next to this file (see .env.example).
+#
+# ACCESS LEVELS (per schema). Combine as many as needed per schema.
+#   read     Read tables, views and sequences (SELECT)
+#   write    read + INSERT, UPDATE, DELETE, and use sequences
+#   create   write + create new tables, views, functions in the schema
+#   execute  Run functions and procedures in the schema
+#
+# Each level is a group role named <database>_<schema>_<level>, for example
+# adventureworks_sales_read. Users are made members of these groups. Tables
+# created later in the schema are covered automatically.
+#
+# EXTRA ROLES (under "roles"). Built-in PostgreSQL roles, which apply to
+# EVERY database on the server, not just users_database:
+#   pg_read_all_data          Read all tables in all schemas and databases
+#   pg_write_all_data         Write all tables in all schemas and databases
+#   pg_monitor                Read monitoring views and statistics (includes the three below)
+#   pg_read_all_settings      Read all configuration settings
+#   pg_read_all_stats         Read all statistics views
+#   pg_stat_scan_tables       Run monitoring functions that may lock tables
+#   pg_signal_backend         Cancel queries or end sessions of other non-superusers
+#   pg_checkpoint             Run CHECKPOINT
+#   pg_maintain               Run VACUUM, ANALYZE, REINDEX and similar on all tables (PostgreSQL 17+)
+#   pg_use_reserved_connections  Use connection slots kept for this role (PostgreSQL 16+)
+#   pg_create_subscription    Create logical replication subscriptions (PostgreSQL 16+)
+#   pg_read_server_files      Read files on the server (powerful; avoid)
+#   pg_write_server_files     Write files on the server (powerful; avoid)
+#   pg_execute_server_program Run programs on the server (powerful; avoid)
+# Any other existing role name may be listed too. Run
+#   ansible-playbook hosts/postgres/users/users.yaml --tags list
+# to see the roles that exist on the server.
+
+# Database the schemas live in. It must already exist.
+users_database: "Adventureworks"
+
+# Schemas to create if missing, even if no user is listed for them yet.
+# Schemas named under a user below are also created if missing.
+# Owner defaults to the admin user from hosts/postgres/.env.
+schemas:
+  - name: reporting
+    owner: pgadmin
+
+# name:      lowercase letters, digits and underscores
+# state:     present (default) or absent. absent drops the user; objects it
+#            owns are handed to the admin user first.
+# createdb:  allow creating databases (default false)
+# schemas:   access levels per schema
+# roles:     extra roles, see the list above
+#
+# Access not listed here is removed on the next run, for the access levels
+# above and built-in pg_* roles. Users missing from this list entirely are
+# left alone; set state: absent to drop one.
+users:
+  - name: aw_analyst
+    schemas:
+      - schema: sales
+        access: [read]
+      - schema: reporting
+        access: [read, write, create]
+    roles: [pg_monitor]
+
+  - name: old_user
+    state: absent
