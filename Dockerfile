@@ -15,19 +15,26 @@ RUN apt-get update \
     && mkdir -m 0755 /nix \
     && chown nixuser:nixuser /nix
 
+USER nixuser
+
+ENV USER=nixuser
+ENV PATH=/home/nixuser/.nix-profile/bin:$PATH
+
 # Enable Nix experimental features
 RUN mkdir -p /home/nixuser/.config/nix \
     && printf '%s\n' \
         'experimental-features = nix-command flakes' \
-        > /home/nixuser/.config/nix/nix.conf \
-    && chown -R nixuser:nixuser /home/nixuser/.config
+        > /home/nixuser/.config/nix/nix.conf
 
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# Install Nix at image build time so containers start ready to use.
+RUN curl -fsSL https://nixos.org/nix/install -o /tmp/nix-install \
+    && sh /tmp/nix-install --no-daemon \
+    && rm /tmp/nix-install \
+    && nix profile install nixpkgs#nixos-rebuild
 
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-
-USER nixuser
+COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /workspace
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["bash"]

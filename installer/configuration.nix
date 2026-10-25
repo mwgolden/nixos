@@ -1,13 +1,24 @@
-{ config, pkgs, modulesPath, ... }:
+{ config, lib, pkgs, modulesPath, ... }:
 
+let
+  # Public key allowed to SSH in as root on the installer. Read from the
+  # environment at build time, so the build needs `--impure`.
+  # bootstrap.sh sets this from the file in NIXOS_INSTALLER_PUBLIC_KEY.
+  installerKey = builtins.getEnv "NIXOS_INSTALLER_AUTHORIZED_KEY";
+in
 {
   imports = [
     "${modulesPath}/installer/cd-dvd/installation-cd-minimal.nix"
   ];
 
+  assertions = [{
+    assertion = installerKey != "";
+    message = "NIXOS_INSTALLER_AUTHORIZED_KEY is empty. Set it to the installer SSH public key and build with --impure.";
+  }];
+
   environment.systemPackages = with pkgs; [
-      python3
-      git
+    python3
+    git
   ];
 
   networking.interfaces.ens18.ipv4.addresses = [{
@@ -20,12 +31,10 @@
   networking.nameservers = [
     "192.168.1.1"
   ];
-  
+
   services.openssh.enable = true;
 
-  systemd.services.sshd.wantedBy = pkgs.lib.mkForce [ "multi-user.target" ];
+  systemd.services.sshd.wantedBy = lib.mkForce [ "multi-user.target" ];
 
-  users.users.root.openssh.authorizedKeys.keys = [
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMSE+JTfGnTV5FuH4nj1+9daykK+J7D+9zq0vxkpmm6H nixos-installer"
-  ];
+  users.users.root.openssh.authorizedKeys.keys = lib.optional (installerKey != "") installerKey;
 }

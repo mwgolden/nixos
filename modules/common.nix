@@ -28,4 +28,8 @@
   };
 
   security.sudo.wheelNeedsPassword = false;
+
+  # Release this machine was first installed with. Leave it unchanged on
+  # upgrades: it decides data formats such as the PostgreSQL major version.
+  system.stateVersion = "26.05";
 }

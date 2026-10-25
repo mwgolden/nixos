@@ -1,3 +1,6 @@
 .env
 *.iso
 result
+
+hosts/postgres/data/*
+hosts/postgres/*.sqlbuild/

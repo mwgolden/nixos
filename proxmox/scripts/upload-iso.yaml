@@ -1,0 +1,36 @@
+- name: Upload the NixOS installer ISO to Proxmox
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars.yaml
+
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
+
+  tasks:
+    - name: Check the installer ISO exists locally
+      ansible.builtin.stat:
+        path: "{{ installer_iso }}"
+      register: installer_iso_file
+
+    - name: Verify installer ISO
+      ansible.builtin.assert:
+        that:
+          - installer_iso_file.stat.exists
+        fail_msg: "Installer ISO not found: {{ installer_iso }}"
+
+    # The ISO name includes a hash of its build, so an unchanged ISO is
+    # already on Proxmox and the upload is skipped.
+    - name: Upload installer ISO
+      community.proxmox.proxmox_template:
+        node: "{{ proxmox_node }}"
+        storage: "{{ iso_storage }}"
+        content_type: iso
+        src: "{{ installer_iso }}"
+        timeout: 600
+        state: present

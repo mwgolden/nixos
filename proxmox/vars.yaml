@@ -1,0 +1,27 @@
+# Shared settings for the template bootstrap playbooks.
+
+proxmox_api_host: "proxmox.home.lan"
+proxmox_api_user: "ansible@pve"
+proxmox_api_token_id: "automation"
+proxmox_validate_certs: false
+proxmox_node: "com"
+
+# Proxmox storage that holds uploaded ISOs
+iso_storage: "local"
+
+template_vm_id: 110
+template_vm_name: "nixos-template"
+template_memory_mb: 4096
+template_cores: 2
+template_disk_size_gb: 20
+template_disk_storage: "local-lvm"
+network_bridge: "vmbr0"
+
+# The installer ISO and the installed template both use this address.
+# They run on the same VM, never at the same time.
+template_ip: "192.168.1.10"
+network_prefix_length: 24
+network_gateway: "192.168.1.1"
+network_nameserver: "192.168.1.1"
+
+install_disk: "/dev/sda"

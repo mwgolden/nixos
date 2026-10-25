@@ -5,7 +5,7 @@
   vars: 
     template_name: "nixos-template"
     webserver_ip: "192.168.1.12"
-    template_ip: "192.168.1.11"
+    template_ip: "192.168.1.10"
     proxmox_api_host: "proxmox.home.lan"
     proxmox_node: "com"
     proxmox_api_user: "ansible@pve"

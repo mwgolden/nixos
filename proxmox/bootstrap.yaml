@@ -1,0 +1,14 @@
+# Uploads the installer ISO, creates VM 110, installs NixOS on it and
+# converts it into a template. Run through ../bootstrap.sh, which builds the
+# ISO and passes:
+#   installer_iso   local path of the ISO to upload
+#   force_recreate  true to destroy an existing VM 110 first
+
+- name: Upload installer ISO
+  ansible.builtin.import_playbook: scripts/upload-iso.yaml
+
+- name: Create template VM
+  ansible.builtin.import_playbook: scripts/create-template.yaml
+
+- name: Install NixOS and convert to template
+  ansible.builtin.import_playbook: scripts/install-nix.yaml

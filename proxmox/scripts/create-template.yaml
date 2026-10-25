@@ -1,51 +1,84 @@
-- name: Create NixOS template VM
+- name: Create the NixOS template VM
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - ../vars.yaml
 
   vars:
-    proxmox_api_host: "proxmox.home.lan"
-    proxmox_node: "com"
-    vm_id: 110
-    vm_name: "nixos-template"
-    nixos_iso: "nixos-minimal-26.05.20260918.cf9d2fb-x86_64-linux.iso"
+    force_recreate: false
 
-    memory_mb: 4096
-    cores: 2
-    disk_size: "20"
-    storage: "local-lvm"
-    network_bridge: "vmbr0"
-  
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
+
   tasks:
+    - name: Look up VMs on the node
+      community.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        type: qemu
+      register: node_vms
+
+    - name: Find existing template VM
+      ansible.builtin.set_fact:
+        existing_vm: >-
+          {{ node_vms.proxmox_vms
+             | selectattr('vmid', 'equalto', template_vm_id | int)
+             | first | default(none) }}
+
+    - name: Refuse to replace an existing VM without --force
+      ansible.builtin.fail:
+        msg: >-
+          VM {{ template_vm_id }} ({{ existing_vm.name }}) already exists.
+          Run bootstrap.sh with --force to destroy and recreate it.
+      when:
+        - existing_vm is not none
+        - not (force_recreate | bool)
+
+    - name: Stop existing VM
+      community.proxmox.proxmox_kvm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ template_vm_id }}"
+        state: stopped
+        force: true
+        timeout: 60
+      when:
+        - existing_vm is not none
+        - existing_vm.status == 'running'
+
+    # Proxmox refuses this while linked clones of the template still exist.
+    - name: Destroy existing VM
+      community.proxmox.proxmox_kvm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ template_vm_id }}"
+        state: absent
+        purge: true
+        timeout: 120
+      when: existing_vm is not none
+
     - name: Create NixOS VM
       community.proxmox.proxmox_kvm:
-        api_host: "{{ proxmox_api_host }}"
-        api_user: "ansible@pve"
-        api_token_id: "automation"
-        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
-        validate_certs: false
         node: "{{ proxmox_node }}"
-        vmid: "{{ vm_id }}"
-        name: "{{ vm_name }}"
-        cores: "{{ cores }}"
-        memory: "{{ memory_mb }}"
+        vmid: "{{ template_vm_id }}"
+        name: "{{ template_vm_name }}"
+        cores: "{{ template_cores }}"
+        memory: "{{ template_memory_mb }}"
         scsihw: "virtio-scsi-single"
-        scsi: 
-          scsi0: "{{ storage }}:{{ disk_size }},format=raw"
+        scsi:
+          scsi0: "{{ template_disk_storage }}:{{ template_disk_size_gb }},format=raw"
         ide:
-          ide2: "local:iso/{{ nixos_iso }},media=cdrom"
-        net: 
+          ide2: "{{ iso_storage }}:iso/{{ installer_iso | basename }},media=cdrom"
+        net:
           net0: "virtio,bridge={{ network_bridge }}"
         boot: "order=ide2;scsi0"
         bios: "seabios"
         state: present
+
     - name: Start NixOS VM
       community.proxmox.proxmox_kvm:
-        api_host: "{{ proxmox_api_host }}"
-        api_user: "ansible@pve"
-        api_token_id: "automation"
-        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
-        validate_certs: false
         node: "{{ proxmox_node }}"
-        vmid: "{{ vm_id }}"
+        vmid: "{{ template_vm_id }}"
         state: started
-
