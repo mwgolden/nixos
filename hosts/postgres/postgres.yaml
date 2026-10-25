@@ -1,116 +1,404 @@
-- name: Create postgresql VM
+# Clones the NixOS template into the postgres VM, adds and formats a data
+# disk, installs PostgreSQL, sets the admin login from .env and optionally
+# loads the AdventureWorks sample database.
+# Safe to re-run: an existing VM is updated in place.
+#
+#   source proxmox/.env
+#   ansible-playbook hosts/postgres/postgres.yaml
+
+- name: Create postgres VM
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - ../../proxmox/vars.yaml
+    - vars.yaml
 
-  vars: 
-    template_name: "nixos-template"
-    target_ip: "192.168.1.13"
-    template_ip: "192.168.1.10"
-    proxmox_api_host: "proxmox.home.lan"
-    proxmox_node: "com"
-    proxmox_api_user: "ansible@pve"
-    proxmox_api_token_id: "automation"
-    source_vm_id: 110
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
 
-    postgres_vmid: 112
+  tasks:
+    - name: Check required environment variables
+      ansible.builtin.assert:
+        that:
+          - lookup('env', item) | length > 0
+        fail_msg: "{{ item }} is not set. Run 'source proxmox/.env' first."
+        quiet: true
+      loop:
+        - PROXMOX_TOKEN_SECRET
+        - NIXOS_DEPLOYMENT_PUBLIC_KEY
+        - NIXOS_DEPLOYMENT_PRIVATE_KEY
 
-    data_disk:
-      serial: "postgres-data"
-      device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_postgres-data"
-      partition: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_postgres-data-part1"
+    - name: Check for hosts/postgres/.env
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/.env"
+      register: postgres_env_file
 
-  tasks: 
-    - name: Clone webserver from NixOS template
-      community.proxmox.proxmox_kvm:
-        api_host: "{{ proxmox_api_host }}"
-        api_user: "{{ proxmox_api_user }}"
-        api_token_id: "{{ proxmox_api_token_id }}"
-        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
+    - name: Require hosts/postgres/.env
+      ansible.builtin.assert:
+        that:
+          - postgres_env_file.stat.exists
+        fail_msg: "{{ playbook_dir }}/.env is missing. Copy .env.example to .env and set the admin login."
+        quiet: true
+
+    # Reads KEY=value lines; "export " and surrounding quotes are optional.
+    - name: Read database admin login from .env
+      ansible.builtin.set_fact:
+        postgres_admin_user: "{{ postgres_env.POSTGRES_ADMIN_USER | default('') | regex_replace('^([\"\\x27]?)(.*)\\1$', '\\2') }}"
+        postgres_admin_password: "{{ postgres_env.POSTGRES_ADMIN_PASSWORD | default('') | regex_replace('^([\"\\x27]?)(.*)\\1$', '\\2') }}"
+      vars:
+        postgres_env: >-
+          {{ dict(lookup('file', playbook_dir ~ '/.env')
+                  | regex_findall('(?m)^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*?)\s*$')) }}
+      no_log: true
+
+    - name: Check database admin login
+      ansible.builtin.assert:
+        that:
+          - postgres_admin_user is match('^[a-z_][a-z0-9_]*$')
+          - postgres_admin_password | length > 0
+        fail_msg: >-
+          Set POSTGRES_ADMIN_USER (lowercase letters, digits, underscores) and
+          POSTGRES_ADMIN_PASSWORD in hosts/postgres/.env.
+        quiet: true
+
+    - name: Look up postgres VM
+      community.proxmox.proxmox_vm_info:
         node: "{{ proxmox_node }}"
-        clone: "{{ template_name }}"
-        vmid: "{{ source_vm_id }}"
-        newid: 112
-        name: postgres
-        format: unspecified
-        full: false
-        timeout: 300
-        validate_certs: false
-      delegate_to: localhost
+        vmid: "{{ postgres_vm_id }}"
+        config: current
+      register: postgres_vm_info
 
-    - name: Add a data disk to VM for data
+    - name: Note whether the VM exists
+      ansible.builtin.set_fact:
+        existing_vm: "{{ postgres_vm_info.proxmox_vms | first | default(none) }}"
+
+    - name: Make sure the VM ID belongs to the postgres VM
+      ansible.builtin.assert:
+        that:
+          - existing_vm.name == postgres_vm_name
+        fail_msg: >-
+          VM {{ postgres_vm_id }} exists but is named '{{ existing_vm.name }}',
+          not '{{ postgres_vm_name }}'. Refusing to configure it.
+      when: existing_vm is not none
+
+    - name: Clone postgres VM from NixOS template
+      community.proxmox.proxmox_kvm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ template_vm_id }}"
+        clone: "{{ template_vm_name }}"
+        newid: "{{ postgres_vm_id }}"
+        name: "{{ postgres_vm_name }}"
+        full: "{{ postgres_full_clone }}"
+        format: "{{ omit if postgres_full_clone else 'unspecified' }}"
+        timeout: 300
+      when: existing_vm is none
+
+    # scsi1 looks like "local-lvm:vm-112-disk-1,serial=postgres-data,size=20G".
+    - name: Read current data disk size
+      ansible.builtin.set_fact:
+        data_disk_config: "{{ existing_vm.config.scsi1 | default('') if existing_vm is not none else '' }}"
+
+    - name: Parse current data disk size
+      ansible.builtin.set_fact:
+        data_disk_current_gb: "{{ ((data_disk_config | regex_search('size=(\\d+)G', '\\1')) or ['0']) | first | int }}"
+
+    - name: Refuse to shrink the data disk
+      ansible.builtin.assert:
+        that:
+          - postgres_data_disk_gb | int >= data_disk_current_gb | int
+        fail_msg: >-
+          The data disk is {{ data_disk_current_gb }} GB and can't be shrunk to
+          {{ postgres_data_disk_gb }} GB. Set postgres_data_disk_gb to at least
+          {{ data_disk_current_gb }} in vars.yaml.
+      when: data_disk_config | length > 0
+
+    - name: Add data disk
       community.proxmox.proxmox_disk:
-        api_host: "{{ proxmox_api_host }}"
-        api_user: "{{ proxmox_api_user }}"
-        api_token_id: "{{ proxmox_api_token_id }}"
-        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
-        vmid: "{{ postgres_vmid }}"
+        vmid: "{{ postgres_vm_id }}"
         disk: scsi1
         serial: postgres-data
-        size: 8
-        storage: local-lvm
+        size: "{{ postgres_data_disk_gb }}"
+        storage: "{{ postgres_data_disk_storage }}"
         state: present
-        validate_certs: false
-      delegate_to: localhost
+      when: data_disk_config | length == 0
 
-    - name: Start postgres vm
+    - name: Grow data disk
+      community.proxmox.proxmox_disk:
+        vmid: "{{ postgres_vm_id }}"
+        disk: scsi1
+        size: "{{ postgres_data_disk_gb }}G"
+        state: resized
+        timeout: 120
+      when:
+        - data_disk_config | length > 0
+        - postgres_data_disk_gb | int > data_disk_current_gb | int
+
+    # A new clone has the template's host key, which may differ from the key
+    # recorded for this IP by a previous postgres VM.
+    - name: Forget old SSH host key for the postgres IP
+      ansible.builtin.known_hosts:
+        name: "{{ postgres_ip }}"
+        state: absent
+      when: existing_vm is none
+
+    - name: Start postgres VM
       community.proxmox.proxmox_kvm:
-        api_host: "{{ proxmox_api_host }}"
-        api_user: "{{ proxmox_api_user }}"
-        api_token_id: "{{ proxmox_api_token_id }}"
-        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET')}}"
         node: "{{ proxmox_node }}"
-        name: postgres
+        vmid: "{{ postgres_vm_id }}"
         state: started
-        validate_certs: false
-      delegate_to: localhost
-    
-    - name: Add postgres vm to inventory
-      ansible.builtin.add_host:
-        name: postgres
-        ansible_host: "{{ template_ip }}"
-        ansible_user: admin
-        ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
-    
-    - name: Wait for postgres SSH
+
+    # An existing VM is normally on its own IP already. One left over from an
+    # interrupted run may still be on the template IP.
+    - name: Check whether the VM is on its own IP
       ansible.builtin.wait_for:
-        host: "{{ template_ip }}"
+        host: "{{ postgres_ip }}"
+        port: 22
+        timeout: 60
+      register: on_postgres_ip
+      ignore_errors: true
+      when: existing_vm is not none
+
+    - name: Choose the address to connect to
+      ansible.builtin.set_fact:
+        connect_ip: >-
+          {{ postgres_ip
+             if existing_vm is not none and on_postgres_ip is succeeded
+             else template_ip }}
+
+    - name: Wait for postgres VM SSH
+      ansible.builtin.wait_for:
+        host: "{{ connect_ip }}"
         port: 22
         delay: 5
         timeout: 300
-        state: started
-      delegate_to: localhost
 
-    - name: Check data disk
-      ansible.builtin.stat:
-        path: "{{ data_disk.device }}"
-      register: data_disk_device
-      delegate_to: postgres
+    - name: Add postgres VM to inventory
+      ansible.builtin.add_host:
+        name: postgres
+        ansible_host: "{{ connect_ip }}"
+        ansible_user: admin
+        ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+        changes_ip: "{{ connect_ip != postgres_ip }}"
 
-    - name: Verify data disk exists
-      ansible.builtin.assert:
-        that:
-          - data_disk_device.stat.exists
-          - data_disk_device.stat.islnk
-        fail_msg: "Postgresql data disk was not found: {{ data_disk.device }}"
+- name: Configure postgres VM
+  hosts: postgres
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../../proxmox/vars.yaml
+    - vars.yaml
 
-    # Partition Disk
-    - name: Partition PostgreSQL data disk
+  vars:
+    data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_postgres-data"
+    postgres_admin_user: "{{ hostvars['localhost'].postgres_admin_user }}"
+    postgres_admin_password: "{{ hostvars['localhost'].postgres_admin_password }}"
+    adventureworks_src: /var/lib/adventureworks-src
+
+  tasks:
+    - name: Wait for login
+      ansible.builtin.wait_for_connection:
+        timeout: 120
+
+    - name: Wait for the data disk to appear
+      ansible.builtin.wait_for:
+        path: "{{ data_disk_device }}"
+        timeout: 60
+
+    # Only formats a disk with no filesystem, so existing data is never
+    # wiped. On a disk that was grown, it grows the filesystem to match.
+    - name: Format data disk
+      community.general.filesystem:
+        dev: "{{ data_disk_device }}"
+        fstype: ext4
+        resizefs: true
+
+    # Rendering fills in the deployment SSH public key.
+    - name: Install common NixOS configuration
+      ansible.builtin.template:
+        src: ../../modules/common.nix
+        dest: /etc/nixos/common.nix
+        mode: "0644"
+
+    - name: Install network configuration
+      ansible.builtin.template:
+        src: ../../modules/network.nix.j2
+        dest: /etc/nixos/network.nix
+        mode: "0644"
+      vars:
+        host_name: "{{ postgres_vm_name }}"
+        host_ip: "{{ postgres_ip }}"
+
+    - name: Install PostgreSQL settings
+      ansible.builtin.template:
+        src: postgres.nix.j2
+        dest: /etc/nixos/postgres.nix
+        mode: "0644"
+
+    - name: Install postgres NixOS configuration
+      ansible.builtin.copy:
+        src: configuration.nix
+        dest: /etc/nixos/configuration.nix
+        mode: "0644"
+
+    # Building first downloads everything and shows any errors here, so the
+    # switch below is quick and unlikely to fail.
+    - name: Build NixOS configuration
       ansible.builtin.command:
-        cmd: >
-          nix-shell -p parted e2fsprogs --run
-          'parted --script /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_postgres-data
-          mklabel gpt
-          mkpart primary ext4 1MiB 100%
-          && mkfs.ext4 /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_postgres-data-part1'
-      delegate_to: postgres
-      become: true
-
-    - name: Get PostgreSQL data filesystem UUID
-      ansible.builtin.command:
-        cmd: blkid -s UUID -o value /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_postgres-data-part1
-      register: postgres_data_uuid
+        cmd: nixos-rebuild build
+        chdir: /tmp
       changed_when: false
-      delegate_to: postgres
-      become: true
 
-    
+    - name: Remove build result link
+      ansible.builtin.file:
+        path: /tmp/result
+        state: absent
+
+    - name: Switch to NixOS configuration
+      ansible.builtin.command:
+        cmd: nixos-rebuild switch
+      when: not (changes_ip | bool)
+
+    # Moving to the new IP drops this SSH connection, so start the switch in
+    # the background and reconnect on the new IP.
+    - name: Switch to NixOS configuration and move to the postgres IP
+      ansible.builtin.command:
+        cmd: nixos-rebuild switch
+      async: 300
+      poll: 0
+      when: changes_ip | bool
+
+    - name: Wait for SSH on the postgres IP
+      ansible.builtin.wait_for:
+        host: "{{ postgres_ip }}"
+        port: 22
+        delay: 5
+        timeout: 300
+      delegate_to: localhost
+      become: false
+
+    - name: Connect to the postgres IP from now on
+      ansible.builtin.set_fact:
+        ansible_host: "{{ postgres_ip }}"
+
+    - name: Reset the SSH connection
+      ansible.builtin.meta: reset_connection
+
+    - name: Wait for login on the postgres IP
+      ansible.builtin.wait_for_connection:
+        timeout: 120
+
+    - name: Check the data disk is mounted
+      ansible.builtin.command:
+        cmd: findmnt --source {{ data_disk_device }} --target /var/lib/postgresql
+      changed_when: false
+
+    - name: Wait for PostgreSQL
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ postgres_port }}"
+        timeout: 120
+
+    # Creates the role if needed and always sets its password, so a changed
+    # password in .env is applied on the next run.
+    - name: Set database admin login
+      ansible.builtin.command:
+        cmd: runuser -u postgres -- psql -v ON_ERROR_STOP=1 -q -p {{ postgres_port }} -d postgres
+        stdin: |
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ postgres_admin_user }}') THEN
+              CREATE ROLE "{{ postgres_admin_user }}";
+            END IF;
+          END
+          $$;
+          ALTER ROLE "{{ postgres_admin_user }}" WITH LOGIN SUPERUSER PASSWORD '{{ postgres_admin_password | replace("'", "''") }}';
+      no_log: true
+      changed_when: false
+
+    - name: Load AdventureWorks
+      when: adventureworks_enabled | bool
+      block:
+        - name: Check whether the AdventureWorks database exists
+          ansible.builtin.command:
+            cmd: >-
+              runuser -u postgres -- psql -tA -p {{ postgres_port }} -d postgres
+              -c "SELECT 1 FROM pg_database WHERE datname = '{{ adventureworks_database }}'"
+          register: adventureworks_exists
+          changed_when: false
+
+        - name: Create and populate the AdventureWorks database
+          when: adventureworks_exists.stdout != '1'
+          block:
+            - name: Download AdventureWorks
+              ansible.builtin.git:
+                repo: "{{ adventureworks_repo }}"
+                dest: "{{ adventureworks_src }}"
+                version: "{{ adventureworks_version }}"
+                force: true
+
+            # Some \copy lines in install.sql use 'X.csv' instead of
+            # './data/X.csv'. Linking the CSVs next to it makes both work.
+            - name: Link CSV files next to install.sql
+              ansible.builtin.shell:
+                cmd: ln -sf data/*.csv .
+                chdir: "{{ adventureworks_src }}"
+              changed_when: true
+
+            - name: Create the AdventureWorks database
+              ansible.builtin.command:
+                cmd: >-
+                  runuser -u postgres -- createdb -p {{ postgres_port }}
+                  --owner "{{ postgres_admin_user }}" "{{ adventureworks_database }}"
+
+            - name: Import AdventureWorks (takes a few minutes)
+              ansible.builtin.command:
+                cmd: >-
+                  runuser -u postgres -- psql -v ON_ERROR_STOP=1 -q
+                  -p {{ postgres_port }} -d "{{ adventureworks_database }}" -f install.sql
+                chdir: "{{ adventureworks_src }}"
+
+          # A half-loaded database would be skipped on the next run, so
+          # remove it and let the next run start over.
+          rescue:
+            - name: Remove the partly loaded database
+              ansible.builtin.command:
+                cmd: >-
+                  runuser -u postgres -- dropdb -p {{ postgres_port }}
+                  --if-exists "{{ adventureworks_database }}"
+
+            - name: Report the failed import
+              ansible.builtin.fail:
+                msg: "Loading AdventureWorks failed; see the error above. The partly loaded database was removed."
+
+          always:
+            - name: Remove AdventureWorks download
+              ansible.builtin.file:
+                path: "{{ adventureworks_src }}"
+                state: absent
+
+- name: Check PostgreSQL
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../proxmox/vars.yaml
+    - vars.yaml
+
+  tasks:
+    - name: Check PostgreSQL accepts connections from this machine
+      ansible.builtin.wait_for:
+        host: "{{ postgres_ip }}"
+        port: "{{ postgres_port }}"
+        timeout: 60
+
+    - name: Show connection details
+      ansible.builtin.debug:
+        msg: >-
+          PostgreSQL is up. Connect with:
+          psql -h {{ postgres_ip }} -p {{ postgres_port }} -U {{ postgres_admin_user }} -d postgres
+          (password in hosts/postgres/.env)

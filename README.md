@@ -102,6 +102,7 @@ ansible-playbook proxmox/scripts/install-nix.yaml -e installer_iso="$PWD/build/n
 Each VM has its own folder under `hosts/`, with a playbook and a README that explains how to deploy and change it:
 
 - [webserver](hosts/webserver/README.md): nginx serving static files
+- [postgres](hosts/postgres/README.md): PostgreSQL on a separate data disk, with optional AdventureWorks sample data
 
 A host playbook clones the template, boots the clone on the template's IP, installs the host's NixOS configuration, and runs `nixos-rebuild switch`. The clone then moves to its own IP. Each host's hostname and IP are set in its `vars.yaml`; the playbook generates `/etc/nixos/network.nix` from them using `modules/network.nix.j2`.
 

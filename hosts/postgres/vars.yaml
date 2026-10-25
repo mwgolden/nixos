@@ -1,0 +1,32 @@
+# Settings for the postgres VM. Shared Proxmox and network settings
+# (API host, node, template, gateway) come from proxmox/vars.yaml.
+# The database admin login is in .env (see .env.example).
+
+postgres_vm_id: 112
+postgres_vm_name: "postgres"
+postgres_ip: "192.168.1.12"
+
+# A linked clone is fast and small, but Proxmox will not delete the template
+# while it exists (bootstrap.sh --force fails). Set true for a full copy.
+postgres_full_clone: false
+
+# Separate disk for the database files, mounted at /var/lib/postgresql.
+# Raise it and re-run the playbook to grow the disk. It can't be shrunk.
+postgres_data_disk_gb: 20
+postgres_data_disk_storage: "local-lvm"
+
+# PostgreSQL major version: 16, 17 or 18. Changing it on an existing server
+# starts a new, empty data directory; it does not migrate your data.
+postgres_version: 17
+postgres_port: 5432
+
+# Networks allowed to connect over TCP with a password.
+postgres_allowed_networks:
+  - "192.168.1.0/24"
+
+# Load the AdventureWorks sample database. It's only loaded if the database
+# doesn't exist yet, so re-runs never overwrite it.
+adventureworks_enabled: true
+adventureworks_database: "Adventureworks"
+adventureworks_repo: "https://github.com/mwgolden/adventure-works-postgres"
+adventureworks_version: "afcfd2dfcf031af91f03f536c1ade349cfcb3ad6"
