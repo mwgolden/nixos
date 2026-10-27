@@ -1,0 +1,37 @@
+# Settings for the router VM. Shared Proxmox and network settings
+# (API host, node, template, gateway, isolated bridge) come from
+# proxmox/vars.yaml.
+
+router_vm_id: 113
+router_vm_name: "router"
+
+# WAN side: the router's own address on the home LAN (vmbr0, ens18).
+router_ip: "192.168.1.13"
+
+# A linked clone is fast and small, but Proxmox will not delete the template
+# while it exists (bootstrap.sh --force fails). Set true for a full copy.
+router_full_clone: false
+
+# LAN side: the router's address on the isolated bridge (ens19). Clients use
+# it as their gateway and DNS server.
+router_lan_ip: "10.1.0.1"
+router_lan_prefix_length: 24
+
+# Addresses handed out by DHCP. Keep them inside the LAN subnet and give any
+# static LAN addresses an IP outside this range.
+router_dhcp_range_start: "10.1.0.100"
+router_dhcp_range_end: "10.1.0.199"
+router_dhcp_lease_time: "12h"
+
+# Upstream DNS servers the router forwards LAN clients' queries to. Public
+# resolvers, so LAN clients don't depend on anything on the home LAN.
+router_dns_servers:
+  - "1.1.1.1"
+  - "9.9.9.9"
+
+# LAN clients can't reach these networks. The home LAN is 192.168.1.0/24;
+# blocking all private ranges also covers any other home subnets.
+router_blocked_networks:
+  - "192.168.0.0/16"
+  - "172.16.0.0/12"
+  - "10.0.0.0/8"

@@ -14,7 +14,7 @@ One command, `./bootstrap.sh`, builds a custom NixOS installer ISO in Docker, up
 | `modules/common.nix`         | Base configuration shared by the template and every VM        |
 | `proxmox/vars.yaml`          | Proxmox host, VM size, IPs and other bootstrap settings       |
 | `proxmox/bootstrap.yaml`     | Runs the three template playbooks below in order              |
-| `proxmox/scripts/`           | `upload-iso.yaml`, `create-template.yaml`, `install-nix.yaml` |
+| `proxmox/scripts/`           | `upload-iso.yaml`, `create-template.yaml`, `install-nix.yaml`, and `isolated-bridge.yaml` for the isolated network |
 | `hosts/<name>/`              | Configuration and deploy playbook for each VM                 |
 | `Dockerfile`, `start_container.sh` | Nix build container                                     |
 
@@ -42,7 +42,7 @@ On the workstation:
 
 On Proxmox:
 
-- An API token for `ansible@pve` with the ID `automation`, allowed to manage VMs and upload ISOs to the `local` storage.
+- An API token for `ansible@pve` with the ID `automation`, allowed to manage VMs and upload ISOs to the `local` storage. Creating the isolated bridge also needs `Sys.Modify` on `/nodes/com`.
 
 ## Configuration
 
@@ -103,6 +103,7 @@ Each VM has its own folder under `hosts/`, with a playbook and a README that exp
 
 - [webserver](hosts/webserver/README.md): nginx serving static files
 - [postgres](hosts/postgres/README.md): PostgreSQL on a separate data disk, with optional AdventureWorks sample data
+- [router](hosts/router/README.md): connects the isolated bridge (`vmbr1`) to the internet with DHCP, NAT and a firewall that blocks the home LAN
 
 A host playbook clones the template, boots the clone on the template's IP, installs the host's NixOS configuration, and runs `nixos-rebuild switch`. The clone then moves to its own IP. Each host's hostname and IP are set in its `vars.yaml`; the playbook generates `/etc/nixos/network.nix` from them using `modules/network.nix.j2`.
 
@@ -116,8 +117,20 @@ Static addresses must stay outside the DHCP pool.
 | `192.168.1.10` | Installer ISO and the template, on VM 110 (never at the same time). New clones also boot here first. |
 | `192.168.1.11` | webserver (VM 111)                                        |
 | `192.168.1.12` | postgres (VM 112)                                         |
+| `192.168.1.13` | router (VM 113), WAN side                                 |
 
 Because every new clone starts on `.10`, deploy one VM at a time.
+
+### Isolated network
+
+`proxmox/scripts/isolated-bridge.yaml` creates `vmbr1`, a bridge with no physical port and no IP on the Proxmox host. The [router](hosts/router/README.md) is its only way out:
+
+| IP                          | System                                   |
+| --------------------------- | ---------------------------------------- |
+| `10.1.0.1`                  | router (VM 113), LAN side: gateway and DNS |
+| `10.1.0.100` – `10.1.0.199` | DHCP pool                                |
+
+VMs on `vmbr1` reach the internet but not `192.168.1.0/24` or other private networks.
 
 ## Notes
 

@@ -17,6 +17,11 @@ template_disk_size_gb: 20
 template_disk_storage: "local-lvm"
 network_bridge: "vmbr0"
 
+# Bridge with no physical port and no host IP, created by
+# scripts/isolated-bridge.yaml. VMs on it can only reach each other and the
+# router (hosts/router), which is their way to the internet.
+isolated_bridge: "vmbr1"
+
 # The installer ISO and the installed template both use this address.
 # They run on the same VM, never at the same time.
 template_ip: "192.168.1.10"
