@@ -5,8 +5,9 @@ A NixOS VM running nginx, serving the static files in `site/`.
 | Setting  | Value          |
 | -------- | -------------- |
 | VM       | 111, `webserver` |
-| IP       | `192.168.1.11` |
-| Serves   | `http://192.168.1.11/` from `/var/www` |
+| Network  | `home` (`vmbr0`), or `isolated` behind the [router](../router/README.md) |
+| IP       | `192.168.1.11` on the home network, `10.1.0.11` on the isolated network |
+| Serves   | `http://<IP>/` from `/var/www` |
 
 These values come from `vars.yaml`.
 
@@ -14,7 +15,7 @@ These values come from `vars.yaml`.
 
 | File                | Purpose                                                            |
 | ------------------- | ------------------------------------------------------------------ |
-| `vars.yaml`         | VM ID, name, IP and clone type                                     |
+| `vars.yaml`         | VM ID, name, network, IPs and clone type                           |
 | `configuration.nix` | NixOS configuration: nginx, firewall, `/var/www`                   |
 | `site/`             | Files copied to `/var/www` and served by nginx                     |
 | `webserver.yaml`    | Deploy playbook                                                    |
@@ -35,14 +36,44 @@ Unlike `bootstrap.sh`, the playbook doesn't load `proxmox/.env` itself, so sourc
 
 On a first run the playbook:
 
-1. Clones the template into VM 111 and starts it. The clone boots on the template's IP, `192.168.1.10`.
-2. Installs `common.nix`, a generated `network.nix` (hostname and IP from `vars.yaml`) and `configuration.nix` into `/etc/nixos`.
+1. Clones the template into VM 111 and starts it. The clone boots on the template's IP, `192.168.1.10`, on the home network.
+2. Installs `common.nix`, a generated `network.nix` (hostname, IP, gateway and DNS for the chosen network) and `configuration.nix` into `/etc/nixos`.
 3. Copies `site/` to `/var/www`.
 4. Runs `nixos-rebuild build`, so any error shows up before anything changes.
-5. Runs `nixos-rebuild switch`. The VM moves to `192.168.1.11` and the SSH connection drops, so this runs in the background.
-6. Waits for SSH on the new IP, then checks that `http://192.168.1.11/` returns 200.
+5. Runs `nixos-rebuild switch`. The VM moves to its own IP and the SSH connection drops, so this runs in the background. For the isolated network, the playbook also moves the VM's network card to `vmbr1`.
+6. Waits for SSH on the new IP and for the switch to finish, then checks that the site returns 200. On the isolated network, that check runs on the router.
 
 Because new clones use the template's IP, deploy one VM at a time.
+
+## Home or isolated network
+
+`webserver_network` in `vars.yaml` decides where the VM lives:
+
+- `home`: on `vmbr0` at `192.168.1.11`, like the other VMs.
+- `isolated`: on the router's isolated LAN at `10.1.0.11` (`webserver_isolated_ip`). It reaches the internet through the router, but not the home network. From home, the site is only reachable through a [router port forward](../router/README.md#port-forwards). Deploy the router first.
+
+To deploy straight onto the isolated network, set `webserver_network: "isolated"` before the first run. The clone still starts on the home network, because the template's address is there. The playbook then switches it over.
+
+To move a deployed webserver, either change `webserver_network` and re-run `webserver.yaml`, or move it without redeploying:
+
+```bash
+ansible-playbook hosts/move-network.yaml -e host=webserver -e network=isolated
+ansible-playbook hosts/move-network.yaml -e host=webserver -e network=home
+```
+
+`move-network.yaml` only changes the VM's network settings, and updates `webserver_network` in `vars.yaml` to match. See the [main README](../../README.md#moving-a-vm-between-networks).
+
+To publish the site from the isolated network, add a forward in `hosts/router/vars.yaml` and run `hosts/router/port-forwards.yaml`:
+
+```yaml
+router_port_forwards:
+  - name: website
+    proto: tcp
+    wan_port: 80
+    lan_ip: "10.1.0.11"
+```
+
+The site is then at `http://192.168.1.13/`.
 
 ## Making changes
 
@@ -50,7 +81,7 @@ Edit the files here and re-run the playbook. When VM 111 already exists, the pla
 
 - **Site content:** add or edit files in `site/`. Files deleted from `site/` are not removed from the server.
 - **NixOS settings:** edit `configuration.nix`. Leave the hostname and IP out of it; they belong in `vars.yaml`.
-- **IP address:** change `webserver_ip` in `vars.yaml`. After the switch, the playbook looks for the server on the new address.
+- **IP address:** change `webserver_ip` (home) or `webserver_isolated_ip` in `vars.yaml`. After the switch, the playbook looks for the server on the new address. Keep the isolated address outside the router's DHCP range (`10.1.0.100`–`199`).
 
 The playbook refuses to configure VM 111 if it exists under a name other than `webserver`.
 
@@ -67,6 +98,6 @@ ansible-playbook hosts/webserver/destroy.yaml
 
 This permanently deletes VM 111 and its disk, including anything in `/var/www` that isn't in `site/`. The playbook asks you to type `webserver` to confirm. To skip the prompt in a script, pass `-e confirm_destroy=webserver`.
 
-It then stops the VM, deletes it, and removes `192.168.1.11` from your known_hosts. It refuses to delete VM 111 if that VM has a name other than `webserver`, and does nothing if the VM doesn't exist.
+It then stops the VM, deletes it, and removes `192.168.1.11` and `10.1.0.11` from your known_hosts. It refuses to delete VM 111 if that VM has a name other than `webserver`, and does nothing if the VM doesn't exist.
 
 Once the webserver is gone, `./bootstrap.sh --force` can delete the template again.

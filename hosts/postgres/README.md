@@ -5,10 +5,11 @@ A NixOS VM running PostgreSQL, with its database files on a separate data disk. 
 | Setting    | Value                                         |
 | ---------- | --------------------------------------------- |
 | VM         | 112, `postgres`                               |
-| IP         | `192.168.1.12`                                |
+| Network    | `home` (`vmbr0`), or `isolated` behind the [router](../router/README.md) |
+| IP         | `192.168.1.12` on the home network, `10.1.0.12` on the isolated network |
 | PostgreSQL | 17, port 5432                                 |
 | Data disk  | 20 GB, mounted at `/var/lib/postgresql`        |
-| Logins     | Password logins from `192.168.1.0/24`          |
+| Logins     | Password logins from `192.168.1.0/24` and `10.1.0.0/24` |
 
 These values come from `vars.yaml`.
 
@@ -60,19 +61,37 @@ On a first run the playbook:
 1. Clones the template into VM 112, adds the data disk (scsi1) and starts the VM. The clone boots on the template's IP, `192.168.1.10`.
 2. Formats the data disk as ext4.
 3. Installs the NixOS configuration into `/etc/nixos`: `common.nix`, plus `network.nix` and `postgres.nix` generated from `vars.yaml`, plus `configuration.nix`.
-4. Runs `nixos-rebuild build`, so any error shows up before anything changes, then `nixos-rebuild switch`. The VM moves to `192.168.1.12`.
+4. Runs `nixos-rebuild build`, so any error shows up before anything changes, then `nixos-rebuild switch`. The VM moves to its own IP. For the isolated network, the playbook also moves the VM's network card to `vmbr1` and reconnects through the router.
 5. Checks that the data disk is mounted at `/var/lib/postgresql` and that PostgreSQL is running.
 6. Creates the admin user from `.env`.
 7. Loads AdventureWorks, if enabled.
-8. Checks that port 5432 is reachable from your machine, and prints how to connect.
+8. Checks that port 5432 is reachable, from your machine or, on the isolated network, from the router. Then prints how to connect.
 
 Because new clones use the template's IP, deploy one VM at a time.
 
 ## Connecting
 
+On the home network:
+
 ```bash
 psql -h 192.168.1.12 -U pgadmin -d postgres
 ```
+
+On the isolated network, VMs on the same LAN connect to `10.1.0.12`. From home, add a [router port forward](../router/README.md#port-forwards) and connect to the router's address:
+
+```yaml
+router_port_forwards:
+  - name: postgres
+    proto: tcp
+    wan_port: 5432
+    lan_ip: "10.1.0.12"
+```
+
+```bash
+psql -h 192.168.1.13 -U pgadmin -d postgres
+```
+
+Forwarded connections keep your home address, so `192.168.1.0/24` in `postgres_allowed_networks` still applies to them.
 
 On the VM itself, the `postgres` system user can connect without a password:
 
@@ -104,6 +123,22 @@ The playbook downloads the repo on the VM at the commit in `adventureworks_versi
 - If the import fails, the playbook removes the partly loaded database so the next run starts fresh.
 - Some `\copy` lines in that repo's `install.sql` point to `X.csv` instead of `./data/X.csv`. The playbook links the CSV files next to `install.sql` so both forms work. If you fix the paths in the repo, update `adventureworks_version` to the new commit.
 
+## Home or isolated network
+
+`postgres_network` in `vars.yaml` decides where the VM lives:
+
+- `home`: on `vmbr0` at `192.168.1.12`.
+- `isolated`: on the router's isolated LAN at `10.1.0.12` (`postgres_isolated_ip`). It reaches the internet through the router, but not the home network. Deploy the router first.
+
+To deploy straight onto the isolated network, set `postgres_network: "isolated"` before the first run. To move a deployed server, change the setting and re-run `postgres.yaml`, or move it without redeploying:
+
+```bash
+ansible-playbook hosts/move-network.yaml -e host=postgres -e network=isolated
+ansible-playbook hosts/move-network.yaml -e host=postgres -e network=home
+```
+
+`move-network.yaml` only changes the network settings and keeps the data disk and databases as they are. It updates `postgres_network` in `vars.yaml` to match. The users playbook (`users/users.yaml`) reads `postgres_network` too, and reaches an isolated server through the router.
+
 ## Making changes
 
 Edit the files here and re-run the playbook. When VM 112 already exists, the playbook updates it in place on its own IP and doesn't re-clone it.
@@ -127,4 +162,4 @@ ansible-playbook hosts/postgres/destroy.yaml
 
 This permanently deletes VM 112, its data disk and every database on it. The playbook asks you to type `postgres` to confirm. To skip the prompt in a script, pass `-e confirm_destroy=postgres`.
 
-It then stops the VM, deletes it, and removes `192.168.1.12` from your known_hosts. It refuses to delete VM 112 if that VM has a name other than `postgres`, and does nothing if the VM doesn't exist.
+It then stops the VM, deletes it, and removes `192.168.1.12` and `10.1.0.12` from your known_hosts. It refuses to delete VM 112 if that VM has a name other than `postgres`, and does nothing if the VM doesn't exist.

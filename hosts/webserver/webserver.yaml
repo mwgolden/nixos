@@ -2,6 +2,9 @@
 # configuration and site files, and checks that it serves HTTP.
 # Safe to re-run: an existing webserver is updated in place.
 #
+# webserver_network in vars.yaml puts it on the home network or on the
+# router's isolated network. Changing it and re-running moves the VM.
+#
 #   source proxmox/.env
 #   ansible-playbook hosts/webserver/webserver.yaml
 
@@ -10,6 +13,7 @@
   gather_facts: false
   vars_files:
     - ../../proxmox/vars.yaml
+    - ../router/vars.yaml
     - vars.yaml
 
   module_defaults:
@@ -32,18 +36,16 @@
         - NIXOS_DEPLOYMENT_PUBLIC_KEY
         - NIXOS_DEPLOYMENT_PRIVATE_KEY
 
-    - name: Look up VMs on the node
+    - name: Look up webserver VM
       community.proxmox.proxmox_vm_info:
         node: "{{ proxmox_node }}"
-        type: qemu
-      register: node_vms
+        vmid: "{{ webserver_vm_id }}"
+        config: current
+      register: webserver_vm_info
 
-    - name: Find existing webserver VM
+    - name: Note whether the VM exists
       ansible.builtin.set_fact:
-        existing_vm: >-
-          {{ node_vms.proxmox_vms
-             | selectattr('vmid', 'equalto', webserver_vm_id | int)
-             | first | default(none) }}
+        existing_vm: "{{ webserver_vm_info.proxmox_vms | first | default(none) }}"
 
     - name: Make sure the VM ID belongs to the webserver
       ansible.builtin.assert:
@@ -66,53 +68,23 @@
         timeout: 300
       when: existing_vm is none
 
-    # A new clone has the template's host key, which may differ from the key
-    # recorded for this IP by a previous webserver.
-    - name: Forget old SSH host key for the webserver IP
-      ansible.builtin.known_hosts:
-        name: "{{ webserver_ip }}"
-        state: absent
-      when: existing_vm is none
-
     - name: Start webserver
       community.proxmox.proxmox_kvm:
         node: "{{ proxmox_node }}"
         vmid: "{{ webserver_vm_id }}"
         state: started
 
-    # An existing webserver is normally on its own IP already. One left over
-    # from an interrupted run may still be on the template IP.
-    - name: Check whether the webserver is on its own IP
-      ansible.builtin.wait_for:
-        host: "{{ webserver_ip }}"
-        port: 22
-        timeout: 60
-      register: on_webserver_ip
-      ignore_errors: true
-      when: existing_vm is not none
-
-    - name: Choose the address to connect to
-      ansible.builtin.set_fact:
-        connect_ip: >-
-          {{ webserver_ip
-             if existing_vm is not none and on_webserver_ip is succeeded
-             else template_ip }}
-
-    - name: Wait for webserver SSH
-      ansible.builtin.wait_for:
-        host: "{{ connect_ip }}"
-        port: 22
-        delay: 5
-        timeout: 300
-
-    - name: Add webserver to inventory
-      ansible.builtin.add_host:
-        name: webserver
-        ansible_host: "{{ connect_ip }}"
-        ansible_user: admin
-        ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
-        ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
-        changes_ip: "{{ connect_ip != webserver_ip }}"
+    - name: Find the webserver and connect to it
+      ansible.builtin.include_tasks: ../../modules/ansible/placement.yaml
+      vars:
+        place_alias: webserver
+        place_vm_id: "{{ webserver_vm_id }}"
+        place_vm_name: "{{ webserver_vm_name }}"
+        place_home_ip: "{{ webserver_ip }}"
+        place_isolated_ip: "{{ webserver_isolated_ip }}"
+        place_network: "{{ webserver_network }}"
+        place_new_clone: "{{ existing_vm is none }}"
+        place_net0: "{{ existing_vm.config.get('net0', '') if existing_vm is not none else '' }}"
 
 - name: Configure webserver
   hosts: webserver
@@ -120,6 +92,7 @@
   become: true
   vars_files:
     - ../../proxmox/vars.yaml
+    - ../router/vars.yaml
     - vars.yaml
 
   tasks:
@@ -141,7 +114,10 @@
         mode: "0644"
       vars:
         host_name: "{{ webserver_vm_name }}"
-        host_ip: "{{ webserver_ip }}"
+        host_ip: "{{ final.ip }}"
+        host_prefix_length: "{{ final.prefix_length }}"
+        host_gateway: "{{ final.gateway }}"
+        host_nameserver: "{{ final.nameserver }}"
 
     - name: Install webserver NixOS configuration
       ansible.builtin.copy:
@@ -156,55 +132,40 @@
         mode: "0644"
         directory_mode: "0755"
 
-    # Building first downloads everything and shows any errors here, so the
-    # switch below is quick and unlikely to fail.
-    - name: Build NixOS configuration
-      ansible.builtin.command:
-        cmd: nixos-rebuild build
-        chdir: /tmp
-      changed_when: false
+    - name: Switch to the configuration and move to the webserver's address
+      ansible.builtin.include_tasks: ../../modules/ansible/switch.yaml
 
-    - name: Remove build result link
-      ansible.builtin.file:
-        path: /tmp/result
-        state: absent
-
-    - name: Switch to NixOS configuration
-      ansible.builtin.command:
-        cmd: nixos-rebuild switch
-      when: not (changes_ip | bool)
-
-    # Moving to the new IP drops this SSH connection, so start the switch in
-    # the background and look for the webserver on its new IP instead.
-    - name: Switch to NixOS configuration and move to the webserver IP
-      ansible.builtin.command:
-        cmd: nixos-rebuild switch
-      async: 300
-      poll: 0
-      when: changes_ip | bool
-
-    - name: Wait for webserver on its own IP
-      ansible.builtin.wait_for:
-        host: "{{ webserver_ip }}"
-        port: 22
-        delay: 5
-        timeout: 300
-      delegate_to: localhost
-      become: false
-
+# On the isolated network only the router can reach the webserver, so the
+# check runs there.
 - name: Check the webserver
   hosts: localhost
   gather_facts: false
   vars_files:
     - ../../proxmox/vars.yaml
+    - ../router/vars.yaml
     - vars.yaml
+
+  vars:
+    final: "{{ hostvars['webserver'].final }}"
 
   tasks:
     - name: Check the site is served
       ansible.builtin.uri:
-        url: "http://{{ webserver_ip }}/"
+        url: "http://{{ final.ip }}/"
         status_code: 200
       register: site_check
       retries: 10
       delay: 3
       until: site_check is succeeded
+      delegate_to: "{{ 'router' if final.via_router else 'localhost' }}"
+
+    - name: Show where the site is
+      ansible.builtin.debug:
+        msg: >-
+          {% if final.via_router -%}
+          The webserver is on the isolated network at http://{{ final.ip }}/.
+          To reach it from home, add a port forward in hosts/router/vars.yaml
+          (lan_ip {{ final.ip }}) and run hosts/router/port-forwards.yaml.
+          {%- else -%}
+          The webserver is at http://{{ final.ip }}/.
+          {%- endif %}

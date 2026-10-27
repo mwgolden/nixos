@@ -16,6 +16,8 @@ One command, `./bootstrap.sh`, builds a custom NixOS installer ISO in Docker, up
 | `proxmox/bootstrap.yaml`     | Runs the three template playbooks below in order              |
 | `proxmox/scripts/`           | `upload-iso.yaml`, `create-template.yaml`, `install-nix.yaml`, and `isolated-bridge.yaml` for the isolated network |
 | `hosts/<name>/`              | Configuration and deploy playbook for each VM                 |
+| `hosts/move-network.yaml`    | Moves a deployed VM between the home and isolated networks    |
+| `modules/ansible/`           | Tasks shared by the host playbooks: finding a VM and switching it to its network |
 | `Dockerfile`, `start_container.sh` | Nix build container                                     |
 
 ## Prerequisites
@@ -105,7 +107,7 @@ Each VM has its own folder under `hosts/`, with a playbook and a README that exp
 - [postgres](hosts/postgres/README.md): PostgreSQL on a separate data disk, with optional AdventureWorks sample data
 - [router](hosts/router/README.md): connects the isolated bridge (`vmbr1`) to the internet with DHCP, NAT and a firewall that blocks the home LAN
 
-A host playbook clones the template, boots the clone on the template's IP, installs the host's NixOS configuration, and runs `nixos-rebuild switch`. The clone then moves to its own IP. Each host's hostname and IP are set in its `vars.yaml`; the playbook generates `/etc/nixos/network.nix` from them using `modules/network.nix.j2`.
+A host playbook clones the template, boots the clone on the template's IP, installs the host's NixOS configuration, and runs `nixos-rebuild switch`. The clone then moves to its own IP. Each host's hostname, IPs and network are set in its `vars.yaml`; the playbook generates `/etc/nixos/network.nix` from them using `modules/network.nix.j2`. The webserver and postgres can also live on the isolated network; see [Moving a VM between networks](#moving-a-vm-between-networks).
 
 ## Network addressing
 
@@ -128,9 +130,43 @@ Because every new clone starts on `.10`, deploy one VM at a time.
 | IP                          | System                                   |
 | --------------------------- | ---------------------------------------- |
 | `10.1.0.1`                  | router (VM 113), LAN side: gateway and DNS |
+| `10.1.0.11`                 | webserver, when `webserver_network` is `isolated` |
+| `10.1.0.12`                 | postgres, when `postgres_network` is `isolated` |
 | `10.1.0.100` – `10.1.0.199` | DHCP pool                                |
 
-VMs on `vmbr1` reach the internet but not `192.168.1.0/24` or other private networks.
+VMs on `vmbr1` reach the internet but not `192.168.1.0/24` or other private networks. From home, they're reachable only through [router port forwards](hosts/router/README.md#port-forwards).
+
+## Moving a VM between networks
+
+The webserver and postgres can each live on the home network or on the isolated network. `<host>_network` in the host's `vars.yaml` sets this (`home` or `isolated`), and `<host>_isolated_ip` gives its fixed address on the isolated LAN. The router must be deployed before anything uses the isolated network.
+
+- **On the first deploy:** set `<host>_network: "isolated"` before running the host's playbook. The clone still starts on the template's IP on the home network, then switches over.
+- **Later:** change the setting and re-run the host's playbook, or move the VM without redeploying it:
+
+  ```bash
+  source proxmox/.env
+  ansible-playbook hosts/move-network.yaml -e host=postgres -e network=isolated
+  ansible-playbook hosts/move-network.yaml -e host=postgres -e network=home
+  ```
+
+  This only replaces the VM's `network.nix` and switches. Afterwards it sets `<host>_network` in `vars.yaml` to match, so the next deploy keeps the VM where it is.
+
+A move changes the VM's address and moves its network card (net0) between `vmbr0` and `vmbr1`. Proxmox does that while the VM runs, and the VM keeps its MAC address and disks. Your workstation can't reach the isolated LAN, so Ansible connects to VMs there over SSH through the router, using the deployment key for both hops.
+
+If a move is interrupted, run it again. The playbooks look for the VM on the network its card is on first, then on the other one, moving the card if needed. Once found, the move finishes from wherever the VM is.
+
+To SSH to an isolated VM by hand, add this to `~/.ssh/config`:
+
+```
+Host 192.168.1.13 10.1.0.*
+  User admin
+  IdentityFile ~/.ssh/nixos-deployment
+
+Host 10.1.0.*
+  ProxyJump 192.168.1.13
+```
+
+Then `ssh 10.1.0.12` goes through the router.
 
 ## Notes
 

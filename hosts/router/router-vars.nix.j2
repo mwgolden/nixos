@@ -19,4 +19,16 @@
     "{{ network }}"
 {% endfor %}
   ];
+
+  portForwards = [
+{% for forward in router_port_forwards %}
+    {
+      name = "{{ forward.name }}";
+      proto = "{{ forward.proto }}";
+      wanPort = {{ forward.wan_port | int }};
+      lanAddress = "{{ forward.lan_ip }}";
+      lanPort = {{ (forward.lan_port | default(forward.wan_port)) | int }};
+    }
+{% endfor %}
+  ];
 }

@@ -1,0 +1,36 @@
+# One place to look for a VM, used by placement.yaml for each candidate in
+# turn. Does nothing once the VM has been found. The guard is in here rather
+# than on the include, because an include's condition is checked for every
+# candidate before any of them runs.
+
+- name: Try {{ candidate.ip }} on {{ candidate.bridge }}
+  when: not place_found
+  block:
+    - name: Move the VM's network card to {{ candidate.bridge }}
+      community.proxmox.proxmox_nic:
+        vmid: "{{ place_vm_id }}"
+        interface: net0
+        model: virtio
+        bridge: "{{ candidate.bridge }}"
+      when: candidate.bridge != place_bridge
+
+    - name: Note the bridge
+      ansible.builtin.set_fact:
+        place_bridge: "{{ candidate.bridge }}"
+
+    # Addresses on the isolated network can only be reached from the router.
+    - name: Look for SSH on {{ candidate.ip }}
+      ansible.builtin.wait_for:
+        host: "{{ candidate.ip }}"
+        port: 22
+        delay: "{{ candidate.delay }}"
+        timeout: "{{ candidate.timeout }}"
+      delegate_to: "{{ 'router' if candidate.via_router else 'localhost' }}"
+      register: place_try
+      ignore_errors: true
+
+    - name: Note where the VM was found
+      ansible.builtin.set_fact:
+        place_found: true
+        place_connect: "{{ candidate }}"
+      when: place_try is succeeded

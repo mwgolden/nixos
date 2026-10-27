@@ -89,8 +89,11 @@
         timeout: 120
       when: existing_vm is not none
 
-    # A future webserver on this IP gets a new host key.
+    # A future webserver on these IPs gets a new host key.
     - name: Forget the webserver's SSH host key
       ansible.builtin.known_hosts:
-        name: "{{ webserver_ip }}"
+        name: "{{ item }}"
         state: absent
+      loop:
+        - "{{ webserver_ip }}"
+        - "{{ webserver_isolated_ip }}"

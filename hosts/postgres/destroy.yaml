@@ -90,8 +90,11 @@
         timeout: 120
       when: existing_vm is not none
 
-    # A future postgres VM on this IP gets a new host key.
+    # A future postgres VM on these IPs gets a new host key.
     - name: Forget the postgres VM's SSH host key
       ansible.builtin.known_hosts:
-        name: "{{ postgres_ip }}"
+        name: "{{ item }}"
         state: absent
+      loop:
+        - "{{ postgres_ip }}"
+        - "{{ postgres_isolated_ip }}"

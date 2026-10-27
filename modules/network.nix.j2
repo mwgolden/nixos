@@ -4,12 +4,12 @@
 
   networking.interfaces.ens18.ipv4.addresses = [{
     address = "{{ host_ip }}";
-    prefixLength = {{ network_prefix_length }};
+    prefixLength = {{ host_prefix_length | default(network_prefix_length) }};
   }];
 
-  networking.defaultGateway = "{{ network_gateway }}";
+  networking.defaultGateway = "{{ host_gateway | default(network_gateway) }}";
 
   networking.nameservers = [
-    "{{ network_nameserver }}"
+    "{{ host_nameserver | default(network_nameserver) }}"
   ];
 }

@@ -12,6 +12,7 @@
   hosts: localhost
   gather_facts: false
   vars_files:
+    - ../../router/vars.yaml
     - ../vars.yaml
     - vars.yaml
 
@@ -151,13 +152,22 @@
       loop_control:
         label: "{{ item.name }}"
 
+    # On the isolated network (postgres_network in ../vars.yaml) the VM is
+    # reached over SSH through the router.
     - name: Add postgres VM to inventory
       ansible.builtin.add_host:
         name: postgres
-        ansible_host: "{{ postgres_ip }}"
+        ansible_host: "{{ postgres_isolated_ip if isolated else postgres_ip }}"
         ansible_user: admin
-        ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
-        ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+        ansible_ssh_private_key_file: "{{ key }}"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=accept-new
+          {% if isolated %}-o ProxyCommand="ssh -i '{{ key }}'
+          -o StrictHostKeyChecking=accept-new -o BatchMode=yes
+          -W %h:%p admin@{{ router_ip }}"{% endif %}
+      vars:
+        isolated: "{{ postgres_network == 'isolated' }}"
+        key: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
       tags: [always]
 
 - name: Apply database users

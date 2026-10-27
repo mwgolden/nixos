@@ -10,7 +10,8 @@
 #
 # LAN clients get an address by DHCP and reach the internet through NAT.
 # They can't reach private networks such as the home LAN, and on the router
-# itself they can only use DHCP, DNS and ping.
+# itself they can only use DHCP, DNS and ping. The home LAN can reach LAN
+# VMs only through the port forwards in vars.yaml.
 
 { config, lib, pkgs, ... }:
 
@@ -43,6 +44,15 @@ in
     enable = true;
     externalInterface = wan;
     internalInterfaces = [ lan ];
+
+    # Ports on the WAN address passed through to LAN VMs (router_port_forwards
+    # in vars.yaml). The firewall lets these in: it accepts forwarded traffic
+    # that was redirected this way.
+    forwardPorts = map (forward: {
+      proto = forward.proto;
+      sourcePort = forward.wanPort;
+      destination = "${forward.lanAddress}:${toString forward.lanPort}";
+    }) vars.portForwards;
   };
 
   networking.firewall = {

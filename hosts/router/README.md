@@ -22,10 +22,11 @@ These values come from `vars.yaml`, except the bridge name, which is `isolated_b
 
 | File                  | Purpose                                                              |
 | --------------------- | -------------------------------------------------------------------- |
-| `vars.yaml`           | VM ID, WAN IP, LAN address, DHCP range, DNS servers, blocked networks |
+| `vars.yaml`           | VM ID, WAN IP, LAN address, DHCP range, DNS servers, blocked networks, port forwards |
 | `configuration.nix`   | NixOS configuration: LAN interface, NAT, firewall, DHCP and DNS      |
 | `router-vars.nix.j2`  | Template for `router-vars.nix`, which passes `vars.yaml` values to `configuration.nix` |
 | `router.yaml`         | Deploy playbook                                                      |
+| `port-forwards.yaml`  | Applies the port forwards in `vars.yaml` and tests them              |
 | `destroy.yaml`        | Deletes the VM                                                       |
 
 The isolated bridge is created by [proxmox/scripts/isolated-bridge.yaml](../../proxmox/scripts/isolated-bridge.yaml).
@@ -41,7 +42,7 @@ Everything is in `configuration.nix`:
   2. LAN traffic to a blocked network is dropped.
   3. Other LAN traffic out through the WAN is accepted.
 
-  Nothing from the WAN side is forwarded into the LAN, so home-LAN machines can't reach LAN VMs either.
+  The only traffic from the WAN side let into the LAN is the [port forwards](#port-forwards) in `vars.yaml`. Without any, home-LAN machines can't reach LAN VMs at all.
 - **Firewall on the router itself:** from the LAN, only DHCP (UDP 67), DNS (53) and ping are allowed. SSH is only open on the WAN side.
 - **DHCP and DNS:** dnsmasq listens only on `ens19`. It hands out addresses with `10.1.0.1` as gateway and DNS server, and forwards DNS queries to the servers in `vars.yaml`.
 
@@ -66,18 +67,20 @@ The bridge playbook creates `vmbr1` with no physical port and no IP on the Proxm
 
 On a first run the router playbook:
 
-1. Checks the isolated bridge exists.
+1. Checks the port forwards in `vars.yaml` and that the isolated bridge exists.
 2. Clones the template into VM 113 and adds net1 on the isolated bridge. The clone boots on the template's IP, `192.168.1.10`.
 3. Checks that the LAN card shows up as `ens19`.
 4. Installs the NixOS configuration into `/etc/nixos`: `common.nix`, plus `network.nix` and `router-vars.nix` generated from `vars.yaml`, plus `configuration.nix`.
 5. Runs `nixos-rebuild build`, then `nixos-rebuild switch`. The VM moves to `192.168.1.13`. A live switch doesn't add the LAN address on its own, because NixOS only sets it when `ens19` appears and `ens19` has been there since boot. The playbook starts that step (`network-addresses-ens19.service`) itself.
-6. Checks the LAN address, IP forwarding, dnsmasq and the blocking rule, and that the router can reach the upstream DNS servers over TCP. It doesn't use ping, because the home network drops outbound ping.
+6. Checks the LAN address, IP forwarding, dnsmasq, the blocking rule and each port forward, and that the router can reach the upstream DNS servers over TCP. It doesn't use ping, because the home network drops outbound ping.
 
 Because new clones use the template's IP, deploy one VM at a time.
 
 ## Using the isolated network
 
-Attach a VM's network card to `vmbr1` and let it use DHCP. To check isolation from a LAN VM:
+Attach a VM's network card to `vmbr1` and let it use DHCP. The webserver and postgres can be put on the isolated network with a setting in their `vars.yaml`, at the fixed addresses `10.1.0.11` and `10.1.0.12`. See [Moving a VM between networks](../../README.md#moving-a-vm-between-networks). Ansible reaches VMs there over SSH through the router.
+
+To check isolation from a LAN VM:
 
 ```bash
 curl -I https://nixos.org                  # works
@@ -99,6 +102,51 @@ sudo nft list chain inet nixos-fw forward-allow
 ```
 
 Give LAN VMs that need a fixed address one outside the DHCP range, for example `10.1.0.10`, with gateway and DNS `10.1.0.1`.
+
+## Port forwards
+
+A port forward makes a service on a LAN VM, such as a website, reachable from the home network at the router's WAN address. Forwards are listed in `vars.yaml`:
+
+```yaml
+router_port_forwards:
+  - name: website
+    proto: tcp
+    wan_port: 80
+    lan_ip: "10.1.0.10"
+    lan_port: 80        # optional, defaults to wan_port
+```
+
+Then apply them:
+
+```bash
+source proxmox/.env
+ansible-playbook hosts/router/port-forwards.yaml
+```
+
+This runs `router.yaml`, which updates the existing router in place, then tries each TCP forward from your machine and reports whether it answers. A forward only answers once the service on the VM is running, so "not answering" usually means the VM or its service isn't up yet. UDP forwards can't be tested this way and are only listed.
+
+To remove a forward, delete it from `vars.yaml` and run the playbook again. `router.yaml` applies the same list, so a normal deploy keeps the forwards too.
+
+The playbook stops before changing anything if a forward:
+
+- is missing a field, or has a protocol other than `tcp` or `udp` or a port outside 1–65535,
+- uses the same protocol and WAN port, or the same name, as another forward,
+- forwards TCP 22. That is the router's own SSH, and forwarding it would lock the playbook out.
+- points at an address that isn't a VM on the isolated LAN. The router checks this against its own routes, so it can't point at the home LAN or at the router itself.
+
+Give each VM that receives a forward a fixed address outside the DHCP range (`10.1.0.100`–`199`), for example `10.1.0.10`. Otherwise its address can change and the forward points at nothing.
+
+**What a forward allows:** new connections to `192.168.1.13:<wan_port>` from the home network are passed to the VM, and the VM's replies go back. The VM still can't start connections to the home LAN; the private-network block applies to it like to any LAN VM.
+
+**From LAN VMs:** other VMs on the isolated LAN reach the service at its LAN address (`10.1.0.10`), not at `192.168.1.13`. Forwards only apply to traffic arriving on the WAN side.
+
+**From the internet:** the router's WAN address is a private home-LAN address, so the internet can't reach it directly. Also forward the port on the home router (pfSense: Firewall > NAT > Port Forward) to `192.168.1.13` on the same port. This only works if your ISP gives your home router a public address. An address in `100.64.0.0/10` on its WAN interface means it's behind carrier-grade NAT and can't take incoming connections. Opening a service to the internet exposes it to everyone, so keep it patched.
+
+To see the forwards that are in place, on the router:
+
+```bash
+sudo nft list chain ip nixos-nat pre
+```
 
 ## Firewall commands
 
@@ -154,14 +202,9 @@ Rules you change by hand with `nft` are lost at the next reload, and so are port
 ```nix
 # Open a port on the router's WAN side only.
 networking.firewall.interfaces.${wan}.allowedTCPPorts = [ 22 8080 ];
-
-# Forward port 8080 on the router's WAN address to a LAN VM.
-networking.nat.forwardPorts = [
-  { sourcePort = 8080; destination = "10.1.0.10:80"; proto = "tcp"; }
-];
 ```
 
-The forward lets home-LAN machines reach that one LAN service at `192.168.1.13:8080`. It doesn't let the LAN VM start connections to the home LAN: the private-network block still applies to those. A VM receiving a forward needs a fixed address outside the DHCP range.
+This opens a port on the router itself. To pass a port through to a LAN VM, use [port forwards](#port-forwards) in `vars.yaml` instead.
 
 Keep `22` in the WAN list. The playbook logs in over SSH on the WAN, and the `admin` user has no password, so there is no other way in.
 
@@ -169,7 +212,7 @@ Keep `22` in the WAN list. The playbook logs in over SSH on the WAN, and the `ad
 
 Edit the files here and re-run the playbook. When VM 113 already exists, the playbook updates it in place on its own IP and doesn't re-clone it.
 
-- **LAN address, DHCP range, DNS servers or blocked networks:** change them in `vars.yaml`. If you change the LAN subnet, keep the DHCP range inside it, and don't overlap it with the home LAN.
+- **LAN address, DHCP range, DNS servers, blocked networks or port forwards:** change them in `vars.yaml`. If you change the LAN subnet, keep the DHCP range inside it, and don't overlap it with the home LAN.
 - **NixOS settings:** edit `configuration.nix`. Leave the values above out of it; they belong in `vars.yaml`.
 
 The playbook refuses to configure VM 113 if it exists under a name other than `router`.

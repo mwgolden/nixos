@@ -35,3 +35,28 @@ router_blocked_networks:
   - "192.168.0.0/16"
   - "172.16.0.0/12"
   - "10.0.0.0/8"
+
+# Ports on the router's WAN address (router_ip) forwarded to VMs on the
+# isolated LAN, so the rest of the home network can reach them. Apply with
+# port-forwards.yaml (or router.yaml). Each forward needs:
+#   name      a label, letters, digits, - and _
+#   proto     tcp or udp
+#   wan_port  port on router_ip
+#   lan_ip    the VM's address on the LAN. Give it a fixed IP outside the
+#             DHCP range so the forward keeps pointing at it.
+#   lan_port  port on the VM (optional, defaults to wan_port)
+# TCP 22 can't be forwarded: it is the router's own SSH.
+#
+# Example:
+#   router_port_forwards:
+#     - name: website
+#       proto: tcp
+#       wan_port: 80
+#       lan_ip: "10.1.0.10"
+#       lan_port: 80
+router_port_forwards:
+  - name: postgres
+    proto: tcp
+    wan_port: 5432
+    lan_ip: 10.1.0.12
+    lan_port: 5432

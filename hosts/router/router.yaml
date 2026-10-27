@@ -35,6 +35,46 @@
         - NIXOS_DEPLOYMENT_PUBLIC_KEY
         - NIXOS_DEPLOYMENT_PRIVATE_KEY
 
+    # Checked before anything changes. Whether lan_ip is on the LAN is
+    # checked on the router, which knows its own routes.
+    - name: Check port forwards
+      ansible.builtin.assert:
+        that:
+          - item.name | default('') is match('^[A-Za-z0-9_-]+$')
+          - item.proto | default('') in ['tcp', 'udp']
+          - item.wan_port | default('') | string is match('^[0-9]+$')
+          - item.wan_port | int >= 1 and item.wan_port | int <= 65535
+          - item.lan_port | default(item.wan_port) | string is match('^[0-9]+$')
+          - item.lan_port | default(item.wan_port) | int >= 1
+          - item.lan_port | default(item.wan_port) | int <= 65535
+          - item.lan_ip | default('') is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+          - not (item.proto == 'tcp' and item.wan_port | int == 22)
+        fail_msg: >-
+          Port forward {{ item }} is invalid. It needs a name (letters, digits,
+          - and _), proto tcp or udp, wan_port and lan_port from 1 to 65535,
+          and lan_ip as an IPv4 address. TCP 22 can't be forwarded: it is the
+          router's own SSH.
+        quiet: true
+      loop: "{{ router_port_forwards }}"
+      loop_control:
+        label: "{{ item.name | default(item) }}"
+
+    - name: Check port forwards don't share a WAN port or name
+      ansible.builtin.assert:
+        that:
+          - wan_ports | unique | length == wan_ports | length
+          - names | unique | length == names | length
+        fail_msg: >-
+          Two port forwards use the same name or the same protocol and WAN
+          port: {{ wan_ports }}, {{ names }}.
+        quiet: true
+      vars:
+        wan_ports: >-
+          {{ router_port_forwards | map(attribute='proto')
+             | zip(router_port_forwards | map(attribute='wan_port') | map('int'))
+             | map('join', '/') | list }}
+        names: "{{ router_port_forwards | map(attribute='name') | list }}"
+
     - name: Look up the isolated bridge
       community.proxmox.proxmox_node_network_info:
         node: "{{ proxmox_node }}"
@@ -182,6 +222,31 @@
           'ip link' on the router for the name it got.
         quiet: true
 
+    # Expected output: "10.1.0.10 dev ens19 src 10.1.0.1 ...". Anything else
+    # means the address is the router itself or not on the isolated LAN.
+    - name: Look up where each port forward points
+      ansible.builtin.command:
+        cmd: ip -4 route get {{ item.lan_ip }}
+      register: forward_routes
+      changed_when: false
+      loop: "{{ router_port_forwards }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Require port forwards to point at the isolated LAN
+      ansible.builtin.assert:
+        that:
+          - item.stdout is match('^' ~ (item.item.lan_ip | regex_escape) ~ ' dev ens19 ')
+        fail_msg: >-
+          Port forward '{{ item.item.name }}' points at {{ item.item.lan_ip }},
+          which is not a VM on the isolated LAN
+          ({{ router_lan_ip }}/{{ router_lan_prefix_length }}, not the router
+          itself). Route: {{ item.stdout }}
+        quiet: true
+      loop: "{{ forward_routes.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
     # Rendering fills in the deployment SSH public key.
     - name: Install common NixOS configuration
       ansible.builtin.template:
@@ -304,6 +369,28 @@
       register: forward_rules
       changed_when: false
       failed_when: "'LAN may not reach private networks' not in forward_rules.stdout"
+
+    - name: Read the port forward rules
+      ansible.builtin.command:
+        cmd: nft list chain ip nixos-nat pre
+      register: nat_rules
+      changed_when: false
+      when: router_port_forwards | length > 0
+
+    # nft prints each forward as "tcp . 80 : 10.1.0.10 . 80".
+    - name: Check each port forward is in place
+      ansible.builtin.assert:
+        that:
+          - expected in nat_rules.stdout
+        fail_msg: "Port forward '{{ item.name }}' ({{ expected }}) is missing from the NAT rules."
+        quiet: true
+      vars:
+        expected: >-
+          {{ item.proto }} . {{ item.wan_port | int }} : {{ item.lan_ip }} .
+          {{ item.lan_port | default(item.wan_port) | int }}
+      loop: "{{ router_port_forwards }}"
+      loop_control:
+        label: "{{ item.name }}"
 
     # Uses TCP rather than ping: the home network drops outbound ping.
     # These are the servers dnsmasq forwards LAN clients' DNS queries to.

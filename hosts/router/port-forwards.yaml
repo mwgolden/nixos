@@ -1,0 +1,56 @@
+# Applies the port forwards in vars.yaml (router_port_forwards), then tests
+# each one from this machine. Forwards make a service on an isolated-LAN VM
+# reachable from the home network at the router's WAN address.
+#
+#   source proxmox/.env
+#   ansible-playbook hosts/router/port-forwards.yaml
+#
+# This runs router.yaml, which checks the forwards, installs the router's
+# configuration and switches to it. On an existing router that only changes
+# what differs, so it is also how you remove a forward: delete it from
+# vars.yaml and re-run.
+#
+# To reach a forward from the internet, also forward the port on the home
+# router (pfSense) to the router's WAN address. See README.md.
+
+- name: Apply router configuration with port forwards
+  ansible.builtin.import_playbook: router.yaml
+
+- name: Test port forwards
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../proxmox/vars.yaml
+    - vars.yaml
+
+  tasks:
+    - name: Report that there are no port forwards
+      ansible.builtin.debug:
+        msg: "No port forwards are set in hosts/router/vars.yaml. Nothing is forwarded."
+      when: router_port_forwards | length == 0
+
+    # Only TCP can be tested this way. A TCP forward only answers once the
+    # service on the VM is running, so a failure here is reported, not fatal.
+    - name: Try each TCP forward from this machine
+      ansible.builtin.wait_for:
+        host: "{{ router_ip }}"
+        port: "{{ item.wan_port | int }}"
+        timeout: 5
+      register: forward_tests
+      ignore_errors: true
+      loop: "{{ router_port_forwards | selectattr('proto', 'equalto', 'tcp') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Show port forwards
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.name }}: {{ item.proto }} {{ router_ip }}:{{ item.wan_port }}
+          -> {{ item.lan_ip }}:{{ item.lan_port | default(item.wan_port) }}
+          {%- if item.proto == 'udp' %} (UDP, not tested)
+          {%- elif (forward_tests.results | selectattr('item.name', 'equalto', item.name) | first) is succeeded %} (answering)
+          {%- else %} (not answering: is the service on {{ item.lan_ip }} running and listening on port {{ item.lan_port | default(item.wan_port) }}?)
+          {%- endif %}
+      loop: "{{ router_port_forwards }}"
+      loop_control:
+        label: "{{ item.name }}"
