@@ -106,9 +106,10 @@ Each VM has its own folder under `hosts/`, with a playbook and a README that exp
 - [webserver](hosts/webserver/README.md): nginx serving static files
 - [postgres](hosts/postgres/README.md): PostgreSQL on a separate data disk, with optional AdventureWorks sample data
 - [gitea](hosts/gitea/README.md): Gitea Git server on a separate data disk
+- [garage](hosts/garage/README.md): Garage S3-compatible object storage on a separate data disk
 - [router](hosts/router/README.md): connects the isolated bridge (`vmbr1`) to the internet with DHCP, NAT and a firewall that blocks the home LAN
 
-A host playbook clones the template, boots the clone on the template's IP, installs the host's NixOS configuration, and runs `nixos-rebuild switch`. The clone then moves to its own IP. Each host's hostname, IPs and network are set in its `vars.yaml`; the playbook generates `/etc/nixos/network.nix` from them using `modules/network.nix.j2`. The webserver, postgres and gitea can also live on the isolated network; see [Moving a VM between networks](#moving-a-vm-between-networks).
+A host playbook clones the template, boots the clone on the template's IP, installs the host's NixOS configuration, and runs `nixos-rebuild switch`. The clone then moves to its own IP. Each host's hostname, IPs and network are set in its `vars.yaml`; the playbook generates `/etc/nixos/network.nix` from them using `modules/network.nix.j2`. The webserver, postgres, gitea and garage can also live on the isolated network; see [Moving a VM between networks](#moving-a-vm-between-networks).
 
 ## Network addressing
 
@@ -122,6 +123,7 @@ Static addresses must stay outside the DHCP pool.
 | `192.168.1.12` | postgres (VM 112)                                         |
 | `192.168.1.13` | router (VM 113), WAN side                                 |
 | `192.168.1.14` | gitea (VM 114)                                           |
+| `192.168.1.15` | garage (VM 115)                                          |
 
 Because every new clone starts on `.10`, deploy one VM at a time.
 
@@ -135,13 +137,58 @@ Because every new clone starts on `.10`, deploy one VM at a time.
 | `10.1.0.11`                 | webserver, when `webserver_network` is `isolated` |
 | `10.1.0.12`                 | postgres, when `postgres_network` is `isolated` |
 | `10.1.0.14`                 | gitea, when `gitea_network` is `isolated` |
+| `10.1.0.15`                 | garage, when `garage_network` is `isolated` |
 | `10.1.0.100` – `10.1.0.199` | DHCP pool                                |
 
 VMs on `vmbr1` reach the internet but not `192.168.1.0/24` or other private networks. From home, they're reachable only through [router port forwards](hosts/router/README.md#port-forwards).
 
+With every server on the isolated network, traffic flows like this:
+
+```mermaid
+flowchart TB
+    internet(("Internet"))
+
+    subgraph home["Home LAN 192.168.1.0/24"]
+        gateway["Home gateway and DNS<br/>192.168.1.1"]
+        workstation["Workstation<br/>Ansible, SSH, S3 and DB clients"]
+    end
+
+    subgraph proxmox["Proxmox host (node com)"]
+        vmbr0["vmbr0<br/>bridged to the physical NIC"]
+
+        router["router, VM 113<br/>ens18 WAN 192.168.1.13<br/>ens19 LAN 10.1.0.1<br/>NAT, firewall, DHCP, DNS forwarder"]
+
+        vmbr1["vmbr1, isolated bridge<br/>no physical port, no host IP<br/>10.1.0.0/24, DHCP .100 to .199"]
+
+        subgraph servers["Servers on the isolated LAN"]
+            webserver["webserver, VM 111<br/>10.1.0.11, HTTP 80"]
+            postgres["postgres, VM 112<br/>10.1.0.12, TCP 5432"]
+            gitea["gitea, VM 114<br/>10.1.0.14, HTTP 3000, SSH 22"]
+            garage["garage, VM 115<br/>10.1.0.15, S3 3900"]
+        end
+    end
+
+    internet <--> gateway
+    gateway <--> vmbr0
+    workstation <--> vmbr0
+    vmbr0 <-->|"ens18"| router
+    router <-->|"ens19"| vmbr1
+    vmbr1 <--> webserver
+    vmbr1 <--> postgres
+    vmbr1 <--> gitea
+    vmbr1 <--> garage
+
+    servers -.->|"outbound to the internet,<br/>NAT through 192.168.1.13"| internet
+    servers -.-x|"blocked: 192.168.0.0/16,<br/>172.16.0.0/12, 10.0.0.0/8"| home
+    workstation -.->|"SSH to the router on 22,<br/>ProxyJump on to 10.1.0.x"| router
+    workstation -.->|"port forwards to the router,<br/>e.g. 192.168.1.13:5432 to 10.1.0.12:5432"| router
+```
+
+Solid lines are the physical and virtual links. Dashed lines are what the router's firewall allows or blocks. The router's own SSH is reachable only from the home side; the isolated LAN can use only DHCP, DNS and ping on the router.
+
 ## Moving a VM between networks
 
-The webserver, postgres and gitea can each live on the home network or on the isolated network. `<host>_network` in the host's `vars.yaml` sets this (`home` or `isolated`), and `<host>_isolated_ip` gives its fixed address on the isolated LAN. The router must be deployed before anything uses the isolated network.
+The webserver, postgres, gitea and garage can each live on the home network or on the isolated network. `<host>_network` in the host's `vars.yaml` sets this (`home` or `isolated`), and `<host>_isolated_ip` gives its fixed address on the isolated LAN. The router must be deployed before anything uses the isolated network.
 
 - **On the first deploy:** set `<host>_network: "isolated"` before running the host's playbook. The clone still starts on the template's IP on the home network, then switches over.
 - **Later:** change the setting and re-run the host's playbook, or move the VM without redeploying it:
