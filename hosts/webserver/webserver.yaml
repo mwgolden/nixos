@@ -25,57 +25,18 @@
       validate_certs: "{{ proxmox_validate_certs }}"
 
   tasks:
-    - name: Check required environment variables
-      ansible.builtin.assert:
-        that:
-          - lookup('env', item) | length > 0
-        fail_msg: "{{ item }} is not set. Run 'source proxmox/.env' first."
-        quiet: true
-      loop:
-        - PROXMOX_TOKEN_SECRET
-        - NIXOS_DEPLOYMENT_PUBLIC_KEY
-        - NIXOS_DEPLOYMENT_PRIVATE_KEY
-
-    - name: Look up webserver VM
-      community.proxmox.proxmox_vm_info:
-        node: "{{ proxmox_node }}"
-        vmid: "{{ webserver_vm_id }}"
-        config: current
-      register: webserver_vm_info
-
-    - name: Note whether the VM exists
-      ansible.builtin.set_fact:
-        existing_vm: "{{ webserver_vm_info.proxmox_vms | first | default(none) }}"
-
-    - name: Make sure the VM ID belongs to the webserver
-      ansible.builtin.assert:
-        that:
-          - existing_vm.name == webserver_vm_name
-        fail_msg: >-
-          VM {{ webserver_vm_id }} exists but is named '{{ existing_vm.name }}',
-          not '{{ webserver_vm_name }}'. Refusing to configure it.
-      when: existing_vm is not none
-
-    - name: Clone webserver from NixOS template
-      community.proxmox.proxmox_kvm:
-        node: "{{ proxmox_node }}"
-        vmid: "{{ template_vm_id }}"
-        clone: "{{ template_vm_name }}"
-        newid: "{{ webserver_vm_id }}"
-        name: "{{ webserver_vm_name }}"
-        full: "{{ webserver_full_clone }}"
-        format: "{{ omit if webserver_full_clone else 'unspecified' }}"
-        timeout: 300
-      when: existing_vm is none
-
-    - name: Start webserver
-      community.proxmox.proxmox_kvm:
-        node: "{{ proxmox_node }}"
-        vmid: "{{ webserver_vm_id }}"
-        state: started
+    - name: Create or update the webserver
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_vm_id: "{{ webserver_vm_id }}"
+        proxmox_vm_name: "{{ webserver_vm_name }}"
+        proxmox_vm_full_clone: "{{ webserver_full_clone }}"
 
     - name: Find the webserver and connect to it
-      ansible.builtin.include_tasks: ../../modules/ansible/placement.yaml
+      ansible.builtin.include_role:
+        name: nixos_base
+        tasks_from: placement
       vars:
         place_alias: webserver
         place_vm_id: "{{ webserver_vm_id }}"
@@ -83,8 +44,8 @@
         place_home_ip: "{{ webserver_ip }}"
         place_isolated_ip: "{{ webserver_isolated_ip }}"
         place_network: "{{ webserver_network }}"
-        place_new_clone: "{{ existing_vm is none }}"
-        place_net0: "{{ existing_vm.config.get('net0', '') if existing_vm is not none else '' }}"
+        place_new_clone: "{{ proxmox_vm_new_clone }}"
+        place_net0: "{{ '' if proxmox_vm_new_clone else proxmox_vm_existing.config.get('net0', '') }}"
 
 - name: Configure webserver
   hosts: webserver
@@ -96,28 +57,11 @@
     - vars.yaml
 
   tasks:
-    - name: Wait for login
-      ansible.builtin.wait_for_connection:
-        timeout: 120
-
-    # Rendering fills in the deployment SSH public key.
-    - name: Install common NixOS configuration
-      ansible.builtin.template:
-        src: ../../modules/common.nix
-        dest: /etc/nixos/common.nix
-        mode: "0644"
-
-    - name: Install network configuration
-      ansible.builtin.template:
-        src: ../../modules/network.nix.j2
-        dest: /etc/nixos/network.nix
-        mode: "0644"
+    - name: Install the shared NixOS configuration
+      ansible.builtin.include_role:
+        name: nixos_base
       vars:
-        host_name: "{{ webserver_vm_name }}"
-        host_ip: "{{ final.ip }}"
-        host_prefix_length: "{{ final.prefix_length }}"
-        host_gateway: "{{ final.gateway }}"
-        host_nameserver: "{{ final.nameserver }}"
+        nixos_base_hostname: "{{ webserver_vm_name }}"
 
     - name: Install webserver NixOS configuration
       ansible.builtin.copy:
@@ -133,7 +77,9 @@
         directory_mode: "0755"
 
     - name: Switch to the configuration and move to the webserver's address
-      ansible.builtin.include_tasks: ../../modules/ansible/switch.yaml
+      ansible.builtin.include_role:
+        name: nixos_base
+        tasks_from: switch
 
 # On the isolated network only the router can reach the webserver, so the
 # check runs there.

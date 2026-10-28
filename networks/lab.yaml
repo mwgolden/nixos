@@ -1,0 +1,68 @@
+# An isolated network: a Proxmox bridge with no physical port, whose only
+# way out is the router VM. Hosts here reach the internet through NAT but
+# not the home LAN. See README.md for the schema.
+
+network:
+  name: lab
+  type: isolated
+  bridge: vmbr1
+  cidr: 10.1.0.0/24
+  # The router's LAN address. Hosts use it as gateway and DNS server.
+  gateway: 10.1.0.1
+  nameserver: 10.1.0.1
+
+  # Network the router's WAN side is on.
+  upstream: home
+
+  # Addresses the router hands out by DHCP. Hosts need fixed IPs outside it.
+  dhcp:
+    start: 10.1.0.100
+    end: 10.1.0.199
+    lease_time: 12h
+
+  reserved: []
+
+hosts:
+  - name: router
+    type: router
+    vm_id: 113
+    # LAN side; must equal network.gateway.
+    ip: 10.1.0.1
+    # WAN side, on the upstream network.
+    wan_ip: 192.168.1.13
+    settings:
+      # Upstream DNS servers the router forwards queries to.
+      dns_servers:
+        - 1.1.1.1
+        - 9.9.9.9
+      # Hosts here can't reach these networks.
+      blocked_networks:
+        - 192.168.0.0/16
+        - 172.16.0.0/12
+        - 10.0.0.0/8
+      # Ports on wan_ip forwarded to hosts on this network.
+      port_forwards:
+        - name: postgres
+          proto: tcp
+          wan_port: 5432
+          lan_ip: 10.1.0.12
+          lan_port: 5432
+
+  - name: postgres
+    type: postgres
+    vm_id: 112
+    ip: 10.1.0.12
+    data_disk:
+      size_gb: 20
+      storage: local-lvm
+    settings:
+      version: 17
+      port: 5432
+      allowed_networks:
+        - 192.168.1.0/24
+        - 10.1.0.0/24
+      adventureworks:
+        enabled: true
+        database: Adventureworks
+        repo: https://github.com/mwgolden/adventure-works-postgres
+        version: afcfd2dfcf031af91f03f536c1ade349cfcb3ad6

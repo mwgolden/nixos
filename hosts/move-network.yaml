@@ -114,7 +114,9 @@
         state: started
 
     - name: Find the VM and connect to it
-      ansible.builtin.include_tasks: ../modules/ansible/placement.yaml
+      ansible.builtin.include_role:
+        name: nixos_base
+        tasks_from: placement
       vars:
         place_alias: "{{ host }}"
         place_vm_id: "{{ move_vm_id }}"
@@ -166,7 +168,9 @@
         host_nameserver: "{{ final.nameserver }}"
 
     - name: Switch to the configuration and move the VM
-      ansible.builtin.include_tasks: ../modules/ansible/switch.yaml
+      ansible.builtin.include_role:
+        name: nixos_base
+        tasks_from: switch
 
     - name: Check the VM's address
       ansible.builtin.command:

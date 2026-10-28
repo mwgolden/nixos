@@ -1,0 +1,11 @@
+# Folder holding one <name>.yaml file per network.
+network_config_dir: "{{ role_path }}/../../networks"
+
+# Name of the network to select, or '' to only check them all. When set,
+# the fact network_config holds that network's file.
+network_config_name: ""
+
+# Also check against Proxmox: that VM IDs and names match what exists, that
+# the template exists and that each network's bridge is usable. Needs
+# PROXMOX_TOKEN_SECRET. Set false to check only the files.
+network_config_check_proxmox: true

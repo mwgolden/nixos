@@ -1,13 +1,14 @@
 # Finds a VM on whichever network it is on now, works out where it should
 # end up, and adds it to the inventory as place_alias with everything
-# modules/ansible/switch.yaml needs to move it there.
+# switch.yml needs to move it there.
 #
 # A VM is either on the home network (vmbr0, its home IP) or on the
 # isolated network (the router's LAN, its isolated IP). Machines on the
 # isolated network are reached over SSH through the router.
 #
-# Include from a play on localhost that has the Proxmox module_defaults and
-# loads proxmox/vars.yaml and hosts/router/vars.yaml. Set:
+# Run with include_role (name: nixos_base, tasks_from: placement) from a play
+# on localhost that has the Proxmox module_defaults and loads
+# proxmox/vars.yaml and hosts/router/vars.yaml. Set:
 #   place_alias        inventory name to add the VM as
 #   place_vm_id        Proxmox VM ID
 #   place_vm_name      VM name, used in messages
@@ -123,7 +124,7 @@
     place_found: false
 
 - name: Look for the VM
-  ansible.builtin.include_tasks: placement-try.yaml
+  ansible.builtin.include_tasks: placement-try.yml
   loop: "{{ place_candidates }}"
   loop_control:
     loop_var: candidate

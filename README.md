@@ -17,7 +17,11 @@ One command, `./bootstrap.sh`, builds a custom NixOS installer ISO in Docker, up
 | `proxmox/scripts/`           | `upload-iso.yaml`, `create-template.yaml`, `install-nix.yaml`, and `isolated-bridge.yaml` for the isolated network |
 | `hosts/<name>/`              | Configuration and deploy playbook for each VM                 |
 | `hosts/move-network.yaml`    | Moves a deployed VM between the home and isolated networks    |
-| `modules/ansible/`           | Tasks shared by the host playbooks: finding a VM and switching it to its network |
+| `ansible.cfg`                | Ansible settings. Run playbooks from the repository root so it is used |
+| `networks/`                  | One file per network and the VMs on it. See [networks/README.md](networks/README.md) |
+| `playbooks/validate-network.yaml` | Checks the network files, and checks them against Proxmox |
+| `plugins/filter/`, `tests/`  | Network file checks and their tests: `.venv/bin/python -m unittest discover -s tests` |
+| `roles/`                     | Tasks shared by the host playbooks: creating and removing VMs, reading `.env` files, finding a VM and switching it to its network |
 | `Dockerfile`, `start_container.sh` | Nix build container                                     |
 
 ## Prerequisites
@@ -29,8 +33,8 @@ On the workstation:
 
   ```bash
   uv venv .venv
-  uv pip install --python .venv/bin/python ansible proxmoxer requests requests_toolbelt
-  .venv/bin/ansible-galaxy collection install community.proxmox community.general ansible.posix
+  uv pip install --python .venv/bin/python ansible proxmoxer requests requests_toolbelt netaddr
+  .venv/bin/ansible-galaxy collection install community.proxmox community.general ansible.posix ansible.utils
   ```
 
 - **Two SSH key pairs**, kept on the workstation:

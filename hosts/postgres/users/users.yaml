@@ -25,41 +25,33 @@
         quiet: true
       tags: [always]
 
-    - name: Check for the .env files
-      ansible.builtin.stat:
-        path: "{{ item }}"
-      register: env_files
-      loop:
-        - "{{ playbook_dir }}/../.env"
-        - "{{ playbook_dir }}/.env"
-      tags: [always]
-
-    - name: Require the .env files
-      ansible.builtin.assert:
-        that:
-          - item.stat.exists
-        fail_msg: "{{ item.item }} is missing. Copy .env.example next to it to .env and fill it in."
-        quiet: true
-      loop: "{{ env_files.results }}"
-      loop_control:
-        label: "{{ item.item }}"
-      tags: [always]
-
-    # Reads KEY=value lines; "export " and surrounding quotes are optional.
-    - name: Read admin user and user passwords
-      ansible.builtin.set_fact:
-        admin_user: >-
-          {{ (admin_env.POSTGRES_ADMIN_USER | default(''))
-             | regex_replace('^([\"\x27]?)(.*)\1$', '\2') }}
-        user_passwords: >-
-          {{ dict(users_env | dict2items
-                  | map(attribute='key')
-                  | zip(users_env | dict2items | map(attribute='value')
-                        | map('regex_replace', '^([\"\x27]?)(.*)\1$', '\2'))) }}
+    - name: Read the admin user from hosts/postgres/.env
+      ansible.builtin.include_role:
+        name: dotenv
+        apply:
+          tags: [always]
       vars:
-        env_pattern: '(?m)^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*?)\s*$'
-        admin_env: "{{ dict(lookup('file', playbook_dir ~ '/../.env') | regex_findall(env_pattern)) }}"
-        users_env: "{{ dict(lookup('file', playbook_dir ~ '/.env') | regex_findall(env_pattern)) }}"
+        dotenv_path: "{{ playbook_dir }}/../.env"
+      tags: [always]
+
+    - name: Note the admin user
+      ansible.builtin.set_fact:
+        admin_user: "{{ dotenv_values.POSTGRES_ADMIN_USER | default('') }}"
+      no_log: true
+      tags: [always]
+
+    - name: Read user passwords from hosts/postgres/users/.env
+      ansible.builtin.include_role:
+        name: dotenv
+        apply:
+          tags: [always]
+      vars:
+        dotenv_path: "{{ playbook_dir }}/.env"
+      tags: [always]
+
+    - name: Note user passwords
+      ansible.builtin.set_fact:
+        user_passwords: "{{ dotenv_values }}"
       no_log: true
       tags: [always]
 

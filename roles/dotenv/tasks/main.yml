@@ -1,0 +1,27 @@
+# Reads a .env file of KEY=value lines into the fact dotenv_values (a dict).
+# "export " and quotes around a value are optional, and are dropped.
+# Values are secrets, so nothing here is logged.
+
+- name: Check for {{ dotenv_path }}
+  ansible.builtin.stat:
+    path: "{{ dotenv_path }}"
+  register: dotenv_file
+
+- name: Require {{ dotenv_path }}
+  ansible.builtin.assert:
+    that:
+      - dotenv_file.stat.exists
+    fail_msg: "{{ dotenv_path }} is missing. {{ dotenv_missing_hint }}"
+    quiet: true
+
+- name: Read {{ dotenv_path }}
+  ansible.builtin.set_fact:
+    dotenv_values: >-
+      {{ dict(pairs | map('first')
+              | zip(pairs | map('last')
+                    | map('regex_replace', '^([\"\x27]?)(.*)\1$', '\2'))) }}
+  vars:
+    pairs: >-
+      {{ lookup('file', dotenv_path)
+         | regex_findall('(?m)^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*?)\s*$') }}
+  no_log: true

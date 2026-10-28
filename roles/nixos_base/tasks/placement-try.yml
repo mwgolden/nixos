@@ -1,4 +1,4 @@
-# One place to look for a VM, used by placement.yaml for each candidate in
+# One place to look for a VM, used by placement.yml for each candidate in
 # turn. Does nothing once the VM has been found. The guard is in here rather
 # than on the include, because an include's condition is checked for every
 # candidate before any of them runs.

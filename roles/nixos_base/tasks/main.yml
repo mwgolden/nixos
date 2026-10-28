@@ -1,0 +1,48 @@
+# Installs the configuration every VM shares: /etc/nixos/common.nix and
+# /etc/nixos/network.nix, and formats the data disk if there is one. The
+# host's own configuration.nix goes next to them, then tasks_from: switch
+# builds and switches to it.
+#
+# Runs on a VM added by placement.yml (or with the same host vars), with
+# become: true.
+
+- name: Wait for login
+  ansible.builtin.wait_for_connection:
+    timeout: 120
+
+- name: Prepare the data disk
+  when: nixos_base_data_disk_serial | length > 0
+  vars:
+    nixos_base_data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_{{ nixos_base_data_disk_serial }}"
+  block:
+    - name: Wait for the data disk to appear
+      ansible.builtin.wait_for:
+        path: "{{ nixos_base_data_disk_device }}"
+        timeout: 60
+
+    # Only formats a disk with no filesystem, so existing data is never
+    # wiped. On a disk that was grown, it grows the filesystem to match.
+    - name: Format data disk
+      community.general.filesystem:
+        dev: "{{ nixos_base_data_disk_device }}"
+        fstype: ext4
+        resizefs: true
+
+# Rendering fills in the deployment SSH public key.
+- name: Install common NixOS configuration
+  ansible.builtin.template:
+    src: "{{ role_path }}/../../modules/common.nix"
+    dest: /etc/nixos/common.nix
+    mode: "0644"
+
+- name: Install network configuration
+  ansible.builtin.template:
+    src: "{{ role_path }}/../../modules/network.nix.j2"
+    dest: /etc/nixos/network.nix
+    mode: "0644"
+  vars:
+    host_name: "{{ nixos_base_hostname }}"
+    host_ip: "{{ final.ip }}"
+    host_prefix_length: "{{ final.prefix_length }}"
+    host_gateway: "{{ final.gateway }}"
+    host_nameserver: "{{ final.nameserver }}"

@@ -1,0 +1,6 @@
+# Host name written to /etc/nixos/network.nix. Required for main.yml.
+nixos_base_hostname: ""
+
+# Serial of a data disk to format before the configuration is switched, or
+# '' for none. Matches proxmox_vm_data_disk.serial in the proxmox_vm role.
+nixos_base_data_disk_serial: ""

@@ -3,8 +3,10 @@
 # to the right bridge and reconnects there. Afterwards the play talks to
 # the VM on its final address.
 #
-# Include from a play on a VM added by modules/ansible/placement.yaml, with
-# become: true. Needs proxmox/vars.yaml loaded and PROXMOX_TOKEN_SECRET set.
+# Run with include_role (name: nixos_base, tasks_from: switch) from a play
+# on a VM added by placement.yml, with become: true. The VM needs the host
+# vars placement.yml sets: vm_id, connect, final, ssh_direct and
+# ssh_via_router. Needs proxmox/vars.yaml loaded and PROXMOX_TOKEN_SECRET set.
 
 # Building first downloads everything and shows any errors here, so the
 # switch below is quick and unlikely to fail.

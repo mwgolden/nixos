@@ -1,0 +1,45 @@
+# Adds the data disk as scsi1, or grows it to proxmox_vm_data_disk.size_gb.
+# Included from main.yml, inside its Proxmox module_defaults.
+
+# scsi1 looks like "local-lvm:vm-114-disk-1,serial=gitea-data,size=40G".
+- name: Read current data disk size
+  ansible.builtin.set_fact:
+    proxmox_vm_disk_config: >-
+      {{ '' if proxmox_vm_new_clone
+         else proxmox_vm_existing.config.scsi1 | default('') }}
+
+- name: Parse current data disk size
+  ansible.builtin.set_fact:
+    proxmox_vm_disk_current_gb: "{{ ((proxmox_vm_disk_config | regex_search('size=(\\d+)G', '\\1')) or ['0']) | first | int }}"
+
+- name: Refuse to shrink the data disk
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_data_disk.size_gb | int >= proxmox_vm_disk_current_gb | int
+    fail_msg: >-
+      The data disk is {{ proxmox_vm_disk_current_gb }} GB and can't be shrunk to
+      {{ proxmox_vm_data_disk.size_gb }} GB. Set
+      {{ proxmox_vm_data_disk.setting | default('the data disk size') }} to at
+      least {{ proxmox_vm_disk_current_gb }}.
+  when: proxmox_vm_disk_config | length > 0
+
+- name: Add data disk
+  community.proxmox.proxmox_disk:
+    vmid: "{{ proxmox_vm_id }}"
+    disk: scsi1
+    serial: "{{ proxmox_vm_data_disk.serial }}"
+    size: "{{ proxmox_vm_data_disk.size_gb }}"
+    storage: "{{ proxmox_vm_data_disk.storage }}"
+    state: present
+  when: proxmox_vm_disk_config | length == 0
+
+- name: Grow data disk
+  community.proxmox.proxmox_disk:
+    vmid: "{{ proxmox_vm_id }}"
+    disk: scsi1
+    size: "{{ proxmox_vm_data_disk.size_gb }}G"
+    state: resized
+    timeout: 120
+  when:
+    - proxmox_vm_disk_config | length > 0
+    - proxmox_vm_data_disk.size_gb | int > proxmox_vm_disk_current_gb | int

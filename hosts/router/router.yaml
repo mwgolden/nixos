@@ -24,17 +24,6 @@
       validate_certs: "{{ proxmox_validate_certs }}"
 
   tasks:
-    - name: Check required environment variables
-      ansible.builtin.assert:
-        that:
-          - lookup('env', item) | length > 0
-        fail_msg: "{{ item }} is not set. Run 'source proxmox/.env' first."
-        quiet: true
-      loop:
-        - PROXMOX_TOKEN_SECRET
-        - NIXOS_DEPLOYMENT_PUBLIC_KEY
-        - NIXOS_DEPLOYMENT_PRIVATE_KEY
-
     # Checked before anything changes. Whether lan_ip is on the LAN is
     # checked on the router, which knows its own routes.
     - name: Check port forwards
@@ -101,48 +90,17 @@
           'ifreload -a'.
         quiet: true
 
-    - name: Look up VMs on the node
-      community.proxmox.proxmox_vm_info:
-        node: "{{ proxmox_node }}"
-        type: qemu
-      register: node_vms
-
-    - name: Find existing router VM
-      ansible.builtin.set_fact:
-        existing_vm: >-
-          {{ node_vms.proxmox_vms
-             | selectattr('vmid', 'equalto', router_vm_id | int)
-             | first | default(none) }}
-
-    - name: Make sure the VM ID belongs to the router
-      ansible.builtin.assert:
-        that:
-          - existing_vm.name == router_vm_name
-        fail_msg: >-
-          VM {{ router_vm_id }} exists but is named '{{ existing_vm.name }}',
-          not '{{ router_vm_name }}'. Refusing to configure it.
-      when: existing_vm is not none
-
-    - name: Clone router from NixOS template
-      community.proxmox.proxmox_kvm:
-        node: "{{ proxmox_node }}"
-        vmid: "{{ template_vm_id }}"
-        clone: "{{ template_vm_name }}"
-        newid: "{{ router_vm_id }}"
-        name: "{{ router_vm_name }}"
-        full: "{{ router_full_clone }}"
-        format: "{{ omit if router_full_clone else 'unspecified' }}"
-        timeout: 300
-      when: existing_vm is none
-
     # net0 (ens18, WAN) comes from the template. net1 shows up in the VM as
     # ens19, the LAN interface in configuration.nix.
-    - name: Add LAN network card on the isolated bridge
-      community.proxmox.proxmox_nic:
-        vmid: "{{ router_vm_id }}"
-        interface: net1
-        model: virtio
-        bridge: "{{ isolated_bridge }}"
+    - name: Create or update the router VM
+      ansible.builtin.include_role:
+        name: proxmox_vm
+      vars:
+        proxmox_vm_id: "{{ router_vm_id }}"
+        proxmox_vm_name: "{{ router_vm_name }}"
+        proxmox_vm_full_clone: "{{ router_full_clone }}"
+        proxmox_vm_nics:
+          - { interface: net1, bridge: "{{ isolated_bridge }}" }
 
     # A new clone has the template's host key, which may differ from the key
     # recorded for this IP by a previous router.
@@ -150,13 +108,7 @@
       ansible.builtin.known_hosts:
         name: "{{ router_ip }}"
         state: absent
-      when: existing_vm is none
-
-    - name: Start router
-      community.proxmox.proxmox_kvm:
-        node: "{{ proxmox_node }}"
-        vmid: "{{ router_vm_id }}"
-        state: started
+      when: proxmox_vm_new_clone
 
     # An existing router is normally on its own IP already. One left over
     # from an interrupted run may still be on the template IP.
@@ -167,13 +119,13 @@
         timeout: 60
       register: on_router_ip
       ignore_errors: true
-      when: existing_vm is not none
+      when: not proxmox_vm_new_clone
 
     - name: Choose the address to connect to
       ansible.builtin.set_fact:
         connect_ip: >-
           {{ router_ip
-             if existing_vm is not none and on_router_ip is succeeded
+             if not proxmox_vm_new_clone and on_router_ip is succeeded
              else template_ip }}
 
     - name: Wait for router SSH
@@ -190,7 +142,19 @@
         ansible_user: admin
         ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
         ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
-        changes_ip: "{{ connect_ip != router_ip }}"
+        vm_id: "{{ router_vm_id }}"
+        connect:
+          ip: "{{ connect_ip }}"
+          bridge: "{{ network_bridge }}"
+          via_router: false
+        final:
+          ip: "{{ router_ip }}"
+          bridge: "{{ network_bridge }}"
+          via_router: false
+          prefix_length: "{{ network_prefix_length }}"
+          gateway: "{{ network_gateway }}"
+          nameserver: "{{ network_nameserver }}"
+        ssh_direct: "-o StrictHostKeyChecking=accept-new"
 
 - name: Configure router
   hosts: router
@@ -247,21 +211,11 @@
       loop_control:
         label: "{{ item.item.name }}"
 
-    # Rendering fills in the deployment SSH public key.
-    - name: Install common NixOS configuration
-      ansible.builtin.template:
-        src: ../../modules/common.nix
-        dest: /etc/nixos/common.nix
-        mode: "0644"
-
-    - name: Install network configuration
-      ansible.builtin.template:
-        src: ../../modules/network.nix.j2
-        dest: /etc/nixos/network.nix
-        mode: "0644"
+    - name: Install the shared NixOS configuration
+      ansible.builtin.include_role:
+        name: nixos_base
       vars:
-        host_name: "{{ router_vm_name }}"
-        host_ip: "{{ router_ip }}"
+        nixos_base_hostname: "{{ router_vm_name }}"
 
     - name: Install router settings
       ansible.builtin.template:
@@ -275,65 +229,10 @@
         dest: /etc/nixos/configuration.nix
         mode: "0644"
 
-    # Building first downloads everything and shows any errors here, so the
-    # switch below is quick and unlikely to fail.
-    - name: Build NixOS configuration
-      ansible.builtin.command:
-        cmd: nixos-rebuild build
-        chdir: /tmp
-      changed_when: false
-
-    - name: Remove build result link
-      ansible.builtin.file:
-        path: /tmp/result
-        state: absent
-
-    - name: Switch to NixOS configuration
-      ansible.builtin.command:
-        cmd: nixos-rebuild switch
-      when: not (changes_ip | bool)
-
-    # Moving to the new IP drops this SSH connection, so start the switch in
-    # the background and reconnect on the new IP.
-    - name: Switch to NixOS configuration and move to the router IP
-      ansible.builtin.command:
-        cmd: nixos-rebuild switch
-      async: 300
-      poll: 0
-      register: switch_job
-      when: changes_ip | bool
-
-    - name: Wait for SSH on the router IP
-      ansible.builtin.wait_for:
-        host: "{{ router_ip }}"
-        port: 22
-        delay: 5
-        timeout: 300
-      delegate_to: localhost
-      become: false
-
-    - name: Connect to the router IP from now on
-      ansible.builtin.set_fact:
-        ansible_host: "{{ router_ip }}"
-
-    - name: Reset the SSH connection
-      ansible.builtin.meta: reset_connection
-
-    - name: Wait for login on the router IP
-      ansible.builtin.wait_for_connection:
-        timeout: 120
-
-    # The WAN address changes early in the switch, so SSH answers on the new
-    # IP while the rest (forwarding, NAT, firewall) is still being applied.
-    # The job keeps running on the router after the old connection drops.
-    - name: Wait for the switch to finish
-      ansible.builtin.async_status:
-        jid: "{{ switch_job.ansible_job_id }}"
-      register: switch_result
-      until: switch_result.finished
-      retries: 60
-      delay: 5
-      when: changes_ip | bool
+    - name: Switch to the configuration and move to the router IP
+      ansible.builtin.include_role:
+        name: nixos_base
+        tasks_from: switch
 
     # A live switch doesn't start this unit the first time: it is only
     # pulled in when ens19 appears, and ens19 has been there since boot.

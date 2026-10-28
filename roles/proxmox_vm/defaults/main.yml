@@ -1,0 +1,26 @@
+# VM ID and name. Required. An existing VM with this ID must have this name,
+# so a wrong ID never touches someone else's VM.
+proxmox_vm_id: ""
+proxmox_vm_name: ""
+
+# A linked clone is fast and small, but Proxmox will not delete the template
+# while it exists (bootstrap.sh --force fails). True makes a full copy.
+proxmox_vm_full_clone: false
+
+# Environment variables that must be set before anything changes.
+proxmox_vm_required_env:
+  - PROXMOX_TOKEN_SECRET
+  - NIXOS_DEPLOYMENT_PUBLIC_KEY
+  - NIXOS_DEPLOYMENT_PRIVATE_KEY
+
+# Optional data disk on scsi1. Leave empty for none. Otherwise:
+#   serial   disk serial; the VM sees /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_<serial>
+#   size_gb  size in GB. It can be grown by raising it, never shrunk.
+#   storage  Proxmox storage for the disk
+#   setting  name of the setting that holds size_gb, used in error messages
+proxmox_vm_data_disk: {}
+
+# Extra network cards to add before the VM starts, for example
+#   - { interface: net1, bridge: vmbr1 }
+# net0 comes from the template.
+proxmox_vm_nics: []

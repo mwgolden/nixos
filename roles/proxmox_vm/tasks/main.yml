@@ -1,0 +1,79 @@
+# Makes sure a VM cloned from the NixOS template exists, with its data disk
+# and network cards, and is running. Safe to re-run: an existing VM is
+# checked and updated in place.
+#
+# Runs on localhost. Needs proxmox/vars.yaml loaded. Sets:
+#   proxmox_vm_existing   the VM as it was before this ran (with its
+#                         config), or none if it was just cloned
+#   proxmox_vm_new_clone  true if the VM was just cloned
+
+- name: Check required environment variables
+  ansible.builtin.assert:
+    that:
+      - lookup('env', item) | length > 0
+    fail_msg: "{{ item }} is not set. Run 'source proxmox/.env' first."
+    quiet: true
+  loop: "{{ proxmox_vm_required_env }}"
+
+- name: Create or update VM {{ proxmox_vm_id }} ({{ proxmox_vm_name }})
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
+  block:
+    - name: Look up the {{ proxmox_vm_name }} VM
+      community.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ proxmox_vm_id }}"
+        config: current
+      register: proxmox_vm_info
+
+    - name: Note whether the VM exists
+      ansible.builtin.set_fact:
+        proxmox_vm_existing: "{{ proxmox_vm_info.proxmox_vms | first | default(none) }}"
+        proxmox_vm_new_clone: "{{ proxmox_vm_info.proxmox_vms | length == 0 }}"
+
+    - name: Make sure the VM ID belongs to the {{ proxmox_vm_name }} VM
+      ansible.builtin.assert:
+        that:
+          - proxmox_vm_existing.name == proxmox_vm_name
+        fail_msg: >-
+          VM {{ proxmox_vm_id }} exists but is named '{{ proxmox_vm_existing.name }}',
+          not '{{ proxmox_vm_name }}'. Refusing to configure it.
+      when: not proxmox_vm_new_clone
+
+    - name: Clone the {{ proxmox_vm_name }} VM from the NixOS template
+      community.proxmox.proxmox_kvm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ template_vm_id }}"
+        clone: "{{ template_vm_name }}"
+        newid: "{{ proxmox_vm_id }}"
+        name: "{{ proxmox_vm_name }}"
+        full: "{{ proxmox_vm_full_clone }}"
+        format: "{{ omit if proxmox_vm_full_clone else 'unspecified' }}"
+        timeout: 300
+      when: proxmox_vm_new_clone
+
+    - name: Add or grow the data disk
+      ansible.builtin.include_tasks: data-disk.yml
+      when: proxmox_vm_data_disk | length > 0
+
+    # A card that is already there is left as it is.
+    - name: Add network cards
+      community.proxmox.proxmox_nic:
+        vmid: "{{ proxmox_vm_id }}"
+        interface: "{{ item.interface }}"
+        model: virtio
+        bridge: "{{ item.bridge }}"
+      loop: "{{ proxmox_vm_nics }}"
+      loop_control:
+        label: "{{ item.interface }} on {{ item.bridge }}"
+
+    - name: Start the {{ proxmox_vm_name }} VM
+      community.proxmox.proxmox_kvm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ proxmox_vm_id }}"
+        state: started

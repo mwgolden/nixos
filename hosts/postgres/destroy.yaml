@@ -19,82 +19,15 @@
       prompt: "This permanently deletes the postgres VM, its data disk and all databases. Type the VM name to confirm"
       private: false
 
-  module_defaults:
-    group/community.proxmox.proxmox:
-      api_host: "{{ proxmox_api_host }}"
-      api_user: "{{ proxmox_api_user }}"
-      api_token_id: "{{ proxmox_api_token_id }}"
-      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
-      validate_certs: "{{ proxmox_validate_certs }}"
-
   tasks:
-    - name: Check confirmation
-      ansible.builtin.assert:
-        that:
-          - confirm_destroy == postgres_vm_name
-        fail_msg: "Confirmation did not match '{{ postgres_vm_name }}'. Nothing was deleted."
-        quiet: true
-
-    - name: Check required environment variables
-      ansible.builtin.assert:
-        that:
-          - lookup('env', 'PROXMOX_TOKEN_SECRET') | length > 0
-        fail_msg: "PROXMOX_TOKEN_SECRET is not set. Run 'source proxmox/.env' first."
-        quiet: true
-
-    - name: Look up VMs on the node
-      community.proxmox.proxmox_vm_info:
-        node: "{{ proxmox_node }}"
-        type: qemu
-      register: node_vms
-
-    - name: Find postgres VM
-      ansible.builtin.set_fact:
-        existing_vm: >-
-          {{ node_vms.proxmox_vms
-             | selectattr('vmid', 'equalto', postgres_vm_id | int)
-             | first | default(none) }}
-
-    - name: Report that there is nothing to delete
-      ansible.builtin.debug:
-        msg: "VM {{ postgres_vm_id }} does not exist. Nothing to delete."
-      when: existing_vm is none
-
-    # Guards against deleting an unrelated VM if the ID in vars.yaml is wrong.
-    - name: Make sure the VM ID belongs to the postgres VM
-      ansible.builtin.assert:
-        that:
-          - existing_vm.name == postgres_vm_name
-        fail_msg: >-
-          VM {{ postgres_vm_id }} is named '{{ existing_vm.name }}', not
-          '{{ postgres_vm_name }}'. Refusing to delete it.
-      when: existing_vm is not none
-
-    - name: Stop postgres VM
-      community.proxmox.proxmox_kvm:
-        node: "{{ proxmox_node }}"
-        vmid: "{{ postgres_vm_id }}"
-        state: stopped
-        force: true
-        timeout: 60
-      when:
-        - existing_vm is not none
-        - existing_vm.status == 'running'
-
-    - name: Delete postgres VM and its disks
-      community.proxmox.proxmox_kvm:
-        node: "{{ proxmox_node }}"
-        vmid: "{{ postgres_vm_id }}"
-        state: absent
-        purge: true
-        timeout: 120
-      when: existing_vm is not none
-
-    # A future postgres VM on these IPs gets a new host key.
-    - name: Forget the postgres VM's SSH host key
-      ansible.builtin.known_hosts:
-        name: "{{ item }}"
-        state: absent
-      loop:
-        - "{{ postgres_ip }}"
-        - "{{ postgres_isolated_ip }}"
+    - name: Delete the postgres VM
+      ansible.builtin.include_role:
+        name: proxmox_vm_remove
+      vars:
+        vm_remove_id: "{{ postgres_vm_id }}"
+        vm_remove_name: "{{ postgres_vm_name }}"
+        vm_remove_confirm: "{{ confirm_destroy }}"
+        # A future postgres VM on these IPs gets a new host key.
+        vm_remove_known_hosts:
+          - "{{ postgres_ip }}"
+          - "{{ postgres_isolated_ip }}"
