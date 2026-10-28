@@ -106,7 +106,7 @@
 - name: List the places to look for the VM
   ansible.builtin.set_fact:
     place_candidates: >-
-      {{ [new_clone] if place_new_clone | bool
+      {{ new_clone if place_new_clone | bool
          else (isolated + home) if place_bridge == isolated_bridge
          else home + (isolated if place_router_check is succeeded else []) }}
   vars:
