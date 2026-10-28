@@ -5,7 +5,7 @@
 #   ansible-playbook hosts/move-network.yaml -e host=webserver -e network=isolated
 #   ansible-playbook hosts/move-network.yaml -e host=webserver -e network=home
 #
-# host is a folder under hosts/ (webserver, postgres) whose vars.yaml sets
+# host is a folder under hosts/ (webserver, postgres, gitea) whose vars.yaml sets
 # <host>_vm_id, <host>_vm_name, <host>_ip, <host>_isolated_ip and
 # <host>_network. Only the VM's network.nix changes; the rest of its
 # configuration stays as deployed. Moving to the isolated network needs the
