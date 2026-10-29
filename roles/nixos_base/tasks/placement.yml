@@ -25,19 +25,11 @@
       {{ vm | placement_candidates(nixlab, proxmox_vm_config.net0 | default(''),
                                    proxmox_vm_config.description | default(''),
                                    proxmox_vm_new_clone, template_ip, network_bridge) }}
-    place_ssh_direct: "-o StrictHostKeyChecking=accept-new"
     # Router name -> its WAN address, the way into its isolated network.
     place_router_wan: >-
       {{ dict(nixlab.networks.values() | selectattr('router') | map(attribute='router')
               | zip(nixlab.networks.values() | selectattr('router') | map(attribute='router_wan_ip'))) }}
-    # SSH options for reaching an address through a router (format with
-    # the router's WAN address). The deployment key logs in to the router
-    # too; the inner ssh needs it given explicitly.
-    place_ssh_via_router: >-
-      -o StrictHostKeyChecking=accept-new
-      -o ProxyCommand="ssh -i '{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}'
-      -o StrictHostKeyChecking=accept-new -o BatchMode=yes
-      -W %%h:%%p admin@%s"
+    place_key: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
 
 # Routers that places to look, or the final place, go through.
 - name: Check whether the routers answer
@@ -96,14 +88,13 @@
 
 - name: Note how to reach {{ vm.name }}
   ansible.builtin.set_fact:
+    # SSH options: direct, or through the router (nixlab_ssh_args).
     connect: >-
       {{ place_connect | combine({'ssh_args':
-           (place_ssh_via_router | format(place_router_wan[place_connect.via_router]))
-           if place_connect.via_router else place_ssh_direct}) }}
+           place_router_wan.get(place_connect.via_router, '') | nixlab_ssh_args(place_key)}) }}
     final: >-
       {{ vm.attach | combine({'ssh_args':
-           (place_ssh_via_router | format(place_router_wan[vm.attach.via_router]))
-           if vm.attach.via_router else place_ssh_direct}) }}
+           place_router_wan.get(vm.attach.via_router, '') | nixlab_ssh_args(place_key)}) }}
     vm_id: "{{ vm.vm_id }}"
 
 - name: Connect to {{ vm.name }} where it was found

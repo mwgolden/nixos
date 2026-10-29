@@ -1,103 +1,63 @@
 # PostgreSQL server
 
-> **Moved to network files.** This host is now set up from its entry in [networks/lab.yaml](../../networks/lab.yaml), and deployed with `playbooks/deploy-host.yaml -e network=lab -e host=postgres`. Secrets are in `secrets/lab/postgres.env` (see [secrets/README.md](../../secrets/README.md)). The commands below have been updated. Where the text still names an old `vars.yaml` setting, this table shows where that setting is now:
->
-> | Old setting | In the network file |
-> |---|---|
-> | `postgres_vm_id` | `vm_id` |
-> | `postgres_vm_name` | `name` |
-> | `postgres_full_clone` | `full_clone` |
-> | `postgres_ip / postgres_isolated_ip` | ip, in whichever network file the host is in |
-> | `postgres_network` | which network file the host is in |
-> | `postgres_data_disk_gb` | `data_disk.size_gb` |
-> | `postgres_data_disk_storage` | `data_disk.storage` |
-> | `postgres_version` | `settings.version` |
-> | `postgres_port` | `settings.port` |
-> | `postgres_allowed_networks` | `settings.allowed_networks` (network names or subnets; worked out when unset) |
-> | `adventureworks_enabled` | `settings.adventureworks.enabled` |
-> | `adventureworks_database` | `settings.adventureworks.database` |
-> | `adventureworks_repo` | `settings.adventureworks.repo` |
-> | `adventureworks_version` | `settings.adventureworks.version` |
+A NixOS VM running PostgreSQL, with its database files on a separate data disk. It can optionally load the [AdventureWorks](https://github.com/mwgolden/adventure-works-postgres) sample database, and manage [database users](USERS.md).
 
+```yaml
+hosts:
+  - name: postgres
+    type: postgres
+    vm_id: 112
+    ip: 10.1.0.12
+    data_disk:
+      size_gb: 20          # mounted at /var/lib/postgresql
+      storage: local-lvm
+    settings:
+      # All optional; these are the defaults.
+      version: 17          # 16, 17 or 18
+      port: 5432
+      # allowed_networks: [home, lab]   # worked out when unset; see below
+      adventureworks:
+        enabled: false
+        database: Adventureworks
+```
 
-A NixOS VM running PostgreSQL, with its database files on a separate data disk. It can optionally load the [AdventureWorks](https://github.com/mwgolden/adventure-works-postgres) sample database.
-
-| Setting    | Value                                         |
-| ---------- | --------------------------------------------- |
-| VM         | 112, `postgres`                               |
-| Network    | `home` (`vmbr0`), or `isolated` behind the [router](../router/README.md) |
-| IP         | `192.168.1.12` on the home network, `10.1.0.12` on the isolated network |
-| PostgreSQL | 17, port 5432                                 |
-| Data disk  | 20 GB, mounted at `/var/lib/postgresql`        |
-| Logins     | Password logins from `192.168.1.0/24` and `10.1.0.0/24` |
-
-These values come from `vars.yaml`.
-
-## Files
-
-| File                | Purpose                                                                 |
-| ------------------- | ----------------------------------------------------------------------- |
-| `vars.yaml`         | VM ID, IP, data disk size, PostgreSQL version and port, allowed networks, AdventureWorks |
-| `.env`              | Database admin user and password (gitignored)                           |
-| `.env.example`      | Template for `.env`                                                     |
-| `configuration.nix` | NixOS configuration: PostgreSQL service and the data disk mount         |
-| `postgres.nix.j2`   | Template for the generated settings: version, port, allowed networks, firewall |
-| `postgres.yaml`     | Deploy playbook                                                         |
-| `destroy.yaml`      | Deletes the VM and its data disk                                        |
-| `users/`            | Database users and their access per schema                              |
-
-Shared settings (Proxmox host, node, template, gateway, DNS) come from `proxmox/vars.yaml`. The hostname and IP file is generated from `modules/network.nix.j2`.
+The defaults, including the AdventureWorks repo and commit, are in [defaults/main.yml](defaults/main.yml).
 
 ## Admin login
 
-The database admin login is in `secrets/lab/postgres.env`:
+Copy [env.example](env.example) to `secrets/<network>/<host>.env`, such as `secrets/lab/postgres.env`:
 
 ```bash
 POSTGRES_ADMIN_USER=pgadmin
 POSTGRES_ADMIN_PASSWORD=...
 ```
 
-If `.env` doesn't exist, copy `.env.example` to `.env` and set a password. The user name may contain lowercase letters, digits and underscores.
-
-The playbook creates this user as a PostgreSQL superuser and sets its password on every run. To change the password, edit `.env` and re-run the playbook. The password is sent to the VM over SSH and is kept out of Ansible's output and out of the NixOS configuration.
-
-## Database users
-
-To create users and give them access to schemas, see [users/README.md](users/README.md). Each user can combine access levels (read, write, create, execute) on any number of schemas with built-in roles such as `pg_monitor`.
+The user name may contain lowercase letters, digits and underscores. The deploy creates this user as a superuser and sets its password on every run, so to change it, edit the file and redeploy. The password is sent over SSH and kept out of Ansible's output and the NixOS configuration.
 
 ## Deploying
-
-The NixOS template must exist first (run `./bootstrap.sh` from the repo root). Then, from the repo root:
 
 ```bash
 source proxmox/.env
 ansible-playbook playbooks/deploy-host.yaml -e network=lab -e host=postgres
 ```
 
-`proxmox/.env` provides the Proxmox token and the deployment SSH key. The playbook reads `secrets/lab/postgres.env` itself.
+Besides the steps every host goes through, the deploy:
 
-On a first run the playbook:
-
-1. Clones the template into VM 112, adds the data disk (scsi1) and starts the VM. The clone boots on the template's IP, `192.168.1.10`.
-2. Formats the data disk as ext4.
-3. Installs the NixOS configuration into `/etc/nixos`: `common.nix`, plus `network.nix` and `postgres.nix` generated from `vars.yaml`, plus `configuration.nix`.
-4. Runs `nixos-rebuild build`, so any error shows up before anything changes, then `nixos-rebuild switch`. The VM moves to its own IP. For the isolated network, the playbook also moves the VM's network card to `vmbr1` and reconnects through the router.
-5. Checks that the data disk is mounted at `/var/lib/postgresql` and that PostgreSQL is running.
-6. Creates the admin user from `.env`.
-7. Loads AdventureWorks, if enabled.
-8. Checks that port 5432 is reachable, from your machine or, on the isolated network, from the router. Then prints how to connect.
-
-Because new clones use the template's IP, deploy one VM at a time.
+1. Adds the data disk (scsi1, serial `postgres-data`) and formats it as ext4 if it has no filesystem yet.
+2. Checks the disk is mounted at `/var/lib/postgresql` and PostgreSQL is running.
+3. Creates or updates the admin user.
+4. Loads AdventureWorks, if enabled.
+5. Checks the port accepts connections (from the router, on an isolated network) and prints how to connect.
 
 ## Connecting
 
-On the home network:
+On a home network:
 
 ```bash
 psql -h 192.168.1.12 -U pgadmin -d postgres
 ```
 
-On the isolated network, VMs on the same LAN connect to `postgres` (or `10.1.0.12`). From home, [expose](../router/README.md#port-forwards) the port in the host's entry, redeploy the router, and connect to the router's address:
+On an isolated network, VMs on it and VPN clients connect to `postgres.lab.home.arpa`. From home, forward the port in the host's entry and redeploy postgres and the router:
 
 ```yaml
     expose:
@@ -108,75 +68,59 @@ On the isolated network, VMs on the same LAN connect to `postgres` (or `10.1.0.1
 psql -h 192.168.1.13 -U pgadmin -d postgres
 ```
 
-Forwarded connections keep your home address. When `settings.allowed_networks` is unset, password logins are allowed from the host's own network, plus the upstream network (home) once the host has `expose:` entries. Set it to a list of network names or subnets, such as `[home, lab]`, to choose yourself.
+On the VM itself, the `postgres` system user connects without a password: `sudo -u postgres psql`.
 
-On the VM itself, the `postgres` system user can connect without a password:
+## Who may log in
 
-```bash
-sudo -u postgres psql
-```
+`settings.allowed_networks` lists where password logins over TCP are allowed from, as network names (from `networks/`) or subnets. Left unset, it is:
+
+- the host's own network,
+- its router's VPN, if the network has one,
+- the upstream network (home), once the host has `expose:` entries, since forwarded connections keep their home address.
+
+The firewall opens the port to everyone who can reach the VM; `pg_hba.conf` decides who may log in.
 
 ## Data disk
 
-The database files are on their own disk (scsi1, serial `postgres-data`), separate from the operating system. The size is `postgres_data_disk_gb` in `vars.yaml`.
+The database files are on their own disk, separate from the operating system.
 
-- **Growing:** raise `postgres_data_disk_gb` and re-run the playbook. It grows the disk in Proxmox, then grows the filesystem while PostgreSQL keeps running.
-- **Shrinking isn't possible.** Proxmox can't shrink disks, so the playbook stops with an error if the value is smaller than the current disk.
-- **Re-runs never wipe it.** The disk is only formatted if it has no filesystem yet.
+- **Growing:** raise `data_disk.size_gb` and redeploy. The disk grows in Proxmox, then the filesystem grows while PostgreSQL keeps running.
+- **Shrinking isn't possible.** Proxmox can't shrink disks, so the deploy stops if the size is smaller than the current disk.
+- **Redeploys never wipe it.** It is only formatted if it has no filesystem yet.
 
-If the disk is ever missing at boot, the VM still starts and you can SSH in, but PostgreSQL won't start. That stops it from writing a new, empty database onto the system disk.
+If the disk is missing at boot, the VM still starts and you can SSH in, but PostgreSQL won't start. That stops it writing a new, empty database onto the system disk.
 
 ## AdventureWorks sample database
 
-To load it, set this in `vars.yaml` and run the playbook:
+Set `settings.adventureworks.enabled: true` and redeploy. The deploy downloads the repo on the VM at the commit in `settings.adventureworks.version`, creates the database owned by the admin user, and runs `install.sql`. It takes a few minutes, and the download is deleted afterwards.
 
-```yaml
-adventureworks_enabled: true
-```
-
-The playbook downloads the repo on the VM at the commit in `adventureworks_version`, creates the `Adventureworks` database owned by the admin user, and runs `install.sql`. The import takes a few minutes, and the download is deleted afterwards.
-
-- It only loads the data if the database doesn't exist yet, so re-runs never overwrite it. To reload it, drop the database and re-run.
-- If the import fails, the playbook removes the partly loaded database so the next run starts fresh.
-- Some `\copy` lines in that repo's `install.sql` point to `X.csv` instead of `./data/X.csv`. The playbook links the CSV files next to `install.sql` so both forms work. If you fix the paths in the repo, update `adventureworks_version` to the new commit.
-
-## Home or isolated network
-
-`postgres_network` in `vars.yaml` decides where the VM lives:
-
-- `home`: on `vmbr0` at `192.168.1.12`.
-- `isolated`: on the router's isolated LAN at `10.1.0.12` (`postgres_isolated_ip`). It reaches the internet through the router, but not the home network. Deploy the router first.
-
-To deploy straight onto the isolated network, set `postgres_network: "isolated"` before the first run. To move a deployed server, change the setting and re-run `postgres.yaml`, or move it without redeploying:
-
-```bash
-# move the host's entry to the other network file, then deploy it
-# move the host's entry to the other network file, then deploy it
-```
-
-`move-network.yaml` only changes the network settings and keeps the data disk and databases as they are. It updates `postgres_network` in `vars.yaml` to match. The users playbook (`users/users.yaml`) reads `postgres_network` too, and reaches an isolated server through the router.
+- It only loads if the database doesn't exist yet, so redeploys never overwrite it. To reload, drop the database and redeploy.
+- If the import fails, the partly loaded database is removed, so the next run starts fresh.
+- Some `\copy` lines in that repo's `install.sql` point to `X.csv` instead of `./data/X.csv`. The deploy links the CSV files next to `install.sql`, so both forms work.
 
 ## Making changes
 
-Edit the files here and re-run the playbook. When VM 112 already exists, the playbook updates it in place on its own IP and doesn't re-clone it.
+Edit the host's entry or the files here and redeploy. An existing VM is updated in place.
 
-- **Allowed networks or port:** change `settings.allowed_networks` or `settings.port` in the network file. The firewall follows the port. If the host is exposed, change its `expose:` port to match.
-- **PostgreSQL version:** `postgres_version` can be 16, 17 or 18. Changing it on an existing server starts a new, empty data directory next to the old one (for example `/var/lib/postgresql/18`). It doesn't migrate your data, so dump and restore first.
-- **NixOS settings:** edit `configuration.nix`. Leave the hostname, IP and PostgreSQL version out of it; they belong in `vars.yaml`.
+- **Port or allowed networks:** change them under `settings:`. The firewall follows the port. If the host is exposed, change its `expose:` port to match.
+- **Version:** changing `settings.version` on an existing server starts a new, empty data directory next to the old one (such as `/var/lib/postgresql/18`). It doesn't migrate data, so dump and restore first.
+- **NixOS settings:** edit [files/configuration.nix](files/configuration.nix). Leave the hostname, addresses, version and port out; they come from the network file.
+- **Address or network:** change `ip`, or move the entry to another network file, and redeploy. The data disk moves with the VM. See [Moving a VM between networks](../../README.md#moving-a-vm-between-networks).
 
-The playbook refuses to configure VM 112 if it exists under a name other than `postgres`.
+## Files
 
-## Linked clone
+| File | Purpose |
+|---|---|
+| `files/configuration.nix` | NixOS configuration: PostgreSQL and the data disk mount |
+| `templates/postgres.nix.j2` | Generated settings: version, port, allowed networks, firewall |
+| `templates/users.sql.j2` | SQL for [database users](USERS.md) |
+| `env.example`, `users-env.example` | Templates for the admin and users' secrets files |
+| `tasks/` | `prepare.yml` (secrets), `configure.yml` (disk, switch, admin, AdventureWorks), `verify.yml`, `ports.yml` |
 
-By default the VM is a linked clone (`postgres_full_clone: false`). It's created quickly and uses little disk, but Proxmox won't delete the template while the clone exists, so `./bootstrap.sh --force` fails. Set `postgres_full_clone: true` before the first deploy to make an independent copy instead. The data disk is always a separate, independent disk.
-
-## Removing the server
+## Removing it
 
 ```bash
-source proxmox/.env
 ansible-playbook playbooks/destroy-host.yaml -e network=lab -e host=postgres
 ```
 
-This permanently deletes VM 112, its data disk and every database on it. The playbook asks you to type `postgres` to confirm. To skip the prompt in a script, pass `-e confirm_destroy=postgres`.
-
-It then stops the VM, deletes it, and removes `192.168.1.12` and `10.1.0.12` from your known_hosts. It refuses to delete VM 112 if that VM has a name other than `postgres`, and does nothing if the VM doesn't exist.
+This permanently deletes the VM, its data disk and every database on it. It asks you to type the host name. Remove the entry from the network file too, or the next deploy creates it again.

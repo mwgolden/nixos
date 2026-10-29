@@ -5,12 +5,16 @@ gitea_settings_defaults:
   # Port the web interface listens on. Git over SSH uses the VM's SSH on 22.
   http_port: 3000
   # The address people use to reach Gitea, shown in links and clone URLs.
-  # Left empty, they are the VM's own address, http_port and 22. On an
-  # isolated network, set them to the router's WAN address and the
-  # forwarded ports, for example "192.168.1.13", 3000 and 2222.
-  # With a proxy: entry for http_port, the web address is the proxy's
-  # HTTPS name instead, and public_host and public_ssh_port only set the
-  # SSH address in clone URLs.
+  # Left empty, they are worked out:
+  # - With a proxy: entry for http_port, the web address is the proxy's
+  #   HTTPS name, and public_http_port is ignored.
+  # - Otherwise, with an expose: entry for http_port, it is the router's
+  #   WAN address and that entry's wan_port.
+  # - SSH uses the router's WAN address and wan_port when port 22 has an
+  #   expose: entry, else the VM's DNS name (behind a proxy) or address.
+  # - Failing all those, the VM's own address, http_port and 22.
+  # Set them only to override this, for example for a name on the home
+  # router.
   public_host: ""
   public_http_port: ""
   public_ssh_port: ""
@@ -32,18 +36,29 @@ gitea_vm_name: "{{ vm.name }}"
 gitea_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}.env"
 
 data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_gitea-data"
-# Used in links and clone URLs; see public_* in gitea_settings_defaults.
-gitea_url_host: "{{ gitea_public_host or final.ip }}"
-gitea_url_http_port: "{{ gitea_public_http_port or gitea_http_port }}"
-gitea_url_ssh_port: "{{ gitea_public_ssh_port or 22 }}"
+# The router's WAN address on an isolated network, where expose: entries
+# are forwarded from; '' on a home network.
+router_ip: "{{ nixlab.networks[vm.network.name].router_wan_ip | default('') }}"
+gitea_web_forward: >-
+  {{ vm.expose | selectattr('port', 'equalto', gitea_http_port | int) | first | default({}) }}
+gitea_ssh_forward: >-
+  {{ vm.expose | selectattr('port', 'equalto', 22) | first | default({}) }}
 # The network proxy's route to the web interface, or {}.
 gitea_route: >-
   {{ vm.network.proxy_routes | selectattr('host', 'equalto', vm.name)
      | selectattr('port', 'equalto', gitea_http_port | int) | first | default({}) }}
+# Used in links and clone URLs; see public_* in gitea_settings_defaults.
+gitea_url_host: >-
+  {{ gitea_public_host or (router_ip if gitea_web_forward else final.ip) }}
+gitea_url_http_port: >-
+  {{ gitea_public_http_port or gitea_web_forward.wan_port | default(gitea_http_port) }}
 # Behind the proxy, SSH can't use the route's name: that points at the
 # proxy, which only serves HTTPS. Use the VM's own name instead.
 gitea_ssh_host: >-
-  {{ gitea_public_host or (vm.dns_name if gitea_route else '') or gitea_url_host }}
+  {{ gitea_public_host or (router_ip if gitea_ssh_forward else '')
+     or (vm.dns_name if gitea_route else '') or final.ip }}
+gitea_url_ssh_port: >-
+  {{ gitea_public_ssh_port or gitea_ssh_forward.wan_port | default(22) }}
 gitea_proxy_ip: >-
   {{ (nixlab.hosts[vm.network.proxy].ip) if vm.network.proxy else '' }}
 # Runs the gitea command as the gitea user against the live settings.

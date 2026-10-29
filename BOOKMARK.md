@@ -2,16 +2,36 @@
 
 Progress against [PLAN.md](PLAN.md). The newest entry is at the top.
 
-## All phases done (paused 2026-10-29)
+## Follow-ups done (2026-10-29)
 
-Phases 0 to 8 of [PLAN.md](PLAN.md) are built. None of Phases 3 to 8 has run on real VMs, except your router run that found the conditional bug. Please test live, in this order:
+All of Phases 0 to 8 are built and passed your live tests. These follow-ups came after; none has run live yet.
 
-1. `ansible-playbook playbooks/validate-network.yaml`. It also compares the files with Proxmox. If VM 111 is still named `webserver` in Proxmox, rename it to `webserver-lab` first, since `home.yaml` now uses `webserver` for VM 150.
-2. `ansible-playbook playbooks/deploy-network.yaml -e network=lab`. It now ends with the network checks, and their report is the main thing to read.
+- **Role READMEs rewritten** for [webserver](roles/webserver/README.md), [postgres](roles/postgres/README.md), [gitea](roles/gitea/README.md), [garage](roles/garage/README.md) and [router](roles/router/README.md):
+  - The "Moved to network files" notes and their tables of old settings are gone.
+  - The text no longer mentions per-host `vars.yaml`, `move-network.yaml`, the old per-host playbooks, or "home or isolated" switches.
+  - Each starts with an example host entry, then describes only what that type adds to a deploy. The router README's DNS, VPN, port forward and firewall sections were already current, and are kept.
+- **Gitea's address is worked out from the host's entry.** `public_host`, `public_http_port` and `public_ssh_port` default from it, and are now only needed as overrides. In order:
+  - A `proxy:` route gives `https://<route>.<domain>/`.
+  - Otherwise, an `expose:` entry for `http_port` gives the router's WAN address and its `wan_port`.
+  - SSH uses the router's address and `wan_port` when port 22 has an `expose:` entry, otherwise the VM's DNS name (behind a route) or its address.
+  - The deploy message now prints the SSH clone URL too.
+  - I rendered it for five cases (route, plain, both forwards, route plus SSH forward, override) and checked `gitea.nix`.
+- **Bug fixed:** Gitea's deploy message used `router_ip`, which the Gitea role never defined. It would have failed for an isolated Gitea without a route or `public_host`. Gitea now defines it, like postgres and garage do.
+- **SSH options in one place.** Placement, `postgres-users.yaml` and the router inventory now use the `nixlab_ssh_args` filter, instead of their own copies of the SSH and ProxyCommand options. The new output is identical to the old, which I checked with an assert.
+- **Checks:** 126 unit tests pass, and so does `--syntax-check` on every playbook.
+
+**To try live:** `deploy-host -e network=lab -e host=gitea`. With your current `lab.yaml` (a `git` route, no forwards), the address should still be `https://git.lab.home.arpa/`, with SSH clones at `gitea.lab.home.arpa:22`. Any deploy also exercises the placement change.
+
+## All phases done (2026-10-29, tested live)
+
+Phases 0 to 8 of [PLAN.md](PLAN.md) are built and passed your live tests. The order used:
+
+1. `ansible-playbook playbooks/validate-network.yaml` (after renaming VM 111 to `webserver-lab`).
+2. `ansible-playbook playbooks/deploy-network.yaml -e network=lab`, ending with the network checks.
 3. `ansible-playbook playbooks/verify-network.yaml -e network=home`.
 4. The test network steps below, which cover the proxy, the VPN and lldap.
 
-If a check fails on something that's fine, send me the report. The most likely false alarm is a service listening on a port its type's `ports.yml` doesn't list.
+If a check later fails on something that's fine, the most likely cause is a service listening on a port its type's `ports.yml` doesn't list.
 
 ### Test network steps (from the Phase 7 pause)
 
@@ -39,7 +59,7 @@ Phase 8 adds checks at the end of `deploy-network`, from ARCHITECTURE.MD §10. B
 
 The [Phase 3 to 5 checks](#live-checks-for-phases-3-to-5) also still apply.
 
-## Phase 8: deployment checks (done 2026-10-29, not yet tested live)
+## Phase 8: deployment checks (done 2026-10-29, tested live)
 
 - **New role [network_verify](roles/network_verify/README.md):** runs at the end of `deploy-network.yaml` once every host is deployed, and on its own with the new [playbooks/verify-network.yaml](playbooks/verify-network.yaml), which changes nothing.
 - **On each VM:**

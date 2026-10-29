@@ -209,11 +209,7 @@
         ansible_host: "{{ pg_vm.ip }}"
         ansible_user: admin
         ansible_ssh_private_key_file: "{{ key }}"
-        ansible_ssh_common_args: >-
-          -o StrictHostKeyChecking=accept-new
-          {% if router_wan %}-o ProxyCommand="ssh -i '{{ key }}'
-          -o StrictHostKeyChecking=accept-new -o BatchMode=yes
-          -W %h:%p admin@{{ router_wan }}"{% endif %}
+        ansible_ssh_common_args: "{{ router_wan | nixlab_ssh_args(key) }}"
       vars:
         router_wan: "{{ pg_routers[network].router_wan_ip if pg_vm.network.type == 'isolated' else '' }}"
         key: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"

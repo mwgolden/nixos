@@ -17,14 +17,15 @@
 - name: Show where Gitea is
   ansible.builtin.debug:
     msg: >-
-      {% if final.via_router and not gitea_public_host and not gitea_route -%}
-      Gitea is up on the isolated network at http://{{ final.ip }}:{{ gitea_http_port }}/.
+      {% if final.via_router and not gitea_public_host and not gitea_route and not gitea_web_forward -%}
+      Gitea is up on the isolated network at {{ gitea_url | trim }}.
       To reach it from home, add expose: entries to {{ vm.name }} in
       networks/{{ vm.network.name }}.yaml ({name: web, port: {{ gitea_http_port }}}
-      and {name: ssh, port: 22, wan_port: 2222}) and redeploy the router,
-      then set public_host to {{ router_ip }} and the public_*_port settings
-      to those wan_ports, and redeploy {{ vm.name }}.
+      and {name: ssh, port: 22, wan_port: 2222}), or a proxy: route with
+      external: true, and redeploy the router and {{ vm.name }}.
       {%- else -%}
-      Gitea is up at {{ gitea_url | trim }}. Log in as
-      {{ gitea_admin_user }} (password in secrets/{{ vm.network.name }}/{{ vm.name }}.env).
+      Gitea is up at {{ gitea_url | trim }}, with SSH clones at
+      ssh://gitea@{{ gitea_ssh_host | trim }}:{{ gitea_url_ssh_port | trim }}/<owner>/<repo>.git.
+      Log in as {{ gitea_admin_user }} (password in
+      secrets/{{ vm.network.name }}/{{ vm.name }}.env).
       {%- endif %}

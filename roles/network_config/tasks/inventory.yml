@@ -30,7 +30,7 @@
     ansible_host: "{{ item.router_wan_ip }}"
     ansible_user: admin
     ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
-    ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+    ansible_ssh_common_args: "{{ '' | nixlab_ssh_args('') }}"
     vm: "{{ nixlab.hosts[item.router] }}"
     nixlab: "{{ nixlab }}"
   loop: "{{ nixlab.networks.values() | selectattr('router') | list }}"
