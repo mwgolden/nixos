@@ -3,7 +3,7 @@
 
 - name: Report that there are no port forwards
   ansible.builtin.debug:
-    msg: "The router has no settings.port_forwards in networks/{{ vm.network.name }}.yaml. Nothing is forwarded."
+    msg: "No host in networks/{{ vm.network.name }}.yaml has expose: entries. Nothing is forwarded."
   when: router_port_forwards | length == 0
 
 # Only TCP can be tested this way. A TCP forward only answers once the
@@ -23,10 +23,10 @@
   ansible.builtin.debug:
     msg: >-
       {{ item.name }}: {{ item.proto }} {{ router_ip }}:{{ item.wan_port }}
-      -> {{ item.lan_ip }}:{{ item.lan_port | default(item.wan_port) }}
+      -> {{ item.host }} {{ item.lan_ip }}:{{ item.lan_port }}
       {%- if item.proto == 'udp' %} (UDP, not tested)
       {%- elif (forward_tests.results | selectattr('item.name', 'equalto', item.name) | first) is succeeded %} (answering)
-      {%- else %} (not answering: is the service on {{ item.lan_ip }} running and listening on port {{ item.lan_port | default(item.wan_port) }}?)
+      {%- else %} (not answering: is {{ item.host }} deployed, and listening on port {{ item.lan_port }}?)
       {%- endif %}
   loop: "{{ router_port_forwards }}"
   loop_control:
@@ -38,4 +38,6 @@
       The router is up on {{ router_ip }} (WAN). VMs attached to
       {{ router_lan_bridge }} get an address from {{ router_dhcp_range_start }}
       to {{ router_dhcp_range_end }} with gateway and DNS
-      {{ router_lan_ip }}.
+      {{ router_lan_ip }}. Its DNS server answers for
+      {{ router_dns_records | map(attribute='name') | join(', ') }}, as the
+      name alone or under {{ router_domain }}.

@@ -13,7 +13,7 @@
 > | `postgres_data_disk_storage` | `data_disk.storage` |
 > | `postgres_version` | `settings.version` |
 > | `postgres_port` | `settings.port` |
-> | `postgres_allowed_networks` | `settings.allowed_networks` |
+> | `postgres_allowed_networks` | `settings.allowed_networks` (network names or subnets; worked out when unset) |
 > | `adventureworks_enabled` | `settings.adventureworks.enabled` |
 > | `adventureworks_database` | `settings.adventureworks.database` |
 > | `adventureworks_repo` | `settings.adventureworks.repo` |
@@ -97,21 +97,18 @@ On the home network:
 psql -h 192.168.1.12 -U pgadmin -d postgres
 ```
 
-On the isolated network, VMs on the same LAN connect to `10.1.0.12`. From home, add a [router port forward](../router/README.md#port-forwards) and connect to the router's address:
+On the isolated network, VMs on the same LAN connect to `postgres` (or `10.1.0.12`). From home, [expose](../router/README.md#port-forwards) the port in the host's entry, redeploy the router, and connect to the router's address:
 
 ```yaml
-router_port_forwards:
-  - name: postgres
-    proto: tcp
-    wan_port: 5432
-    lan_ip: "10.1.0.12"
+    expose:
+      - port: 5432
 ```
 
 ```bash
 psql -h 192.168.1.13 -U pgadmin -d postgres
 ```
 
-Forwarded connections keep your home address, so `192.168.1.0/24` in `postgres_allowed_networks` still applies to them.
+Forwarded connections keep your home address. When `settings.allowed_networks` is unset, password logins are allowed from the host's own network, plus the upstream network (home) once the host has `expose:` entries. Set it to a list of network names or subnets, such as `[home, lab]`, to choose yourself.
 
 On the VM itself, the `postgres` system user can connect without a password:
 
@@ -163,7 +160,7 @@ To deploy straight onto the isolated network, set `postgres_network: "isolated"`
 
 Edit the files here and re-run the playbook. When VM 112 already exists, the playbook updates it in place on its own IP and doesn't re-clone it.
 
-- **Allowed networks or port:** change `postgres_allowed_networks` or `postgres_port` in `vars.yaml`. The firewall follows the port.
+- **Allowed networks or port:** change `settings.allowed_networks` or `settings.port` in the network file. The firewall follows the port. If the host is exposed, change its `expose:` port to match.
 - **PostgreSQL version:** `postgres_version` can be 16, 17 or 18. Changing it on an existing server starts a new, empty data directory next to the old one (for example `/var/lib/postgresql/18`). It doesn't migrate your data, so dump and restore first.
 - **NixOS settings:** edit `configuration.nix`. Leave the hostname, IP and PostgreSQL version out of it; they belong in `vars.yaml`.
 

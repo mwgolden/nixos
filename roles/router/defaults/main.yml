@@ -1,6 +1,6 @@
 # Defaults for router hosts. Set any of router_settings_defaults under the
-# router's settings: in its network file. The LAN address, DHCP range and
-# bridge come from the network itself.
+# router's settings: in its network file. The LAN address, DHCP range,
+# bridge, DNS records and port forwards come from the network itself.
 
 router_settings_defaults:
   # Upstream DNS servers the router forwards LAN clients' queries to. Public
@@ -14,10 +14,6 @@ router_settings_defaults:
     - 192.168.0.0/16
     - 172.16.0.0/12
     - 10.0.0.0/8
-  # Ports on the router's WAN address forwarded to hosts on its network:
-  # name, proto (tcp or udp), wan_port, lan_ip and optionally lan_port.
-  # TCP 22 can't be forwarded: it is the router's own SSH.
-  port_forwards: []
 
 router_settings: "{{ router_settings_defaults | combine(vm.settings) }}"
 
@@ -36,4 +32,9 @@ router_dhcp_range_end: "{{ vm.network.dhcp.end }}"
 router_dhcp_lease_time: "{{ vm.network.dhcp.lease_time | default('12h') }}"
 router_dns_servers: "{{ router_settings.dns_servers }}"
 router_blocked_networks: "{{ router_settings.blocked_networks }}"
-router_port_forwards: "{{ router_settings.port_forwards }}"
+# Built from the expose: entries of the network's hosts: name, host, proto,
+# wan_port, lan_ip and lan_port.
+router_port_forwards: "{{ vm.network.port_forwards }}"
+# The router's DNS server answers for every host on its network.
+router_domain: "{{ vm.network.domain }}"
+router_dns_records: "{{ vm.network.dns_records }}"

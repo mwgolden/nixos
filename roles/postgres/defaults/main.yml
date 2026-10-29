@@ -6,10 +6,11 @@ postgres_settings_defaults:
   # server starts a new, empty data directory; it does not migrate data.
   version: 17
   port: 5432
-  # Networks allowed to connect over TCP with a password. Home clients
-  # reaching an isolated postgres through a router port forward keep their
-  # home address.
-  allowed_networks: []
+  # Networks allowed to connect over TCP with a password, as network names
+  # (from networks/) or subnets. Left unset, it is the host's own network,
+  # plus the upstream network when the host has expose: entries: forwarded
+  # connections keep their home address.
+  # allowed_networks: [home, lab]
   # The AdventureWorks sample database. Only loaded if the database doesn't
   # exist yet, so re-runs never overwrite it.
   adventureworks:
@@ -23,7 +24,11 @@ postgres_settings: "{{ postgres_settings_defaults | combine(vm.settings, recursi
 # The names the configuration templates and tasks use.
 postgres_version: "{{ postgres_settings.version }}"
 postgres_port: "{{ postgres_settings.port }}"
-postgres_allowed_networks: "{{ postgres_settings.allowed_networks }}"
+postgres_allowed_networks: >-
+  {{ (postgres_settings.allowed_networks
+      if 'allowed_networks' in postgres_settings
+      else (vm | host_client_networks(nixlab)))
+     | network_cidrs(nixlab) }}
 adventureworks_enabled: "{{ postgres_settings.adventureworks.enabled }}"
 adventureworks_database: "{{ postgres_settings.adventureworks.database }}"
 adventureworks_repo: "{{ postgres_settings.adventureworks.repo }}"

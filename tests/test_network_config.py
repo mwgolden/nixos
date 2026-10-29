@@ -146,18 +146,63 @@ class Mutations(unittest.TestCase):
         del self.host("home", "gitea")["data_disk"]
         self.assertError("a gitea host needs a data_disk")
 
-    def test_port_forward_target_must_be_a_host(self):
-        self.host("lab", "router")["settings"]["port_forwards"][0]["lan_ip"] = "10.1.0.99"
-        self.assertError("lan_ip 10.1.0.99 is not a host on network lab")
+    def test_router_port_forwards_replaced(self):
+        self.host("lab", "router")["settings"]["port_forwards"] = []
+        self.assertError("settings.port_forwards has been replaced by expose:")
 
-    def test_port_forward_ssh(self):
-        self.host("lab", "router")["settings"]["port_forwards"][0]["wan_port"] = 22
-        self.assertError("TCP 22 can't be forwarded")
+    def test_expose_ssh(self):
+        self.host("lab", "postgres")["expose"] = [{"port": 22}]
+        self.assertError("TCP 22 on the router can't be forwarded")
 
-    def test_duplicate_port_forward(self):
-        fwds = self.host("lab", "router")["settings"]["port_forwards"]
-        fwds.append(dict(fwds[0], name="again"))
-        self.assertError("tcp/5432 is already forwarded")
+    def test_expose_ssh_with_other_wan_port_is_fine(self):
+        self.host("lab", "postgres")["expose"].append({"name": "ssh", "port": 22, "wan_port": 2222})
+        self.assertEqual(errors(self.files), [])
+
+    def test_expose_udp_22_is_fine(self):
+        self.host("lab", "postgres")["expose"].append({"name": "x", "proto": "udp", "port": 22})
+        self.assertEqual(errors(self.files), [])
+
+    def test_expose_duplicate_wan_port(self):
+        self.host("lab", "postgres")["expose"].append({"name": "again", "port": 6432, "wan_port": 5432})
+        self.assertError("tcp/5432 is already forwarded to postgres")
+
+    def test_expose_duplicate_name(self):
+        self.host("lab", "postgres")["expose"].append({"port": 6432})
+        self.assertError("forward name 'postgres' is already used")
+
+    def test_expose_on_home_network(self):
+        self.host("home", "webserver")["expose"] = [{"port": 80}]
+        self.assertError("expose is only used on isolated networks")
+
+    def test_expose_on_router(self):
+        self.host("lab", "router")["expose"] = [{"port": 80}]
+        self.assertError("a router can't expose ports")
+
+    def test_expose_bad_port_and_key(self):
+        self.host("lab", "postgres")["expose"] = [{"port": 70000, "lan_ip": "10.1.0.12"}]
+        self.assertError("port must be from 1 to 65535")
+        self.assertError("unknown setting lan_ip")
+
+    def test_expose_bad_proto(self):
+        self.host("lab", "postgres")["expose"][0]["proto"] = "icmp"
+        self.assertError("proto must be tcp or udp")
+
+    def test_bad_domain(self):
+        self.by_name["lab"]["network"]["domain"] = "Lab_Net"
+        self.assertError("domain must be a DNS name")
+
+    def test_duplicate_domain(self):
+        self.by_name["lab"]["network"]["domain"] = "home.home.arpa"
+        self.assertError("domain home.home.arpa is already used")
+
+    def test_allowed_networks_names_and_subnets(self):
+        self.host("lab", "postgres")["settings"]["allowed_networks"] = ["home", "10.9.0.0/16"]
+        self.assertEqual(errors(self.files), [])
+
+    def test_allowed_networks_unknown(self):
+        self.host("lab", "postgres")["settings"]["allowed_networks"] = ["office", "10.9.0.1/16"]
+        self.assertError("'office' is neither a network")
+        self.assertError("'10.9.0.1/16' is neither a network")
 
     def test_isolated_needs_dhcp(self):
         del self.by_name["lab"]["network"]["dhcp"]

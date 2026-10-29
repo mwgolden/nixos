@@ -152,7 +152,7 @@ The deploy:
 3. Finds the VM. A new clone boots on the template's IP. An existing VM is found at the address its last deploy recorded in its Proxmox notes.
 4. Checks that the VM's MAC address matches Proxmox's before changing anything.
 5. Installs its NixOS configuration and runs `nixos-rebuild switch`, which moves it to its own IP.
-6. Records the new address in its Proxmox notes, then checks that its service answers.
+6. Records the new address in its Proxmox notes, as `nixlab-address: <ip> on <bridge>`, then checks that its service answers. On an isolated network it also records the VM's DNS name, as `nixlab-dns: postgres.lab.home.arpa`. That name only works from VMs on that network. Other lines in the notes are kept.
 
 Running it again on an existing VM updates it in place. VMs on an isolated network are reached over SSH through that network's router, so deploy the router first.
 
@@ -199,7 +199,7 @@ Because every new clone starts on `.10`, the deploy works on one VM at a time.
 | `10.1.0.12`                 | postgres (VM 112)                          |
 | `10.1.0.100` – `10.1.0.199` | DHCP pool                                  |
 
-VMs on `vmbr1` reach the internet but not `192.168.1.0/24` or other private networks. From home, they're reachable only through port forwards on the router, set in the router's `settings.port_forwards` in `networks/lab.yaml`.
+VMs on `vmbr1` reach the internet but not `192.168.1.0/24` or other private networks. From home, they're reachable only through port forwards on the router, made from each host's `expose:` entries in `networks/lab.yaml`. The router's DNS server answers for the network's hosts, as `postgres` or `postgres.lab.home.arpa`.
 
 With every server on the isolated network, traffic flows like this:
 

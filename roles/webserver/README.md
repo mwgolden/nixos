@@ -74,14 +74,11 @@ To move a deployed webserver, either change `webserver_network` and re-run `webs
 
 `move-network.yaml` only changes the VM's network settings, and updates `webserver_network` in `vars.yaml` to match. See the [main README](../../README.md#moving-a-vm-between-networks).
 
-To publish the site from the isolated network, add a forward in `networks/lab.yaml (the router's settings)` and run `the router's deploy`:
+To publish the site from the isolated network, [expose](../router/README.md#port-forwards) port 80 in the host's entry and redeploy the router:
 
 ```yaml
-router_port_forwards:
-  - name: website
-    proto: tcp
-    wan_port: 80
-    lan_ip: "10.1.0.11"
+    expose:
+      - port: 80
 ```
 
 The site is then at `http://192.168.1.13/`.

@@ -17,11 +17,36 @@ NETWORK_TYPES = ("home", "isolated")
 HOST_TYPES = ("webserver", "postgres", "gitea", "garage", "router")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 PORT_FORWARD_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
+# Used when a network sets no domain. home.arpa is reserved for local
+# networks (RFC 8375), so these names never clash with real ones.
+DEFAULT_DOMAIN_SUFFIX = "home.arpa"
 
 NETWORK_KEYS = {"name", "type", "bridge", "cidr", "gateway", "nameserver",
-                "upstream", "dhcp", "reserved"}
+                "upstream", "dhcp", "reserved", "domain"}
 HOST_KEYS = {"name", "type", "vm_id", "ip", "wan_ip", "full_clone",
-             "data_disk", "settings"}
+             "data_disk", "settings", "expose"}
+EXPOSE_KEYS = {"name", "proto", "port", "wan_port"}
+
+
+def network_domain(net):
+    """A network's DNS domain: its domain setting, or <name>.home.arpa."""
+    return net.get("domain") or f"{net['name']}.{DEFAULT_DOMAIN_SUFFIX}"
+
+
+def _expose_entries(host):
+    """A host's expose: entries with the defaults filled in."""
+    entries = []
+    for e in host.get("expose") or []:
+        port = _int(e.get("port"))
+        entries.append({
+            # The forward's name, as the router reports it.
+            "name": f"{host['name']}-{e['name']}" if e.get("name") else host["name"],
+            "proto": e.get("proto", "tcp"),
+            "port": port,
+            "wan_port": _int(e.get("wan_port", port)),
+        })
+    return entries
 
 
 def _addr(value):
@@ -58,6 +83,10 @@ class _Checker:
         self.vm_ids = {}
         self.addresses = {}
         self.bridges = {}
+        self.domains = {}
+        # Per network: forward name -> host, (proto, wan_port) -> host.
+        self.forward_names = {}
+        self.forward_ports = {}
         self.cidrs = []  # (network, where)
         # Parsed networks by name, for upstream and WAN checks.
         self.networks = {}
@@ -108,6 +137,12 @@ class _Checker:
                 if cidr.overlaps(other):
                     self.error(where, f"cidr {cidr} overlaps {other} of {other_where}.")
             self.cidrs.append((cidr, where))
+
+        domain = net.get("domain")
+        if domain is not None and (not isinstance(domain, str) or not DOMAIN_RE.match(domain)):
+            self.error(where, f"domain must be a DNS name like lab.home.arpa (lowercase), not '{domain}'.")
+        else:
+            self.unique(self.domains, network_domain(net), where, "domain")
 
         parsed = {"name": name, "type": kind, "bridge": bridge, "cidr": cidr,
                   "where": where, "reserved": set(), "dhcp": None,
@@ -227,7 +262,10 @@ class _Checker:
                     self.pending_wan.append((net, where, wan_ip))
                 else:
                     self.check_address(upstream, where, "wan_ip", wan_ip)
-            self.check_port_forwards(net, where, host.get("settings") or {})
+            settings = host.get("settings")
+            if isinstance(settings, dict) and "port_forwards" in settings:
+                self.error(where, "settings.port_forwards has been replaced by expose: on the hosts the ports go to. "
+                                  "See networks/README.md.")
         elif "wan_ip" in host:
             self.error(where, "wan_ip is only used by routers.")
 
@@ -246,6 +284,11 @@ class _Checker:
 
         if not isinstance(host.get("settings", {}), dict):
             self.error(where, "settings must be a mapping.")
+        elif kind == "postgres":
+            self.check_allowed_networks(where, host.get("settings") or {})
+
+        if "expose" in host:
+            self.check_expose(net, where, host, kind)
 
     def check_address(self, net, where, key, ip, is_router=False):
         cidr = net["cidr"]
@@ -264,42 +307,62 @@ class _Checker:
             self.error(where, f"{key} {ip} is inside {net['name']}'s DHCP range {net['dhcp'][0]}-{net['dhcp'][1]}.")
         self.unique(self.addresses, ip, where, "address")
 
-    def check_port_forwards(self, net, where, settings):
-        forwards = settings.get("port_forwards", []) if isinstance(settings, dict) else []
-        if not isinstance(forwards, list):
-            self.error(where, "settings.port_forwards must be a list.")
+    def check_expose(self, net, where, host, kind):
+        expose = host.get("expose")
+        if not isinstance(expose, list):
+            self.error(where, "expose must be a list.")
             return
-        seen_names, seen_ports = set(), set()
-        for fwd in forwards:
-            if not isinstance(fwd, dict):
-                self.error(where, f"port forward {fwd!r} must be a mapping.")
+        if net["type"] != "isolated":
+            self.error(where, "expose is only used on isolated networks; hosts on a home network are reached directly.")
+            return
+        if kind == "router":
+            self.error(where, "a router can't expose ports; expose: goes on the hosts the ports are forwarded to.")
+            return
+        names = self.forward_names.setdefault(net["name"], {})
+        ports = self.forward_ports.setdefault(net["name"], {})
+        for entry in expose:
+            if not isinstance(entry, dict):
+                self.error(where, f"expose entry {entry!r} must be a mapping.")
                 continue
-            label = f"port forward '{fwd.get('name')}'"
-            if not PORT_FORWARD_NAME_RE.match(str(fwd.get("name", ""))):
-                self.error(where, f"{label} needs a name of letters, digits, '-' and '_'.")
-            proto = fwd.get("proto")
+            label = f"expose entry {entry.get('name') or entry.get('port')}"
+            for key in sorted(set(entry) - EXPOSE_KEYS):
+                self.error(where, f"{label}: unknown setting {key}.")
+            if "name" in entry and not PORT_FORWARD_NAME_RE.match(str(entry["name"])):
+                self.error(where, f"{label}: name must be letters, digits, '-' and '_'.")
+            proto = entry.get("proto", "tcp")
             if proto not in ("tcp", "udp"):
                 self.error(where, f"{label}: proto must be tcp or udp.")
-            wan_port = _int(fwd.get("wan_port"))
-            lan_port = _int(fwd.get("lan_port", fwd.get("wan_port")))
-            for key, port in (("wan_port", wan_port), ("lan_port", lan_port)):
-                if port is None or not 1 <= port <= 65535:
+            port = _int(entry.get("port"))
+            wan_port = _int(entry.get("wan_port", entry.get("port")))
+            for key, value in (("port", port), ("wan_port", wan_port)):
+                if value is None or not 1 <= value <= 65535:
                     self.error(where, f"{label}: {key} must be from 1 to 65535.")
             if proto == "tcp" and wan_port == 22:
-                self.error(where, f"{label}: TCP 22 can't be forwarded; it is the router's own SSH.")
-            if fwd.get("name") in seen_names:
-                self.error(where, f"{label}: two port forwards have this name.")
-            seen_names.add(fwd.get("name"))
-            if (proto, wan_port) in seen_ports:
-                self.error(where, f"{label}: {proto}/{wan_port} is already forwarded.")
-            seen_ports.add((proto, wan_port))
-            self.pending_forwards.append((net, where, label, fwd.get("lan_ip")))
+                self.error(where, f"{label}: TCP 22 on the router can't be forwarded; it is the router's own SSH. Set wan_port.")
+            forward = f"{host['name']}-{entry['name']}" if entry.get("name") else host["name"]
+            if forward in names:
+                self.error(where, f"{label}: forward name '{forward}' is already used. Give each entry its own name.")
+            names[forward] = host["name"]
+            if (proto, wan_port) in ports:
+                self.error(where, f"{label}: the router's {proto}/{wan_port} is already forwarded to {ports[(proto, wan_port)]}.")
+            ports[(proto, wan_port)] = host["name"]
+
+    def check_allowed_networks(self, where, settings):
+        allowed = settings.get("allowed_networks")
+        if allowed is None:
+            return
+        if not isinstance(allowed, list):
+            self.error(where, "settings.allowed_networks must be a list of network names or subnets.")
+            return
+        for item in allowed:
+            if not (str(item) in self.networks or _net(item) is not None):
+                self.error(where, f"settings.allowed_networks: '{item}' is neither a network in networks/ "
+                                  "nor a subnet like 10.1.0.0/24 (host bits zero).")
 
     # Driver
 
     def run(self, network_files):
         self.pending_wan = []
-        self.pending_forwards = []
         parsed = []
         # Networks first, so hosts can check against any network's settings.
         for item in network_files:
@@ -313,18 +376,12 @@ class _Checker:
                     self.error(net["where"], f"upstream '{net['upstream']}' is not a network in networks/.")
                 elif upstream["type"] != "home":
                     self.error(net["where"], f"upstream '{net['upstream']}' must be a home network.")
-        hosts_by_net = {}
         for net, config in parsed:
-            hosts_by_net[net["name"]] = self.check_hosts(net, config)
+            self.check_hosts(net, config)
         for net, where, wan_ip in self.pending_wan:
             upstream = self.networks.get(net["upstream"])
             if upstream is not None:
                 self.check_address(upstream, where, "wan_ip", wan_ip)
-        for net, where, label, lan_ip in self.pending_forwards:
-            targets = {str(h.get("ip")) for h in hosts_by_net.get(net["name"], [])
-                       if isinstance(h, dict) and h.get("type") != "router"}
-            if str(lan_ip) not in targets:
-                self.error(where, f"{label}: lan_ip {lan_ip} is not a host on network {net['name']}.")
         return self.errors
 
 
@@ -394,7 +451,17 @@ def network_config_inventory(network_configs):
                For a router that is the upstream network at wan_ip; for
                everything else its own network at ip.
       nics     extra network cards: a router's LAN card on its own bridge
-    and each network has "router": the name of its router host, or "".
+      expose   ports forwarded to it from its router's WAN address
+      dns_name its name in its router's DNS server, <name>.<domain>, or ""
+               on a home network, which has no DNS server here
+    and each network has:
+      router         the name of its router host, or ""
+      router_wan_ip  that router's upstream address, or ""
+      domain         its DNS domain
+      dns_records    {name, fqdn, ip} for every host on it, which its
+                     router's DNS server answers
+      port_forwards  {name, host, proto, wan_port, lan_ip, lan_port} built
+                     from its hosts' expose: entries, for its router
     """
     networks = {}
     for name, config in network_configs.items():
@@ -413,11 +480,21 @@ def network_config_inventory(network_configs):
             "dhcp": net.get("dhcp") or {},
             "router": router,
             "router_wan_ip": "",
+            "domain": network_domain(net),
+            "dns_records": [],
+            "port_forwards": [],
         }
     for name, config in network_configs.items():
         for h in config.get("hosts") or []:
             if h["type"] == "router":
                 networks[name]["router_wan_ip"] = str(h["wan_ip"])
+            net = networks[name]
+            net["dns_records"].append({"name": h["name"], "fqdn": f"{h['name']}.{net['domain']}",
+                                       "ip": str(h["ip"])})
+            for e in _expose_entries(h):
+                net["port_forwards"].append({"name": e["name"], "host": h["name"], "proto": e["proto"],
+                                             "wan_port": e["wan_port"], "lan_ip": str(h["ip"]),
+                                             "lan_port": e["port"]})
 
     hosts = {}
     for name, config in network_configs.items():
@@ -449,8 +526,33 @@ def network_config_inventory(network_configs):
                     "via_router": attach_net["router"] if attach_net["type"] == "isolated" else "",
                 },
                 "nics": [{"interface": "net1", "bridge": net["bridge"]}] if is_router else [],
+                "expose": _expose_entries(h),
+                "dns_name": f"{h['name']}.{net['domain']}" if net["type"] == "isolated" else "",
             }
     return {"networks": networks, "hosts": hosts}
+
+
+def host_client_networks(vm, inventory):
+    """Subnets that can reach a host: its own network's, plus the upstream
+    network's when it exposes ports through its router (forwarded
+    connections keep their upstream source address)."""
+    net = vm["network"]
+    cidrs = [net["cidr"]]
+    if vm.get("expose") and net["type"] == "isolated" and net["upstream"] in inventory["networks"]:
+        cidrs.append(inventory["networks"][net["upstream"]]["cidr"])
+    return cidrs
+
+
+def network_cidrs(entries, inventory):
+    """entries with each network name replaced by that network's subnet.
+    Subnets are kept as they are. Duplicates are dropped."""
+    result = []
+    for item in entries or []:
+        item = str(item)
+        cidr = inventory["networks"][item]["cidr"] if item in inventory["networks"] else item
+        if cidr not in result:
+            result.append(cidr)
+    return result
 
 
 ADDRESS_RE = re.compile(r"^nixlab-address: (\S+) on (\S+)$", re.M)
@@ -462,16 +564,35 @@ def recorded_address(description):
     return {"ip": match.group(1), "bridge": match.group(2)} if match else {}
 
 
-def record_address(description, ip, bridge):
-    """The VM's notes with its recorded address set to ip on bridge.
+DNS_RE = re.compile(r"^nixlab-dns: (\S+)$", re.M)
+
+
+def recorded_dns_name(description):
+    """The DNS name a deploy recorded in a VM's Proxmox notes, or ""."""
+    match = DNS_RE.search(description or "")
+    return match.group(1) if match else ""
+
+
+def _set_line(description, pattern, line):
+    """description with the line matching pattern replaced by line, or line
+    added at the end. An empty line removes the matching one."""
+    if pattern.search(description):
+        if line:
+            return pattern.sub(line, description, count=1)
+        return re.sub(r"\n{2,}", "\n", pattern.sub("", description, count=1)).strip("\n")
+    if not line:
+        return description
+    return (description.rstrip("\n") + "\n" + line) if description.strip() else line
+
+
+def record_address(description, ip, bridge, dns_name=""):
+    """The VM's notes with its recorded address set to ip on bridge, and its
+    DNS name set to dns_name (or removed, when dns_name is empty).
 
     Other lines in the notes are kept.
     """
-    line = f"nixlab-address: {ip} on {bridge}"
-    description = description or ""
-    if ADDRESS_RE.search(description):
-        return ADDRESS_RE.sub(line, description, count=1)
-    return (description.rstrip("\n") + "\n" + line) if description.strip() else line
+    description = _set_line(description or "", ADDRESS_RE, f"nixlab-address: {ip} on {bridge}")
+    return _set_line(description, DNS_RE, f"nixlab-dns: {dns_name}" if dns_name else "")
 
 
 def placement_candidates(vm, inventory, net0, description, new_clone, template_ip, template_bridge):
@@ -635,9 +756,12 @@ class FilterModule:
             "network_config_proxmox_errors": network_config_proxmox_errors,
             "network_config_summary": network_config_summary,
             "network_config_inventory": network_config_inventory,
+            "host_client_networks": host_client_networks,
+            "network_cidrs": network_cidrs,
             "placement_candidates": placement_candidates,
             "recorded_address": recorded_address,
             "record_address": record_address,
+            "recorded_dns_name": recorded_dns_name,
             "network_config_deploy_order": network_config_deploy_order,
             "nixlab_tags": nixlab_tags,
             "proxmox_tags_merge": proxmox_tags_merge,

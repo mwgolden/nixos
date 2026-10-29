@@ -21,10 +21,15 @@
     msg: >-
       {% if final.via_router -%}
       Garage is up on the isolated network at {{ garage_endpoint }}.
-      To reach it from home, add a port forward to the router's settings.port_forwards in
-      networks/{{ vm.network.name }}.yaml
-      (lan_ip {{ final.ip }}, lan_port {{ garage_s3_port }}) and redeploy the router. S3 clients then use
-      http://{{ router_ip }}:<wan_port>.
+      {% set forward = vm.expose | selectattr('port', 'equalto', garage_s3_port | int) | first | default(none) -%}
+      {% if forward -%}
+      From home, S3 clients use http://{{ router_ip }}:{{ forward.wan_port }}.
+      Redeploy the router if you just added this expose: entry.
+      {%- else -%}
+      To reach it from home, add expose: [{port: {{ garage_s3_port }}}] to
+      {{ vm.name }} in networks/{{ vm.network.name }}.yaml and redeploy the
+      router. S3 clients then use http://{{ router_ip }}:{{ garage_s3_port }}.
+      {%- endif %}
       {%- else -%}
       Garage is up. S3 clients use endpoint {{ garage_endpoint }},
       region {{ garage_s3_region }}, path-style addressing, and access key

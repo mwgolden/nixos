@@ -19,12 +19,11 @@
     msg: >-
       {% if final.via_router and not gitea_public_host -%}
       Gitea is up on the isolated network at http://{{ final.ip }}:{{ gitea_http_port }}/.
-      To reach it from home, add port forwards to the router's settings.port_forwards in
-      networks/{{ vm.network.name }}.yaml
-      (lan_ip {{ final.ip }}, lan_port {{ gitea_http_port }} for the web
-      and 22 for git over SSH, on a wan_port other than 22), redeploy the router, then set public_host and the
-      public_*_port settings of {{ vm.name }} in networks/{{ vm.network.name }}.yaml
-      and redeploy {{ vm.name }}.
+      To reach it from home, add expose: entries to {{ vm.name }} in
+      networks/{{ vm.network.name }}.yaml ({name: web, port: {{ gitea_http_port }}}
+      and {name: ssh, port: 22, wan_port: 2222}) and redeploy the router,
+      then set public_host to {{ router_ip }} and the public_*_port settings
+      to those wan_ports, and redeploy {{ vm.name }}.
       {%- else -%}
       Gitea is up at {{ gitea_url | trim }}. Log in as
       {{ gitea_admin_user }} (password in secrets/{{ vm.network.name }}/{{ vm.name }}.env).

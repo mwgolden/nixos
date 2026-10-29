@@ -31,6 +31,7 @@ ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox
 | `upstream` | isolated only | The home network that the router's WAN side is on. |
 | `dhcp` | isolated: yes. home: optional | `start`, `end` and `lease_time` (such as `12h`). On an isolated network the router serves this range. On a home network it records the home router's pool, so that no host is given an address from it. |
 | `reserved` | no | Addresses no host may use. The gateway and the template's address (`template_ip` in `proxmox/vars.yaml`) are always reserved. |
+| `domain` | no | DNS domain, unique across networks. Defaults to `<name>.home.arpa`. `home.arpa` is reserved for home networks by [RFC 8375](https://www.rfc-editor.org/rfc/rfc8375), so it never clashes with a public domain. On an isolated network, the router's DNS server answers for each host as `<host>` and `<host>.<domain>`. A home network's DNS is the home router's, so there it is only recorded. |
 
 ## `hosts:`
 
@@ -43,15 +44,26 @@ ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox
 | `wan_ip` | routers only | The router's address on the upstream network |
 | `full_clone` | no | `true` for a full copy of the template instead of a linked clone. Defaults to `false`. |
 | `data_disk` | postgres, gitea, garage | `size_gb` and `storage`. It can grow but never shrink. |
+| `expose` | no, isolated networks only | Ports forwarded to this host from its router's WAN address. Each entry has `port` (on the host), and optionally `wan_port` (on the router, defaults to `port`), `proto` (`tcp` or `udp`, defaults to `tcp`) and `name` (needed when a host has more than one). Redeploy the router after changing these. |
 | `settings` | no | Settings for this host type. The defaults are in the host type's role. |
 
-A router's `settings.port_forwards` entries need `name`, `proto` (`tcp` or `udp`), `wan_port`, `lan_ip` and optionally `lan_port`. `lan_ip` must be another host on the same network, and TCP 22 can't be forwarded.
+`expose:` replaces the router's old `settings.port_forwards`. Each router port can be forwarded to only one host, and TCP 22 on the router can't be used: it is the router's own SSH.
+
+Postgres's `settings.allowed_networks` takes network names as well as subnets. Left unset, it is the host's own network, plus the upstream network when the host has `expose:` entries.
+
+## What is derived from the files
+
+| What | From |
+|---|---|
+| The router's port forwards | `expose:` on the network's hosts |
+| The router's DNS records | Every host on the network, under `domain` |
+| Postgres password logins | `settings.allowed_networks`, or the networks that can reach the host |
 
 ## What validation checks
 
 Checked in the files, by [plugins/filter/network_config.py](../plugins/filter/network_config.py):
 
-- Every setting above.
+- Every setting above, including `expose:` and `domain`.
 - Names, VM IDs, addresses (including routers' `wan_ip`) and bridges are unique across all networks.
 - Subnets don't overlap.
 

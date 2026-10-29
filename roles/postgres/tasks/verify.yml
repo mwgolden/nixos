@@ -15,14 +15,20 @@
 - name: Show connection details
   ansible.builtin.debug:
     msg: >-
+      {% set forward = vm.expose | selectattr('port', 'equalto', postgres_port | int) | first | default(none) -%}
       {% if final.via_router -%}
-      PostgreSQL is up on the isolated network at {{ final.ip }}:{{ postgres_port }}.
-      VMs on the isolated LAN connect there. To reach it from home, add a
-      port forward to the router's settings.port_forwards in
-      networks/{{ vm.network.name }}.yaml (proto tcp, lan_ip {{ final.ip }},
-      lan_port {{ postgres_port }}) and redeploy the router,
-      then connect to the router: psql -h {{ router_ip }} -p <wan_port>
-      -U {{ postgres_admin_user }} -d postgres
+      PostgreSQL is up on the isolated network at {{ vm.name }}.{{ vm.network.domain }}
+      ({{ final.ip }}) port {{ postgres_port }}, for VMs on that network.
+      {% if forward -%}
+      From home: psql -h {{ router_ip }} -p {{ forward.wan_port }}
+      -U {{ postgres_admin_user }} -d postgres. Redeploy the router if you
+      just added this expose: entry. Password logins are allowed from
+      {{ postgres_allowed_networks | join(', ') }}.
+      {%- else -%}
+      To reach it from home, add expose: [{port: {{ postgres_port }}}] to
+      {{ vm.name }} in networks/{{ vm.network.name }}.yaml, then redeploy
+      {{ vm.name }} (to allow home logins) and the router.
+      {%- endif %}
       {%- else -%}
       PostgreSQL is up. Connect with:
       psql -h {{ final.ip }} -p {{ postgres_port }} -U {{ postgres_admin_user }} -d postgres

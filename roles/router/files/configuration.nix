@@ -2,7 +2,8 @@
 #
 # Installed to /etc/nixos on the router by roles/router, next to common.nix,
 # network.nix (hostname and WAN address) and router-vars.nix (LAN address,
-# DHCP range, DNS servers, blocked networks), generated from the host's network file entry.
+# DHCP range, DNS servers and records, blocked networks, port forwards),
+# generated from the network file.
 #
 # The router connects the isolated bridge to the internet:
 #   WAN  ens18  Proxmox net0, on vmbr0 (the home LAN)
@@ -45,9 +46,9 @@ in
     externalInterface = wan;
     internalInterfaces = [ lan ];
 
-    # Ports on the WAN address passed through to LAN VMs (router_port_forwards
-    # in its network file). The firewall lets these in: it accepts forwarded traffic
-    # that was redirected this way.
+    # Ports on the WAN address passed through to LAN VMs: the expose:
+    # entries of the hosts in the network file. The firewall lets these in:
+    # it accepts forwarded traffic that was redirected this way.
     forwardPorts = map (forward: {
       proto = forward.proto;
       sourcePort = forward.wanPort;
@@ -81,6 +82,9 @@ in
 
   services.openssh.openFirewall = false;
 
+  # dig, for checking the DNS records below.
+  environment.systemPackages = [ pkgs.dnsutils ];
+
   # DHCP and a DNS forwarder for the LAN.
   services.dnsmasq = {
     enable = true;
@@ -97,6 +101,12 @@ in
       server = vars.dnsServers;
       domain-needed = true;
       bogus-priv = true;
+
+      # Names for the network's hosts. Names in the domain are never
+      # forwarded upstream, and DHCP clients get it as their search domain.
+      domain = vars.domain;
+      local = "/${vars.domain}/";
+      host-record = map (r: "${r.name},${r.name}.${vars.domain},${r.ip}") vars.hostRecords;
 
       # The router and DNS options default to the router's LAN address.
       dhcp-range = [ "${vars.dhcpRangeStart},${vars.dhcpRangeEnd},${vars.dhcpLeaseTime}" ];

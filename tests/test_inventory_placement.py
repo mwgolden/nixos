@@ -83,6 +83,27 @@ class RecordedAddress(unittest.TestCase):
         self.assertEqual(nc.record_address(None, "1.2.3.4", "vmbr0"), "nixlab-address: 1.2.3.4 on vmbr0")
         self.assertEqual(nc.recorded_address(""), {})
 
+    def test_dns_name_added_changed_and_removed(self):
+        notes = nc.record_address("My notes", "10.1.0.12", "vmbr1", "postgres.lab.home.arpa")
+        self.assertEqual(notes, "My notes\nnixlab-address: 10.1.0.12 on vmbr1\nnixlab-dns: postgres.lab.home.arpa")
+        self.assertEqual(nc.recorded_dns_name(notes), "postgres.lab.home.arpa")
+        renamed = nc.record_address(notes, "10.1.0.12", "vmbr1", "postgres.lab.internal")
+        self.assertEqual(renamed, "My notes\nnixlab-address: 10.1.0.12 on vmbr1\nnixlab-dns: postgres.lab.internal")
+        # Moved to a home network: no DNS name there.
+        moved = nc.record_address(renamed + "\nlater note", "192.168.1.12", "vmbr0")
+        self.assertEqual(moved, "My notes\nnixlab-address: 192.168.1.12 on vmbr0\nlater note")
+        self.assertEqual(nc.recorded_dns_name(moved), "")
+
+    def test_unchanged_notes_stay_identical(self):
+        notes = nc.record_address("", "10.1.0.12", "vmbr1", "postgres.lab.home.arpa")
+        self.assertEqual(nc.record_address(notes, "10.1.0.12", "vmbr1", "postgres.lab.home.arpa"), notes)
+
+    def test_inventory_dns_names(self):
+        hosts = inventory()["hosts"]
+        self.assertEqual(hosts["postgres"]["dns_name"], "postgres.lab.home.arpa")
+        self.assertEqual(hosts["router"]["dns_name"], "router.lab.home.arpa")
+        self.assertEqual(hosts["gitea"]["dns_name"], "")
+
 
 class Placement(unittest.TestCase):
     def setUp(self):

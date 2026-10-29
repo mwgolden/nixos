@@ -8,6 +8,15 @@
   dhcpRangeEnd = "{{ router_dhcp_range_end }}";
   dhcpLeaseTime = "{{ router_dhcp_lease_time }}";
 
+  domain = "{{ router_domain }}";
+
+  # Every host on the network: { name, ip }, answered as name and name.domain.
+  hostRecords = [
+{% for record in router_dns_records %}
+    { name = "{{ record.name }}"; ip = "{{ record.ip }}"; }
+{% endfor %}
+  ];
+
   dnsServers = [
 {% for server in router_dns_servers %}
     "{{ server }}"
@@ -27,7 +36,7 @@
       proto = "{{ forward.proto }}";
       wanPort = {{ forward.wan_port | int }};
       lanAddress = "{{ forward.lan_ip }}";
-      lanPort = {{ (forward.lan_port | default(forward.wan_port)) | int }};
+      lanPort = {{ forward.lan_port | int }};
     }
 {% endfor %}
   ];

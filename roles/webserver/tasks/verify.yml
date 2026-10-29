@@ -17,11 +17,17 @@
 - name: Show where the site is
   ansible.builtin.debug:
     msg: >-
+      {% set forward = vm.expose | selectattr('port', 'equalto', 80) | first | default(none) -%}
       {% if final.via_router -%}
-      The webserver is on the isolated network at http://{{ final.ip }}/.
-      To reach it from home, add a port forward to the router's settings.port_forwards in
-      networks/{{ vm.network.name }}.yaml
-      (lan_ip {{ final.ip }}) and redeploy the router.
+      The webserver is on the isolated network at http://{{ vm.name }}.{{ vm.network.domain }}/
+      ({{ final.ip }}).
+      {% if forward -%}
+      From home: http://{{ router_ip }}:{{ forward.wan_port }}/. Redeploy the
+      router if you just added this expose: entry.
+      {%- else -%}
+      To reach it from home, add expose: [{port: 80}] to {{ vm.name }} in
+      networks/{{ vm.network.name }}.yaml and redeploy the router.
+      {%- endif %}
       {%- else -%}
       The webserver is at http://{{ final.ip }}/.
       {%- endif %}

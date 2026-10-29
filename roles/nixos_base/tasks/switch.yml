@@ -99,16 +99,18 @@
   delay: 5
   when: connect.ip != final.ip
 
-# Placement looks here first next time, even if this VM's entry has moved
-# to another network file by then. Other lines in the notes are kept.
-- name: Record the VM's address in its Proxmox notes
+# Placement looks for the address here first next time, even if this VM's
+# entry has moved to another network file by then. The DNS name is for
+# people reading the notes; it only works on the VM's own network. Other
+# lines in the notes are kept.
+- name: Record the VM's address and DNS name in its Proxmox notes
   ansible.builtin.include_role:
     name: proxmox_vm
     tasks_from: api-set
   vars:
     proxmox_vm_api_vmid: "{{ vm_id }}"
     proxmox_vm_api_config:
-      description: "{{ proxmox_vm_config.description | default('') | record_address(final.ip, final.bridge) }}"
-  when: >-
-    (proxmox_vm_config.description | default('') | recorded_address)
-    != {'ip': final.ip, 'bridge': final.bridge}
+      description: "{{ notes_new }}"
+    notes_old: "{{ proxmox_vm_config.description | default('') }}"
+    notes_new: "{{ notes_old | record_address(final.ip, final.bridge, vm.dns_name) }}"
+  when: notes_new != notes_old

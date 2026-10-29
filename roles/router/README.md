@@ -13,7 +13,7 @@
 > | `router_dhcp_range_start / _end / router_dhcp_lease_time` | the network's dhcp block |
 > | `router_dns_servers` | `settings.dns_servers` |
 > | `router_blocked_networks` | `settings.blocked_networks` |
-> | `router_port_forwards` | `settings.port_forwards` |
+> | `router_port_forwards` | `expose:` on the hosts the ports go to |
 
 
 A NixOS VM that connects an isolated Proxmox network to the internet. VMs on the isolated bridge get an address by DHCP and can reach the internet through NAT. They can't reach the home LAN or any other private network.
@@ -58,9 +58,9 @@ Everything is in `configuration.nix`:
   2. LAN traffic to a blocked network is dropped.
   3. Other LAN traffic out through the WAN is accepted.
 
-  The only traffic from the WAN side let into the LAN is the [port forwards](#port-forwards) in `vars.yaml`. Without any, home-LAN machines can't reach LAN VMs at all.
+  The only traffic from the WAN side let into the LAN is the [port forwards](#port-forwards) from the hosts' `expose:` entries. Without any, home-LAN machines can't reach LAN VMs at all.
 - **Firewall on the router itself:** from the LAN, only DHCP (UDP 67), DNS (53) and ping are allowed. SSH is only open on the WAN side.
-- **DHCP and DNS:** dnsmasq listens only on `ens19`. It hands out addresses with `10.1.0.1` as gateway and DNS server, and forwards DNS queries to the servers in `vars.yaml`.
+- **DHCP and DNS:** dnsmasq listens only on `ens19`. It hands out addresses with `10.1.0.1` as gateway and DNS server, answers for the [network's hosts](#dns-names), and forwards other DNS queries to `settings.dns_servers`.
 
 The order matters for rule 2. The NixOS NAT module adds its own "accept LAN to WAN" rule, and the home LAN is also reached through the WAN. `configuration.nix` uses `lib.mkBefore` so the drop comes first.
 
@@ -119,38 +119,54 @@ sudo nft list chain inet nixos-fw forward-allow
 
 Give LAN VMs that need a fixed address one outside the DHCP range, for example `10.1.0.10`, with gateway and DNS `10.1.0.1`.
 
-## Port forwards
+## DNS names
 
-A port forward makes a service on a LAN VM, such as a website, reachable from the home network at the router's WAN address. Forwards are listed in `vars.yaml`:
+The router's DNS server answers for every host in its network file, by name alone and under the network's domain, which defaults to `<network>.home.arpa` (`home.arpa` is reserved for home networks by [RFC 8375](https://www.rfc-editor.org/rfc/rfc8375)):
 
-```yaml
-router_port_forwards:
-  - name: website
-    proto: tcp
-    wan_port: 80
-    lan_ip: "10.1.0.10"
-    lan_port: 80        # optional, defaults to wan_port
+```bash
+# from a VM on the isolated network
+ping postgres
+psql -h postgres.lab.home.arpa -U pgadmin -d postgres
 ```
 
-Then apply them:
+Names in the domain are never sent to the upstream DNS servers, and DHCP clients get the domain as their search domain. Set `domain:` in the network's `network:` block to use another one. The deploy asks the router's DNS server for each name and stops if an answer is wrong. Adding or removing a host changes the records, so redeploy the router afterwards.
+
+Home-LAN machines use the home router for DNS, so these names don't work from there.
+
+## Port forwards
+
+A port forward makes a service on a LAN VM, such as a website, reachable from the home network at the router's WAN address. List the ports under `expose:` on the host they go to, in the network file:
+
+```yaml
+  - name: postgres
+    type: postgres
+    ip: 10.1.0.12
+    expose:
+      - port: 5432          # the port on the host
+        # wan_port: 15432   # the port on the router; defaults to port
+        # proto: udp        # defaults to tcp
+        # name: db          # needed when a host exposes more than one port
+```
+
+Then redeploy the router, which builds its forwards from every host's `expose:` entries:
 
 ```bash
 source proxmox/.env
 ansible-playbook playbooks/deploy-host.yaml -e network=lab -e host=router
 ```
 
-This runs `router.yaml`, which updates the existing router in place, then tries each TCP forward from your machine and reports whether it answers. A forward only answers once the service on the VM is running, so "not answering" usually means the VM or its service isn't up yet. UDP forwards can't be tested this way and are only listed.
+The router is updated in place. Then each TCP forward is tried from your machine and the result is reported. A forward only answers once the service on the VM is running, so "not answering" usually means the VM or its service isn't up yet. UDP forwards can't be tested this way and are only listed.
 
-To remove a forward, delete it from `vars.yaml` and run the playbook again. `router.yaml` applies the same list, so a normal deploy keeps the forwards too.
+To remove a forward, delete the `expose:` entry and redeploy the router. `deploy-network.yaml` deploys the router first, so it always picks up changes.
 
-The playbook stops before changing anything if a forward:
+Validation stops before anything changes if an entry:
 
-- is missing a field, or has a protocol other than `tcp` or `udp` or a port outside 1–65535,
-- uses the same protocol and WAN port, or the same name, as another forward,
-- forwards TCP 22. That is the router's own SSH, and forwarding it would lock the playbook out.
-- points at an address that isn't a VM on the isolated LAN. The router checks this against its own routes, so it can't point at the home LAN or at the router itself.
+- has a protocol other than `tcp` or `udp`, or a port outside 1–65535,
+- uses the same protocol and router port as another entry on the network,
+- uses TCP 22 on the router. That is the router's own SSH, and forwarding it would lock the playbook out. Forward another `wan_port` to the host's 22 instead.
+- is on a home network, where hosts are reached directly, or on the router itself.
 
-Give each VM that receives a forward a fixed address outside the DHCP range (`10.1.0.100`–`199`), for example `10.1.0.10`. Otherwise its address can change and the forward points at nothing.
+Hosts always have fixed addresses outside the DHCP range, so a forward can't end up pointing at nothing. After switching, the router also checks each forward's address is on its LAN.
 
 **What a forward allows:** new connections to `192.168.1.13:<wan_port>` from the home network are passed to the VM, and the VM's replies go back. The VM still can't start connections to the home LAN; the private-network block applies to it like to any LAN VM.
 

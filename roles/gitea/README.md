@@ -114,27 +114,24 @@ To deploy straight onto the isolated network, set `gitea_network: "isolated"` be
 
 ### Reaching Gitea on the isolated network from home
 
-Add [router port forwards](../router/README.md#port-forwards) for the web interface and for SSH. TCP 22 on the router is its own SSH, so forward another port to the VM's 22:
+[Expose](../router/README.md#port-forwards) the web interface and SSH in the host's entry. TCP 22 on the router is its own SSH, so use another router port for the VM's 22:
 
 ```yaml
-router_port_forwards:
-  - name: gitea-web
-    proto: tcp
-    wan_port: 3000
-    lan_ip: "10.1.0.14"
-  - name: gitea-ssh
-    proto: tcp
-    wan_port: 2222
-    lan_ip: "10.1.0.14"
-    lan_port: 22
+    expose:
+      - name: web
+        port: 3000
+      - name: ssh
+        port: 22
+        wan_port: 2222
 ```
 
-Run `the router's deploy`. Then tell Gitea the address people use, so its links and clone URLs point at the router, and re-run `gitea.yaml`:
+Redeploy the router. Then tell Gitea the address people use, so its links and clone URLs point at the router, and redeploy Gitea:
 
 ```yaml
-gitea_public_host: "192.168.1.13"
-gitea_public_http_port: 3000
-gitea_public_ssh_port: 2222
+    settings:
+      public_host: "192.168.1.13"
+      public_http_port: 3000
+      public_ssh_port: 2222
 ```
 
 Gitea is then at `http://192.168.1.13:3000/`, and clones over SSH use `ssh://gitea@192.168.1.13:2222/<owner>/<repo>.git`.

@@ -101,6 +101,34 @@
     cmd: systemctl is-active dnsmasq
   changed_when: false
 
+# Asks dnsmasq on the LAN address, the server LAN clients use.
+- name: Look up each host's name
+  ansible.builtin.command:
+    cmd: dig +short +time=2 +tries=2 @{{ router_lan_ip }} {{ item.fqdn }} A
+  register: dns_lookups
+  changed_when: false
+  # dnsmasq may still be restarting after the switch.
+  retries: 5
+  delay: 2
+  until: dns_lookups.stdout_lines == [item.ip]
+  failed_when: false
+  loop: "{{ router_dns_records }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Require each name to give the host's address
+  ansible.builtin.assert:
+    that:
+      - item.stdout_lines == [item.item.ip]
+    fail_msg: >-
+      {{ item.item.fqdn }} should be {{ item.item.ip }}, but the router's DNS
+      server answered '{{ item.stdout }}'. Check 'journalctl -u dnsmasq' on
+      the router.
+    quiet: true
+  loop: "{{ dns_lookups.results }}"
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+
 - name: Check the forward rules block private networks
   ansible.builtin.command:
     cmd: nft list chain inet nixos-fw forward-allow
@@ -125,7 +153,7 @@
   vars:
     expected: >-
       {{ item.proto }} . {{ item.wan_port | int }} : {{ item.lan_ip }} .
-      {{ item.lan_port | default(item.wan_port) | int }}
+      {{ item.lan_port | int }}
   loop: "{{ router_port_forwards }}"
   loop_control:
     label: "{{ item.name }}"

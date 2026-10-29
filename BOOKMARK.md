@@ -2,23 +2,74 @@
 
 Progress against [PLAN.md](PLAN.md). The newest entry is at the top.
 
-## Paused before Phase 6
+## Paused before Phase 7
 
-Phase 6 derives port forwards, DNS records and postgres's allowed networks from the host list. Before that, please try Phases 3 to 5 live, with `proxmox/.env` sourced:
+Phase 7 adds new services: a reverse proxy, WireGuard on the router, and lldap. Before that, please run Phase 6 live, with `proxmox/.env` sourced:
 
 ```bash
 ansible-playbook playbooks/validate-network.yaml
 ansible-playbook playbooks/deploy-network.yaml -e network=lab    # router, then postgres
+```
+
+What to look for:
+
+1. **DNS on the router:** the router's deploy now asks its own DNS server for `router.lab.home.arpa` and `postgres.lab.home.arpa`. It stops if either answer is wrong. Its last message lists the names it answers.
+2. **Port forward:** the router's report should show `postgres: tcp 192.168.1.13:5432 -> postgres 10.1.0.12:5432 (answering)`, and `psql -h 192.168.1.13 -U pgadmin -d postgres` should still work from home.
+3. **Postgres logins:** postgres's `pg_hba` should still allow `10.1.0.0/24` and `192.168.1.0/24`. Its message lists them. Nothing should change there except the line order.
+
+If you haven't run them yet, the [Phase 3 to 5 checks](#live-checks-for-phases-3-to-5) still apply. The home network has no Phase 6 changes.
+
+## Phase 6: derived configuration (done 2026-10-29, not yet tested live)
+
+- **Port forwards from `expose:`:**
+  - A host on an isolated network lists the ports to forward to it, each with `port` and optionally `wan_port`, `proto` and `name`.
+  - The router builds its forwards from every host's entries.
+  - The router's `settings.port_forwards` is gone. Validation names its replacement if it's still there.
+  - `networks/lab.yaml` now has `expose: [{port: 5432}]` on postgres, which gives the same forward as before.
+- **Validation of `expose:`:**
+  - Each router port can go to only one host, and TCP 22 on the router is refused.
+  - Entries aren't allowed on home networks or on the router itself.
+  - The old "lan_ip must be a host" check is gone, because the address is now always the host's own.
+- **DNS records:**
+  - Networks take an optional `domain`, which must be unique and defaults to `<network>.home.arpa`.
+  - The router's dnsmasq answers for every host on its network, as both `<host>` and `<host>.<domain>`.
+  - Names in the domain are never forwarded upstream. DHCP clients get the domain as their search domain.
+  - The router now includes `dig`, and its deploy checks each name.
+  - Home networks have no DNS of their own here, so their names aren't served.
+- **Postgres `allowed_networks`:**
+  - It takes network names as well as subnets.
+  - Left unset, it is the host's own network, plus the upstream network when the host has `expose:` entries.
+  - `lab.yaml` no longer lists it, and the result is the same two subnets as before.
+- **Messages:** each host type's final message on an isolated network now shows its DNS name. If the host is exposed, it gives the real router address and port; otherwise, the `expose:` entry to add.
+- **DNS name in the Proxmox notes:** on an isolated network, each deploy now adds `nixlab-dns: <host>.<domain>` below the address line. On a home network the line is removed, since there's no DNS server there. The notes are written only when something in them changes.
+- **Inventory:**
+  - Each host now has `dns_name`.
+  - Each network now has `domain`, `dns_records` and `port_forwards`, and each host has `expose`.
+  - New filters: `host_client_networks` and `network_cidrs`.
+- **Docs:**
+  - `networks/README.md` covers `domain` and `expose`, and has a "What is derived from the files" table.
+  - The router README has a "DNS names" section and a rewritten "Port forwards" section.
+  - The postgres, webserver, gitea and garage READMEs show `expose:` instead of the old forward lists.
+
+Checked:
+- 86 unit tests pass. The 23 new ones cover the DNS name in the notes, `expose:` validation, the derived forwards, DNS records, the domain setting and postgres's networks.
+- Every playbook passes `--syntax-check`, and offline validation passes.
+- The router and postgres templates were rendered from the test fixtures. They give the same forward and the same postgres subnets as before, plus the new DNS settings.
+- The final message for each host type was rendered for an isolated host, both with and without `expose:`.
+
+Not checked: the Nix build (nix isn't installed here), and the dnsmasq settings and DNS check on a real router.
+
+Changing a host's `expose:` changes the router's configuration, so redeploy the router afterwards; `deploy-network` deploys it first anyway. Gitea's `public_host` and `public_*_port` settings could also be worked out from `expose:`. That was left out for now.
+
+## Live checks for Phases 3 to 5
+
+```bash
 ansible-playbook playbooks/deploy-network.yaml -e network=home   # webserver, gitea (garage is commented out)
 ansible-playbook playbooks/postgres-users.yaml -e network=lab -e host=postgres
 ```
 
-Then:
-
 1. Run `validate-network.yaml` again. Every deployed VM should now carry `nixlab`, `net-<network>` and `type-<type>` tags, and nothing should be reported as "not yet tagged".
-2. If you'd like to test pruning safely, use the example test network (see Phase 4). Deploy it, remove `test-web` from `networks/test.yaml`, and run `deploy-network.yaml -e network=test`. It should report `test-web` as removed. Then run it with `-e prune=true`, which should delete it. Finally, `destroy-network.yaml -e network=test -e remove_bridge=true` should leave nothing behind.
-
-Garage is commented out in `networks/home.yaml`, so the home run doesn't need its secrets.
+2. To test pruning safely, use the example test network (see Phase 4). Deploy it, remove `test-web` from `networks/test.yaml`, and run `deploy-network.yaml -e network=test`. It should report `test-web` as removed. Then run it with `-e prune=true`, which should delete it. Finally, `destroy-network.yaml -e network=test -e remove_bridge=true` should leave nothing behind.
 
 ## Phase 5: ownership and reconciliation (done 2026-10-29, not yet tested live)
 

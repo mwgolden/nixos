@@ -22,6 +22,10 @@ network:
 
   reserved: []
 
+  # The router's DNS server answers for every host here, as <name> and
+  # <name>.<domain>. Defaults to <network name>.home.arpa.
+  # domain: lab.home.arpa
+
 hosts:
   - name: router
     type: router
@@ -40,13 +44,6 @@ hosts:
         - 192.168.0.0/16
         - 172.16.0.0/12
         - 10.0.0.0/8
-      # Ports on wan_ip forwarded to hosts on this network.
-      port_forwards:
-        - name: postgres
-          proto: tcp
-          wan_port: 5432
-          lan_ip: 10.1.0.12
-          lan_port: 5432
 
   - name: postgres
     type: postgres
@@ -55,12 +52,16 @@ hosts:
     data_disk:
       size_gb: 20
       storage: local-lvm
+    # Ports forwarded to this host from the router's WAN address
+    # (192.168.1.13). wan_port defaults to port.
+    expose:
+      - port: 5432
     settings:
       version: 17
       port: 5432
-      allowed_networks:
-        - 192.168.1.0/24
-        - 10.1.0.0/24
+      # Who may log in with a password: network names or subnets. Unset, it
+      # is this network, plus home because postgres is exposed to it.
+      # allowed_networks: [home, lab]
       adventureworks:
         enabled: true
         database: Adventureworks

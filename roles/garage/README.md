@@ -142,17 +142,13 @@ To deploy straight onto the isolated network, set `garage_network: "isolated"` b
 
 ### Reaching Garage on the isolated network from home
 
-Add a [router port forward](../router/README.md#port-forwards) for the S3 API:
+[Expose](../router/README.md#port-forwards) the S3 API in the host's entry, and redeploy the router:
 
 ```yaml
-router_port_forwards:
-  - name: garage-s3
-    proto: tcp
-    wan_port: 3900
-    lan_ip: "10.1.0.15"
+    expose:
+      - port: 3900
 ```
-
-Run `the router's deploy`. S3 clients then use `http://192.168.1.13:3900`.
+ S3 clients then use `http://192.168.1.13:3900`.
 
 ## Data disk
 
