@@ -16,22 +16,8 @@ network:
 hosts:
   - name: webserver
     type: webserver
-    vm_id: 111
+    vm_id: 150
     ip: 192.168.1.11
-
-  - name: gitea
-    type: gitea
-    vm_id: 114
-    ip: 192.168.1.14
-    data_disk:
-      size_gb: 40
-      storage: local-lvm
-    settings:
-      http_port: 3000
-      public_host: ""
-      public_http_port: ""
-      public_ssh_port: ""
-      allow_registration: false
 
 #  - name: garage
 #    type: garage

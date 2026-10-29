@@ -29,6 +29,22 @@
 {% endfor %}
   ];
 
+  # WireGuard. The private key is in {{ router_vpn_key_path }}, not here.
+  vpn = {
+    enable = {{ 'true' if router_vpn else 'false' }};
+{% if router_vpn %}
+    address = "{{ router_vpn.address }}";
+    prefixLength = {{ router_vpn.prefix_length }};
+    port = {{ router_vpn.port }};
+    peers = [
+{% for peer in router_vpn_peers %}
+      # {{ peer.name }}
+      { ip = "{{ peer.ip }}"; publicKey = "{{ peer.public_key }}"; }
+{% endfor %}
+    ];
+{% endif %}
+  };
+
   portForwards = [
 {% for forward in router_port_forwards %}
     {

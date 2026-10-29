@@ -17,7 +17,7 @@
 - name: Show where Gitea is
   ansible.builtin.debug:
     msg: >-
-      {% if final.via_router and not gitea_public_host -%}
+      {% if final.via_router and not gitea_public_host and not gitea_route -%}
       Gitea is up on the isolated network at http://{{ final.ip }}:{{ gitea_http_port }}/.
       To reach it from home, add expose: entries to {{ vm.name }} in
       networks/{{ vm.network.name }}.yaml ({name: web, port: {{ gitea_http_port }}}

@@ -2,22 +2,131 @@
 
 Progress against [PLAN.md](PLAN.md). The newest entry is at the top.
 
-## Paused before Phase 7
+## Paused before Phase 8
 
-Phase 7 adds new services: a reverse proxy, WireGuard on the router, and lldap. Before that, please run Phase 6 live, with `proxmox/.env` sourced:
+Phase 8 adds checks at the end of `deploy-network`, from ARCHITECTURE.MD §10. Before that, please try Phases 6 and 7 live. The throwaway test network exercises all of Phase 7 without touching `lab`.
 
-```bash
-ansible-playbook playbooks/validate-network.yaml
-ansible-playbook playbooks/deploy-network.yaml -e network=lab    # router, then postgres
-```
+1. In `networks/examples/test.yaml`, check that `wan_ip` 192.168.1.20 is free on your LAN, and uncomment `test-ldap`. Then:
+   - add a VPN to `test-router`'s settings, such as `vpn: {cidr: 10.202.0.0/24, peers: [{name: laptop, ip: 10.202.0.2}]}`
+   - `cp networks/examples/test.yaml networks/test.yaml`
+   - copy `roles/ldap/env.example` to `secrets/test/test-ldap.env` and set the values
 
-What to look for:
+2. Deploy it:
+   ```bash
+   source proxmox/.env
+   ansible-playbook playbooks/validate-network.yaml
+   ansible-playbook playbooks/deploy-network.yaml -e network=test
+   ```
 
-1. **DNS on the router:** the router's deploy now asks its own DNS server for `router.lab.home.arpa` and `postgres.lab.home.arpa`. It stops if either answer is wrong. Its last message lists the names it answers.
-2. **Port forward:** the router's report should show `postgres: tcp 192.168.1.13:5432 -> postgres 10.1.0.12:5432 (answering)`, and `psql -h 192.168.1.13 -U pgadmin -d postgres` should still work from home.
-3. **Postgres logins:** postgres's `pg_hba` should still allow `10.1.0.0/24` and `192.168.1.0/24`. Its message lists them. Nothing should change there except the line order.
+3. **VPN:** run `sudo wg-quick up ./secrets/test/vpn/laptop.conf` from a machine on the home LAN. Then `ping 10.2.0.11` and `dig test-web.test.home.arpa` should work.
 
-If you haven't run them yet, the [Phase 3 to 5 checks](#live-checks-for-phases-3-to-5) still apply. The home network has no Phase 6 changes.
+4. **Proxy:** trust `secrets/test/test-proxy-ca.crt`. Then `https://web.test.home.arpa/` and `https://users.test.home.arpa/` should load over the VPN without a warning. Log in to lldap as `admin`.
+
+5. **Clean up:** `ansible-playbook playbooks/destroy-network.yaml -e network=test -e remove_bridge=true`, then `rm networks/test.yaml`.
+
+6. **Phase 6 on lab:** `ansible-playbook playbooks/deploy-network.yaml -e network=lab`. Check the DNS check passes, the postgres forward answers, and Proxmox notes show `nixlab-dns:`.
+
+The [Phase 3 to 5 checks](#live-checks-for-phases-3-to-5) also still apply.
+
+## Phase 7 follow-up: external proxy routes, gitea behind the proxy (done 2026-10-29, not yet tested live)
+
+- **`external: true` on a proxy route** publishes it outside its isolated network. It's off by default.
+  - When any route on a network is external, the router's TCP 443 and 80 are forwarded to the proxy (forwards `<proxy>-https` and `<proxy>-http`).
+  - External routes answer anyone who reaches the proxy.
+  - Internal routes now refuse (`abort`) connections from outside the network's subnet, its VPN and the proxy's own loopback, so the new forward can't reach them.
+  - Validation refuses `external` on home networks, and when the router's TCP 443 or 80 is already used by an `expose:` entry.
+- **Proxy's final message:** it marks each route internal or external, and lists the names to point at the router on pfSense.
+- **Gitea:** with a proxy route to its web port:
+  - Its address is `https://<route>.<domain>/`, with secure login cookies on and the proxy trusted for forwarded client addresses.
+  - SSH clone URLs use the VM's own DNS name, since the route's name points at the proxy.
+  - Without a route, nothing changes. `COOKIE_SECURE` moved from `configuration.nix` to `gitea.nix`.
+- **Inventory:** routes have `external`, and networks have `proxy_internal_sources`.
+- **Docs:** an "External routes" section in the proxy README, a "Behind the network's proxy" section in the gitea README, and `networks/README.md`.
+
+Checked:
+- 113 unit tests pass, and so do offline validation (including your current `lab.yaml`) and every playbook's syntax check.
+- The proxy's and gitea's config files and messages were generated for a lab with an external gitea route, an internal ldap route and a VPN. Gitea on home without a proxy still gives the same file as before.
+
+Not checked: Caddy's `remote_ip` / `abort` behaviour on a real proxy, and Gitea behind it.
+
+## Phase 7, part 3: lldap (done 2026-10-29, not yet tested live)
+
+- **New host type `ldap`:** [roles/ldap](roles/ldap/README.md) runs lldap.
+  - Settings: `base_dn`, which defaults to the network's domain as `dc=` parts, plus `ldap_port` (3890) and `http_port` (17170).
+  - If the host has a `proxy:` route to its web port, lldap uses that HTTPS name in its links.
+- **Secrets:**
+  - `secrets/<network>/<host>.env` holds `LLDAP_ADMIN_PASSWORD` and `LLDAP_JWT_SECRET`. Their format is checked before anything changes.
+  - They're copied to root-only files in `/var/lib/lldap-secrets` before the switch. lldap reads them as systemd credentials (`LoadCredential`, through `LLDAP_*_FILE`), so they're never in the Nix store.
+  - The admin password is reset to the file's value on every start. lldap restarts when a secret changes.
+- **Checks:** the `lldap` service is active, `/health` answers, and the LDAP port accepts connections. The final message gives the web address, the LDAP address, the base DN and the admin bind DN.
+- **Data:** a SQLite file on the system disk, with no data disk. The README says to back it up.
+- **Example:** a commented-out `test-ldap` (VM 904) in `networks/examples/test.yaml`, behind the proxy as `users.test.home.arpa`.
+- **Docs:** the role README, `env.example`, and the host type lists in `README.md`, `networks/README.md` and `secrets/README.md`. PLAN.md now says Caddy.
+
+Checked:
+- 108 unit tests pass, every playbook passes `--syntax-check`, and offline validation passes.
+- `ldap.nix` and the final message were generated for the example host, behind the proxy and without it.
+
+Not checked: the Nix build and lldap on a real VM. The parts most likely to need a fix:
+- `services.lldap.environment` passing `%d` through to systemd.
+- The lldap module's own checks on how the passwords are set.
+
+`nixos-rebuild build` runs before the switch, so a problem there stops the deploy without changing the VM.
+
+## Phase 7, part 2: WireGuard VPN on the router (done 2026-10-29, not yet tested live)
+
+- **Turned on per router:** with `settings.vpn`, which holds `cidr`, an optional `port` (default 51820) and `endpoint`, and `peers`. Each peer has a `name`, an `ip` and an optional `public_key`. Off when unset, so `lab` doesn't change. `lab.yaml` has a commented example.
+- **Keys:**
+  - [roles/router/files/wg-keypair.py](roles/router/files/wg-keypair.py) makes key pairs on your machine with Ansible's Python, which has `cryptography`, so `wg` isn't needed there. They go in `secrets/<network>/vpn/`.
+  - Existing keys are kept. Peers with their own `public_key` get no generated key.
+  - The router's private key is copied to `/var/lib/wireguard/wg0.key` before the switch, so it's never in the Nix store.
+- **Router config:**
+  - `wg0` gets the subnet's first address, and each peer may use only its own address.
+  - UDP on the WAN address is open for the VPN port.
+  - On `wg0`, DNS and SSH to the router are open, and forwarding from the VPN to the LAN is allowed. Lab hosts still can't start connections to VPN clients.
+  - dnsmasq also listens on `wg0`, without DHCP there.
+- **Checks:** after switching, `wg show wg0 public-key / listen-port / peers` must match the router's key, the port and the peer list. Only public values are read.
+- **Client files:** `secrets/<network>/vpn/<peer>.conf` holds the peer's address, the router's DNS with the network's domain, and the router's key and endpoint. Only the network and VPN subnets are routed through the tunnel. The final message explains how to connect from outside the home.
+- **Postgres:** with `allowed_networks` unset, it now also allows the VPN subnet.
+- **Validation:**
+  - The VPN subnet can't overlap any network or other VPN.
+  - Peer addresses must be in the subnet, and can't be the router's or another peer's.
+  - Peer names must be unique and can't be the router's.
+  - Public keys must be in WireGuard's format, and the port can't clash with a UDP `expose:` entry.
+- **Docs:** a VPN section in the router README, and the files written by deploys in `secrets/README.md`.
+
+Checked:
+- 107 unit tests pass. The 12 new ones cover the VPN in the inventory, postgres's networks and validation.
+- The key steps ran twice in a sandbox folder. The second run changed nothing, and each public key matches its private key.
+- The router's config file was generated with the VPN on and off. Client files were generated for a peer with a generated key and for one with its own.
+- Every playbook passes `--syntax-check`.
+
+Not checked: the Nix build, and WireGuard on a real router. That includes the `wireguard-wg0` unit name the error message mentions, and dnsmasq answering on `wg0`.
+
+## Phase 7, part 1: reverse proxy (done 2026-10-29, not yet tested live)
+
+- **New host type `proxy`:** [roles/proxy](roles/proxy/README.md) runs Caddy. Its sites come from the `proxy:` entries of the other hosts on its network, each with a `name` (one DNS label) and a `port`. Each route is served as `https://<name>.<domain>` and passed to `<host ip>:<port>`.
+- **HTTPS:**
+  - Certificates come from Caddy's own certificate authority (`tls internal`), named `nixlab <network> <proxy>`.
+  - After each deploy, the root certificate is copied to `secrets/<network>/<proxy>-ca.crt` for you to trust. The README says how on each system.
+  - Rebuilding the proxy VM makes a new authority.
+- **DNS:** on an isolated network, the router's DNS server points each route's name at the proxy. Redeploy the router after changing routes. A home network gets no DNS from this project, so the deploy says which names to add on the home router.
+- **Internal only:** nothing outside the network reaches the proxy unless it gets its own `expose:` entry.
+- **Validation:**
+  - Routes need exactly one `proxy` host on their network.
+  - Route names are unique, and no route may share a host's name.
+  - The proxy and routers can't have `proxy:` entries.
+- **Checks:** after switching, the proxy asks Caddy for each route on the VM itself. No HTTPS answer stops the deploy. A 502 is only reported, because the backend may not be deployed yet.
+- **Inventory:** each network has `proxy` and `proxy_routes`, and the route names are in `dns_records`.
+- **Example network:** [networks/examples/test.yaml](networks/examples/test.yaml) now has `test-proxy` (VM 903, `10.2.0.10`) serving `test-web` as `https://web.test.home.arpa/`. Its comments now say to clean up with `destroy-network.yaml`.
+- **Docs:** `networks/README.md`, the main README's list of host types, and the ARCHITECTURE.MD layout, where the type is `proxy` and the VPN is part of the router role.
+
+Checked:
+- 95 unit tests pass. The 9 new ones cover routes, DNS and validation.
+- Every playbook passes `--syntax-check`.
+- The proxy's and router's config files were generated from the example network, and the proxy's messages were shown with each kind of answer.
+
+Not checked: Caddy on a real VM. That includes where Caddy keeps its root certificate; the deploy searches `/var/lib/caddy` for it.
 
 ## Phase 6: derived configuration (done 2026-10-29, not yet tested live)
 

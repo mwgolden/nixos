@@ -112,6 +112,19 @@ To deploy straight onto the isolated network, set `gitea_network: "isolated"` be
 
 `move-network.yaml` only changes the network settings and keeps the data disk as it is. It doesn't update the address Gitea shows in links and clone URLs, so re-run `gitea.yaml` afterwards.
 
+### Behind the network's proxy
+
+Give Gitea a [proxy route](../proxy/README.md) to its web port:
+
+```yaml
+    proxy:
+      - name: git
+        port: 3000
+        # external: true     # also reachable from home, through the router
+```
+
+Gitea then uses `https://git.lab.home.arpa/` as its address in links and redirects, requires HTTPS for its login cookie, and trusts the proxy's forwarded client addresses. SSH clone URLs use the VM's own name, such as `gitea.lab.home.arpa`, because the route's name points at the proxy, which only serves HTTPS. Set `public_host` and `public_ssh_port` to change the SSH address. With a route, they no longer change the web address.
+
 ### Reaching Gitea on the isolated network from home
 
 [Expose](../router/README.md#port-forwards) the web interface and SSH in the host's entry. TCP 22 on the router is its own SSH, so use another router port for the VM's 22:

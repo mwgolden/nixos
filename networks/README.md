@@ -38,13 +38,14 @@ ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox
 | Setting | Required | Meaning |
 |---|---|---|
 | `name` | yes | VM name in Proxmox, and the host name. Unique across all networks. |
-| `type` | yes | Which kind of VM: `webserver`, `postgres`, `gitea`, `garage` or `router`. |
+| `type` | yes | Which kind of VM: `webserver`, `postgres`, `gitea`, `garage`, `router`, `proxy` or `ldap`. |
 | `vm_id` | yes | Proxmox VM ID. Unique across all networks, and not the template's. An existing VM with this ID must have this name. |
 | `ip` | yes | Fixed address inside `cidr`, outside the DHCP range, and unique across all networks. A router's `ip` is its LAN address and must equal `gateway`. |
 | `wan_ip` | routers only | The router's address on the upstream network |
 | `full_clone` | no | `true` for a full copy of the template instead of a linked clone. Defaults to `false`. |
 | `data_disk` | postgres, gitea, garage | `size_gb` and `storage`. It can grow but never shrink. |
 | `expose` | no, isolated networks only | Ports forwarded to this host from its router's WAN address. Each entry has `port` (on the host), and optionally `wan_port` (on the router, defaults to `port`), `proto` (`tcp` or `udp`, defaults to `tcp`) and `name` (needed when a host has more than one). Redeploy the router after changing these. |
+| `proxy` | no | Web services on this host for the network's `proxy` host to serve over HTTPS. Each entry has `name`, one DNS label, served as `<name>.<domain>`, and `port`, the port on this host. `external: true` also publishes it through the router's TCP 443 and 80 (isolated networks only; off by default). Needs a host of type `proxy` on the same network. See [roles/proxy](../roles/proxy/README.md). |
 | `settings` | no | Settings for this host type. The defaults are in the host type's role. |
 
 `expose:` replaces the router's old `settings.port_forwards`. Each router port can be forwarded to only one host, and TCP 22 on the router can't be used: it is the router's own SSH.
@@ -56,14 +57,16 @@ Postgres's `settings.allowed_networks` takes network names as well as subnets. L
 | What | From |
 |---|---|
 | The router's port forwards | `expose:` on the network's hosts |
-| The router's DNS records | Every host on the network, under `domain` |
+| The router's DNS records | Every host on the network, under `domain`, plus each proxy route at the proxy's address |
+| The proxy's sites | `proxy:` on the network's hosts |
 | Postgres password logins | `settings.allowed_networks`, or the networks that can reach the host |
 
 ## What validation checks
 
 Checked in the files, by [plugins/filter/network_config.py](../plugins/filter/network_config.py):
 
-- Every setting above, including `expose:` and `domain`.
+- Every setting above, including `expose:`, `proxy:` and `domain`.
+- A network with `proxy:` routes has exactly one `proxy` host, and no route has a host's name.
 - Names, VM IDs, addresses (including routers' `wan_ip`) and bridges are unique across all networks.
 - Subnets don't overlap.
 

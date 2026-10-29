@@ -1,0 +1,10 @@
+# Reports a proxy with nothing to do. Runs on localhost from
+# roles/host_deploy.
+
+- name: Report that the proxy has no routes
+  ansible.builtin.debug:
+    msg: >-
+      No host in networks/{{ vm.network.name }}.yaml has proxy: entries, so
+      {{ vm.name }} will serve nothing. Add one, such as
+      proxy: [{name: git, port: 3000}] on gitea.
+  when: proxy_routes | length == 0

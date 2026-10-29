@@ -1,5 +1,6 @@
-# A throwaway isolated network for trying out changes: a router and one web
-# server, on their own bridge and VM IDs, away from the real VMs.
+# A throwaway isolated network for trying out changes: a router, a web
+# server and a reverse proxy in front of it, on their own bridge and VM IDs,
+# away from the real VMs.
 #
 # Files in networks/examples/ are not read by validation or deploys. To use
 # this one:
@@ -8,9 +9,9 @@
 #      against devices this project doesn't manage.
 #   2. cp networks/examples/test.yaml networks/test.yaml
 #   3. ansible-playbook playbooks/deploy-network.yaml -e network=test
-# Afterwards, destroy the web server, then the router, with
-# playbooks/destroy-host.yaml, and remove networks/test.yaml. The bridge
-# (vmbr2) is left in place; remove it in the Proxmox UI if you want.
+# Afterwards, remove everything with
+#   ansible-playbook playbooks/destroy-network.yaml -e network=test -e remove_bridge=true
+# and delete networks/test.yaml.
 
 network:
   name: test
@@ -37,3 +38,22 @@ hosts:
     type: webserver
     vm_id: 902
     ip: 10.2.0.11
+    # Served by test-proxy as https://web.test.home.arpa/.
+    proxy:
+      - name: web
+        port: 80
+
+  - name: test-proxy
+    type: proxy
+    vm_id: 903
+    ip: 10.2.0.10
+
+  # An LDAP server, with its web interface at https://users.test.home.arpa/.
+  # Needs secrets/test/test-ldap.env first: copy roles/ldap/env.example.
+  # - name: test-ldap
+  #   type: ldap
+  #   vm_id: 904
+  #   ip: 10.2.0.12
+  #   proxy:
+  #     - name: users
+  #       port: 17170

@@ -20,8 +20,7 @@
     database.type = "sqlite3";
     lfs.enable = true;
     settings = {
-      # Served over plain HTTP, so the login cookie can't require HTTPS.
-      session.COOKIE_SECURE = false;
+      # session.COOKIE_SECURE is in gitea.nix: it depends on the proxy.
       # Git over SSH goes through the system's SSH server as the gitea user.
       server.START_SSH_SERVER = false;
     };

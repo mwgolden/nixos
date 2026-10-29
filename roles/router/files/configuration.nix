@@ -8,6 +8,7 @@
 # The router connects the isolated bridge to the internet:
 #   WAN  ens18  Proxmox net0, on vmbr0 (the home LAN)
 #   LAN  ens19  Proxmox net1, on the isolated bridge
+#   VPN  wg0    WireGuard, when settings.vpn is set
 #
 # LAN clients get an address by DHCP and reach the internet through NAT.
 # They can't reach private networks such as the home LAN, and on the router
@@ -20,6 +21,7 @@ let
   vars = import ./router-vars.nix;
   wan = "ens18";
   lan = "ens19";
+  vpn = "wg0";
 in
 {
   imports = [
@@ -65,9 +67,11 @@ in
 
     # The NAT module adds "accept LAN to WAN" to these rules. The home LAN is
     # also reached through the WAN, so the drop has to come first (mkBefore).
-    extraForwardRules = lib.mkBefore ''
+    extraForwardRules = lib.mkBefore (''
       iifname "${lan}" ip daddr { ${lib.concatStringsSep ", " vars.blockedNetworks} } counter drop comment "LAN may not reach private networks"
-    '';
+    '' + lib.optionalString vars.vpn.enable ''
+      iifname "${vpn}" oifname "${lan}" accept comment "VPN clients may reach the LAN"
+    '');
 
     # What LAN clients may use on the router: DHCP and DNS (ping is allowed
     # on every interface by default).
@@ -76,14 +80,37 @@ in
       allowedTCPPorts = [ 53 ];
     };
 
-    # SSH only from the WAN side, not from the isolated LAN.
-    interfaces.${wan}.allowedTCPPorts = [ 22 ];
+    # SSH only from the WAN side (and the VPN), not from the isolated LAN.
+    interfaces.${wan} = {
+      allowedTCPPorts = [ 22 ];
+      allowedUDPPorts = lib.optional vars.vpn.enable vars.vpn.port;
+    };
+
+    # VPN clients may use DNS and SSH on the router.
+    interfaces.${vpn} = lib.mkIf vars.vpn.enable {
+      allowedUDPPorts = [ 53 ];
+      allowedTCPPorts = [ 22 53 ];
+    };
+  };
+
+  # VPN clients reach the LAN and the router; nothing else is routed for
+  # them. Each peer may only use its own address.
+  networking.wireguard.interfaces = lib.optionalAttrs vars.vpn.enable {
+    ${vpn} = {
+      ips = [ "${vars.vpn.address}/${toString vars.vpn.prefixLength}" ];
+      listenPort = vars.vpn.port;
+      privateKeyFile = "/var/lib/wireguard/wg0.key";
+      peers = map (peer: {
+        publicKey = peer.publicKey;
+        allowedIPs = [ "${peer.ip}/32" ];
+      }) vars.vpn.peers;
+    };
   };
 
   services.openssh.openFirewall = false;
 
-  # dig, for checking the DNS records below.
-  environment.systemPackages = [ pkgs.dnsutils ];
+  # dig, for checking the DNS records below, and wg, for the VPN.
+  environment.systemPackages = [ pkgs.dnsutils ] ++ lib.optional vars.vpn.enable pkgs.wireguard-tools;
 
   # DHCP and a DNS forwarder for the LAN.
   services.dnsmasq = {
@@ -92,7 +119,9 @@ in
     resolveLocalQueries = false;
 
     settings = {
-      interface = lan;
+      # The VPN's clients use it for DNS too; DHCP is only served on the LAN.
+      interface = [ lan ] ++ lib.optional vars.vpn.enable vpn;
+      no-dhcp-interface = lib.optional vars.vpn.enable vpn;
       # Listen only on the LAN, and pick up its address whenever it appears.
       bind-dynamic = true;
 

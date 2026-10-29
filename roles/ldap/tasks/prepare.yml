@@ -1,0 +1,37 @@
+# Checks the ldap host's secrets and settings before anything changes.
+# Runs on localhost from roles/host_deploy. Facts it sets land on the VM's
+# inventory entry, where configure.yml and verify.yml use them.
+
+- name: Read the lldap secrets
+  ansible.builtin.include_role:
+    name: dotenv
+  vars:
+    dotenv_path: "{{ ldap_secrets_file }}"
+    dotenv_missing_hint: "Copy roles/ldap/env.example there and set the admin password and JWT secret."
+
+- name: Note the lldap secrets
+  ansible.builtin.set_fact:
+    ldap_admin_password: "{{ dotenv_values.LLDAP_ADMIN_PASSWORD | default('') }}"
+    ldap_jwt_secret: "{{ dotenv_values.LLDAP_JWT_SECRET | default('') }}"
+  no_log: true
+
+- name: Check the lldap secrets
+  ansible.builtin.assert:
+    that:
+      - ldap_admin_password | length >= 8
+      - ldap_jwt_secret | length >= 32
+      - ldap_jwt_secret != 'replace-with-32-or-more-random-characters'
+    fail_msg: >-
+      In secrets/{{ vm.network.name }}/{{ vm.name }}.env, set
+      LLDAP_ADMIN_PASSWORD (at least 8 characters) and LLDAP_JWT_SECRET (at
+      least 32 random characters, such as from 'openssl rand -base64 32').
+    quiet: true
+
+- name: Check the base DN
+  ansible.builtin.assert:
+    that:
+      - ldap_base_dn is match('^dc=[a-z0-9-]+(,dc=[a-z0-9-]+)*$')
+    fail_msg: >-
+      settings.base_dn of {{ vm.name }} in networks/{{ vm.network.name }}.yaml
+      must look like dc=lab,dc=example,dc=com, not '{{ ldap_base_dn }}'.
+    quiet: true

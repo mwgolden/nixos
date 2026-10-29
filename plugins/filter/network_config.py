@@ -14,9 +14,10 @@ import ipaddress
 import re
 
 NETWORK_TYPES = ("home", "isolated")
-HOST_TYPES = ("webserver", "postgres", "gitea", "garage", "router")
+HOST_TYPES = ("webserver", "postgres", "gitea", "garage", "router", "proxy", "ldap")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 PORT_FORWARD_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
 # Used when a network sets no domain. home.arpa is reserved for local
 # networks (RFC 8375), so these names never clash with real ones.
@@ -25,8 +26,15 @@ DEFAULT_DOMAIN_SUFFIX = "home.arpa"
 NETWORK_KEYS = {"name", "type", "bridge", "cidr", "gateway", "nameserver",
                 "upstream", "dhcp", "reserved", "domain"}
 HOST_KEYS = {"name", "type", "vm_id", "ip", "wan_ip", "full_clone",
-             "data_disk", "settings", "expose"}
+             "data_disk", "settings", "expose", "proxy"}
 EXPOSE_KEYS = {"name", "proto", "port", "wan_port"}
+PROXY_KEYS = {"name", "port", "external"}
+# Router ports forwarded to the proxy when a route on its network is external.
+EXTERNAL_PROXY_PORTS = (("https", 443), ("http", 80))
+VPN_KEYS = {"cidr", "port", "endpoint", "peers"}
+VPN_PEER_KEYS = {"name", "ip", "public_key"}
+WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
+DEFAULT_VPN_PORT = 51820
 
 
 def network_domain(net):
@@ -87,6 +95,10 @@ class _Checker:
         # Per network: forward name -> host, (proto, wan_port) -> host.
         self.forward_names = {}
         self.forward_ports = {}
+        # Per network: route name -> host that asked for it.
+        self.routes = {}
+        # Per network: names of external routes.
+        self.external_routes = {}
         self.cidrs = []  # (network, where)
         # Parsed networks by name, for upstream and WAN checks.
         self.networks = {}
@@ -145,6 +157,7 @@ class _Checker:
             self.unique(self.domains, network_domain(net), where, "domain")
 
         parsed = {"name": name, "type": kind, "bridge": bridge, "cidr": cidr,
+                  "domain": network_domain(net),
                   "where": where, "reserved": set(), "dhcp": None,
                   "upstream": net.get("upstream")}
 
@@ -266,6 +279,8 @@ class _Checker:
             if isinstance(settings, dict) and "port_forwards" in settings:
                 self.error(where, "settings.port_forwards has been replaced by expose: on the hosts the ports go to. "
                                   "See networks/README.md.")
+            if isinstance(settings, dict) and settings.get("vpn") is not None:
+                self.check_vpn(net, where, settings["vpn"], name)
         elif "wan_ip" in host:
             self.error(where, "wan_ip is only used by routers.")
 
@@ -289,6 +304,8 @@ class _Checker:
 
         if "expose" in host:
             self.check_expose(net, where, host, kind)
+        if "proxy" in host:
+            self.check_proxy_routes(net, where, host, kind)
 
     def check_address(self, net, where, key, ip, is_router=False):
         cidr = net["cidr"]
@@ -347,6 +364,96 @@ class _Checker:
                 self.error(where, f"{label}: the router's {proto}/{wan_port} is already forwarded to {ports[(proto, wan_port)]}.")
             ports[(proto, wan_port)] = host["name"]
 
+    def check_proxy_routes(self, net, where, host, kind):
+        routes = host.get("proxy")
+        if not isinstance(routes, list):
+            self.error(where, "proxy must be a list.")
+            return
+        if kind in ("proxy", "router"):
+            self.error(where, f"a {kind} host can't have proxy: routes; they go on the hosts the proxy sends requests to.")
+            return
+        seen = self.routes.setdefault(net["name"], {})
+        for route in routes:
+            if not isinstance(route, dict):
+                self.error(where, f"proxy entry {route!r} must be a mapping.")
+                continue
+            name = route.get("name")
+            label = f"proxy route '{name}'"
+            for key in sorted(set(route) - PROXY_KEYS):
+                self.error(where, f"{label}: unknown setting {key}.")
+            if not isinstance(name, str) or not LABEL_RE.match(name):
+                self.error(where, f"{label}: name must be one DNS label (lowercase letters, digits and '-'), "
+                                  f"such as git; it is served as <name>.{net['domain']}.")
+            port = _int(route.get("port"))
+            if port is None or not 1 <= port <= 65535:
+                self.error(where, f"{label}: port must be from 1 to 65535.")
+            if name in seen:
+                self.error(where, f"{label}: the name is already a route to {seen[name]}.")
+            seen[name] = host["name"]
+            external = route.get("external", False)
+            if not isinstance(external, bool):
+                self.error(where, f"{label}: external must be true or false.")
+            elif external and net["type"] != "isolated":
+                self.error(where, f"{label}: external is only used on isolated networks; "
+                                  "on a home network the whole LAN already reaches the proxy.")
+            elif external:
+                self.external_routes.setdefault(net["name"], []).append(name)
+
+    def check_vpn(self, net, where, vpn, router_name):
+        if not isinstance(vpn, dict):
+            self.error(where, "settings.vpn must be a mapping with cidr and peers.")
+            return
+        for key in sorted(set(vpn) - VPN_KEYS):
+            self.error(where, f"settings.vpn: unknown setting {key}.")
+        cidr = _net(vpn.get("cidr"))
+        if cidr is None:
+            self.error(where, f"settings.vpn.cidr must be a subnet like 10.201.0.0/24 (host bits zero), not '{vpn.get('cidr')}'.")
+        else:
+            for other, other_where in self.cidrs:
+                if cidr.overlaps(other):
+                    self.error(where, f"settings.vpn.cidr {cidr} overlaps {other} of {other_where}.")
+            self.cidrs.append((cidr, f"{where}'s VPN"))
+        port = _int(vpn.get("port", DEFAULT_VPN_PORT))
+        if port is None or not 1 <= port <= 65535:
+            self.error(where, "settings.vpn.port must be from 1 to 65535.")
+        else:
+            self.pending_vpn_ports.append((net, where, port))
+        endpoint = vpn.get("endpoint", "")
+        if not isinstance(endpoint, str) or not re.match(r"^[A-Za-z0-9.-]*$", endpoint):
+            self.error(where, "settings.vpn.endpoint must be a host name or address, without a port.")
+        peers = vpn.get("peers", [])
+        if not isinstance(peers, list):
+            self.error(where, "settings.vpn.peers must be a list.")
+            return
+        names, ips = set(), set()
+        router_address = next(cidr.hosts()) if cidr is not None else None
+        for peer in peers:
+            if not isinstance(peer, dict):
+                self.error(where, f"VPN peer {peer!r} must be a mapping.")
+                continue
+            label = f"VPN peer '{peer.get('name')}'"
+            for key in sorted(set(peer) - VPN_PEER_KEYS):
+                self.error(where, f"{label}: unknown setting {key}.")
+            name = peer.get("name")
+            if not isinstance(name, str) or not LABEL_RE.match(name):
+                self.error(where, f"{label}: name must be lowercase letters, digits and '-'.")
+            elif name in names:
+                self.error(where, f"{label}: two peers have this name.")
+            elif name == router_name:
+                self.error(where, f"{label}: a peer can't have the router's name; their keys would share a file.")
+            names.add(name)
+            ip = _addr(peer.get("ip"))
+            if ip is None or cidr is None or not self.usable(cidr, ip):
+                self.error(where, f"{label}: ip must be a usable address in settings.vpn.cidr.")
+            elif ip == router_address:
+                self.error(where, f"{label}: {ip} is the router's own VPN address.")
+            elif ip in ips:
+                self.error(where, f"{label}: {ip} is already another peer's.")
+            ips.add(ip)
+            key = peer.get("public_key")
+            if key is not None and not (isinstance(key, str) and WG_KEY_RE.match(key)):
+                self.error(where, f"{label}: public_key must be a WireGuard public key (44 characters ending in '=').")
+
     def check_allowed_networks(self, where, settings):
         allowed = settings.get("allowed_networks")
         if allowed is None:
@@ -363,6 +470,7 @@ class _Checker:
 
     def run(self, network_files):
         self.pending_wan = []
+        self.pending_vpn_ports = []
         parsed = []
         # Networks first, so hosts can check against any network's settings.
         for item in network_files:
@@ -377,7 +485,31 @@ class _Checker:
                 elif upstream["type"] != "home":
                     self.error(net["where"], f"upstream '{net['upstream']}' must be a home network.")
         for net, config in parsed:
-            self.check_hosts(net, config)
+            hosts = [h for h in self.check_hosts(net, config) if isinstance(h, dict)]
+            proxies = [h.get("name") for h in hosts if h.get("type") == "proxy"]
+            if len(proxies) > 1:
+                self.error(net["where"], f"a network can have only one proxy host, not {len(proxies)}: {', '.join(proxies)}.")
+            routes = self.routes.get(net["name"], {})
+            if routes and not proxies:
+                self.error(net["where"], f"hosts here have proxy: routes ({', '.join(sorted(routes))}) "
+                                         "but the network has no host of type proxy.")
+            external = self.external_routes.get(net["name"])
+            if external:
+                ports = self.forward_ports.get(net["name"], {})
+                for _, port in EXTERNAL_PROXY_PORTS:
+                    if ("tcp", port) in ports:
+                        self.error(net["where"], f"the external proxy routes ({', '.join(external)}) need the router's "
+                                                 f"tcp/{port}, which is already forwarded to {ports[('tcp', port)]}.")
+            host_names = {h.get("name") for h in hosts}
+            for route, owner in routes.items():
+                if route in host_names:
+                    self.error(f"host {owner} (network {net['name']})",
+                               f"proxy route '{route}' has the same name as host {route}; "
+                               "both would be the same DNS name.")
+        for net, where, port in self.pending_vpn_ports:
+            owner = self.forward_ports.get(net["name"], {}).get(("udp", port))
+            if owner:
+                self.error(where, f"settings.vpn.port {port}: the router's udp/{port} is already forwarded to {owner}.")
         for net, where, wan_ip in self.pending_wan:
             upstream = self.networks.get(net["upstream"])
             if upstream is not None:
@@ -462,6 +594,20 @@ def network_config_inventory(network_configs):
                      router's DNS server answers
       port_forwards  {name, host, proto, wan_port, lan_ip, lan_port} built
                      from its hosts' expose: entries, for its router
+      vpn            its router's WireGuard VPN, or {}: cidr, prefix_length,
+                     address (the router's), port, endpoint, peers
+                     ({name, ip, public_key}; public_key "" means the deploy
+                     makes a key pair) and allowed_ips (what clients route
+                     through it)
+      proxy          the name of its proxy host, or ""
+      proxy_routes   {name, fqdn, host, backend_ip, port, external} built
+                     from its hosts' proxy: entries, for its proxy. Their
+                     names are also in dns_records, at the proxy's address.
+                     When any is external, port_forwards also sends the
+                     router's tcp 443 and 80 to the proxy.
+      proxy_internal_sources
+                     subnets allowed to use routes that aren't external:
+                     the network's, its VPN's and the proxy's own loopback
     """
     networks = {}
     for name, config in network_configs.items():
@@ -483,11 +629,18 @@ def network_config_inventory(network_configs):
             "domain": network_domain(net),
             "dns_records": [],
             "port_forwards": [],
+            "proxy": next((h["name"] for h in config.get("hosts") or [] if h["type"] == "proxy"), ""),
+            "proxy_routes": [],
+            "proxy_internal_sources": [],
+            "vpn": {},
         }
     for name, config in network_configs.items():
         for h in config.get("hosts") or []:
             if h["type"] == "router":
                 networks[name]["router_wan_ip"] = str(h["wan_ip"])
+                vpn = (h.get("settings") or {}).get("vpn")
+                if vpn:
+                    networks[name]["vpn"] = _vpn(vpn, networks[name], str(h["wan_ip"]))
             net = networks[name]
             net["dns_records"].append({"name": h["name"], "fqdn": f"{h['name']}.{net['domain']}",
                                        "ip": str(h["ip"])})
@@ -495,6 +648,23 @@ def network_config_inventory(network_configs):
                 net["port_forwards"].append({"name": e["name"], "host": h["name"], "proto": e["proto"],
                                              "wan_port": e["wan_port"], "lan_ip": str(h["ip"]),
                                              "lan_port": e["port"]})
+            for r in h.get("proxy") or []:
+                net["proxy_routes"].append({"name": r["name"], "fqdn": f"{r['name']}.{net['domain']}",
+                                            "host": h["name"], "backend_ip": str(h["ip"]),
+                                            "port": int(r["port"]),
+                                            "external": bool(r.get("external", False))})
+        net = networks[name]
+        if net["proxy"]:
+            proxy_ip = next(str(h["ip"]) for h in config["hosts"] if h["name"] == net["proxy"])
+            for r in net["proxy_routes"]:
+                net["dns_records"].append({"name": r["name"], "fqdn": r["fqdn"], "ip": proxy_ip})
+            if any(r["external"] for r in net["proxy_routes"]):
+                for label, port in EXTERNAL_PROXY_PORTS:
+                    net["port_forwards"].append({"name": f"{net['proxy']}-{label}", "host": net["proxy"],
+                                                 "proto": "tcp", "wan_port": port, "lan_ip": proxy_ip,
+                                                 "lan_port": port})
+        net["proxy_internal_sources"] = ([net["cidr"]] + ([net["vpn"]["cidr"]] if net["vpn"] else [])
+                                         + ["127.0.0.0/8"])
 
     hosts = {}
     for name, config in network_configs.items():
@@ -532,12 +702,32 @@ def network_config_inventory(network_configs):
     return {"networks": networks, "hosts": hosts}
 
 
+def _vpn(vpn, net, wan_ip):
+    cidr = ipaddress.IPv4Network(str(vpn["cidr"]))
+    port = int(vpn.get("port", DEFAULT_VPN_PORT))
+    return {
+        "cidr": str(cidr),
+        "prefix_length": cidr.prefixlen,
+        "address": str(next(cidr.hosts())),
+        "port": port,
+        # Where clients send their packets. The router's WAN address only
+        # works from the upstream network.
+        "endpoint": f"{vpn.get('endpoint') or wan_ip}:{port}",
+        "peers": [{"name": p["name"], "ip": str(p["ip"]), "public_key": p.get("public_key", "")}
+                  for p in vpn.get("peers") or []],
+        "allowed_ips": [net["cidr"], str(cidr)],
+    }
+
+
 def host_client_networks(vm, inventory):
-    """Subnets that can reach a host: its own network's, plus the upstream
-    network's when it exposes ports through its router (forwarded
-    connections keep their upstream source address)."""
+    """Subnets that can reach a host: its own network's, its router's VPN
+    when there is one, and the upstream network's when the host exposes
+    ports through its router (forwarded connections keep their upstream
+    source address)."""
     net = vm["network"]
     cidrs = [net["cidr"]]
+    if net.get("vpn"):
+        cidrs.append(net["vpn"]["cidr"])
     if vm.get("expose") and net["type"] == "isolated" and net["upstream"] in inventory["networks"]:
         cidrs.append(inventory["networks"][net["upstream"]]["cidr"])
     return cidrs

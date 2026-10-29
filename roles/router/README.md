@@ -31,6 +31,7 @@ internet ── home router 192.168.1.1 ── vmbr0 ── ens18 [router] ens19
 | DHCP        | `10.1.0.100` – `10.1.0.199`, 12 hour leases              |
 | DNS         | The router forwards LAN queries to `1.1.1.1` and `9.9.9.9` |
 | Blocked     | `192.168.0.0/16`, `172.16.0.0/12`, `10.0.0.0/8`           |
+| VPN         | Off. See [VPN](#vpn)                                      |
 
 These values come from the router's network file, [networks/lab.yaml](../../networks/lab.yaml): the bridge, subnet and DHCP range from its `network:` block, the rest from the router's entry. Deploying the router creates the bridge if it is missing.
 
@@ -132,6 +133,47 @@ psql -h postgres.lab.home.arpa -U pgadmin -d postgres
 Names in the domain are never sent to the upstream DNS servers, and DHCP clients get the domain as their search domain. Set `domain:` in the network's `network:` block to use another one. The deploy asks the router's DNS server for each name and stops if an answer is wrong. Adding or removing a host changes the records, so redeploy the router afterwards.
 
 Home-LAN machines use the home router for DNS, so these names don't work from there.
+
+## VPN
+
+A WireGuard VPN lets your own devices into the isolated network. Turn it on in the router's settings:
+
+```yaml
+    settings:
+      vpn:
+        cidr: 10.201.0.0/24      # the VPN's own subnet; the router is .1
+        # port: 51820            # UDP, on the router's WAN address
+        # endpoint: vpn.example.com   # what clients connect to; defaults to wan_ip
+        peers:
+          - name: laptop
+            ip: 10.201.0.2
+          - name: phone
+            ip: 10.201.0.3
+            # public_key: ...    # if the device made its own key
+```
+
+Then redeploy the router. The deploy:
+
+1. Makes a key pair for the router, and for each peer without a `public_key`, in `secrets/<network>/vpn/` on your machine. Existing keys are kept, so a rebuilt router keeps working with existing clients.
+2. Copies the router's private key to `/var/lib/wireguard/wg0.key` on the router, outside the Nix store.
+3. Checks that `wg0` has the router's key, the port and exactly the listed peers.
+4. Writes a client file for each peer, `secrets/<network>/vpn/<peer>.conf`. Import it into the WireGuard app, or run `wg-quick up ./laptop.conf`. A peer with its own `public_key` gets a file with a placeholder where its private key goes.
+
+**What clients get:** an address in the VPN subnet, and a tunnel for only the network's subnet and the VPN's. Other traffic, including to the internet, doesn't go through it. They use the router's DNS server, so names like `postgres.lab.home.arpa` and the [proxy's](../proxy/README.md) routes work. They can also SSH to the router at its VPN address. Lab hosts can't start connections to VPN clients, because the VPN subnet is inside the blocked private ranges.
+
+**Postgres:** when `settings.allowed_networks` is unset, postgres on the network also allows password logins from the VPN subnet.
+
+**From outside the home:** the default endpoint is the router's WAN address, which only works from the home LAN. To connect from the internet, forward the UDP port on your home router to the router's WAN address (pfSense: Firewall > NAT > Port Forward). Then set `endpoint` to your public address or a name for it, and redeploy the router to update the client files.
+
+**Removing a peer:** delete it from `peers` and redeploy the router. Its files in `secrets/<network>/vpn/` are left in place; delete them yourself.
+
+Validation stops before anything changes if:
+
+- the VPN subnet overlaps any network or other VPN,
+- a peer's address isn't in the subnet, is the router's (`.1`), or is another peer's,
+- two peers share a name, or a peer has the router's name,
+- a `public_key` isn't a WireGuard key,
+- the port is already used by a UDP `expose:` entry.
 
 ## Port forwards
 

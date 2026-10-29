@@ -44,6 +44,12 @@ hosts:
         - 192.168.0.0/16
         - 172.16.0.0/12
         - 10.0.0.0/8
+      # A WireGuard VPN into this network. See roles/router/README.md.
+      # vpn:
+      #   cidr: 10.201.0.0/24
+      #   peers:
+      #     - name: laptop
+      #       ip: 10.201.0.2
 
   - name: postgres
     type: postgres
@@ -92,3 +98,35 @@ hosts:
 
         - name: old_user
           state: absent
+
+  - name: proxy
+    type: proxy
+    vm_id: 116
+    ip: 10.1.0.10
+  
+  - name: gitea
+    type: gitea
+    vm_id: 114
+    ip: 10.1.0.14
+    data_disk:
+      size_gb: 40
+      storage: local-lvm
+    settings:
+      http_port: 3000
+      public_host: ""
+      public_http_port: ""
+      public_ssh_port: ""
+      allow_registration: false
+    proxy:
+      - name: git
+        port: 3000
+        external: true
+
+  - name: webserver-lab
+    type: webserver
+    vm_id: 111
+    ip: 10.1.0.11
+    proxy:
+      - name: www
+        port: 80
+

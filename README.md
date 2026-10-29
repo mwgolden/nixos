@@ -107,8 +107,8 @@ ansible-playbook proxmox/scripts/install-nix.yaml -e installer_iso="$PWD/build/n
 
 Each network is described by a file in [networks/](networks/README.md): its bridge, subnet and gateway, and the VMs on it. Today there are two:
 
-- [networks/home.yaml](networks/home.yaml): webserver, gitea and garage, directly on the home LAN.
-- [networks/lab.yaml](networks/lab.yaml): the router and postgres, on the isolated bridge.
+- [networks/home.yaml](networks/home.yaml): a webserver (and garage, commented out), directly on the home LAN.
+- [networks/lab.yaml](networks/lab.yaml): the router, postgres, the reverse proxy, gitea and a second webserver, on the isolated bridge.
 
 Check the files, then deploy a whole network, or one host:
 
@@ -163,6 +163,8 @@ Each host type is a role in [roles/](roles/), with a README that explains its se
 - [gitea](roles/gitea/README.md): Gitea Git server on a separate data disk
 - [garage](roles/garage/README.md): Garage S3-compatible object storage on a separate data disk
 - [router](roles/router/README.md): connects an isolated bridge to the internet with DHCP, NAT and a firewall that blocks the home LAN
+- [proxy](roles/proxy/README.md): Caddy reverse proxy that serves other hosts' web services under HTTPS names, built from their `proxy:` entries
+- [ldap](roles/ldap/README.md): lldap, a small LDAP server for user accounts and groups, with a web interface
 
 Passwords and keys for hosts go in `secrets/<network>/<host>.env`; see [secrets/README.md](secrets/README.md).
 
@@ -182,10 +184,9 @@ Static addresses must stay outside the home router's DHCP pool. Validation check
 | -------------- | --------------------------------------------------------- |
 | `192.168.1.1`  | gateway and DNS                                           |
 | `192.168.1.10` | Installer ISO and the template, on VM 110 (never at the same time). New clones also boot here first. |
-| `192.168.1.11` | webserver (VM 111)                                        |
-| `192.168.1.13` | router (VM 113), WAN side                                 |
-| `192.168.1.14` | gitea (VM 114)                                            |
-| `192.168.1.15` | garage (VM 115)                                           |
+| `192.168.1.11` | webserver (VM 150)                                        |
+| `192.168.1.13` | router (VM 113), WAN side: port forwards, and the proxy's external routes |
+| `192.168.1.15` | garage (VM 115), commented out in `home.yaml`             |
 
 Because every new clone starts on `.10`, the deploy works on one VM at a time.
 
@@ -196,10 +197,31 @@ Because every new clone starts on `.10`, the deploy works on one VM at a time.
 | IP                          | System                                     |
 | --------------------------- | ------------------------------------------ |
 | `10.1.0.1`                  | router (VM 113), LAN side: gateway and DNS |
+| `10.1.0.10`                 | proxy (VM 116): `git` (external), `www`    |
+| `10.1.0.11`                 | webserver-lab (VM 111)                     |
 | `10.1.0.12`                 | postgres (VM 112)                          |
+| `10.1.0.14`                 | gitea (VM 114)                             |
 | `10.1.0.100` – `10.1.0.199` | DHCP pool                                  |
 
 VMs on `vmbr1` reach the internet but not `192.168.1.0/24` or other private networks. From home, they're reachable only through port forwards on the router, made from each host's `expose:` entries in `networks/lab.yaml`. The router's DNS server answers for the network's hosts, as `postgres` or `postgres.lab.home.arpa`.
+
+### Reaching lab services from home
+
+There are three ways in, from narrowest to widest:
+
+| Way | What it reaches | Set up with |
+|---|---|---|
+| Port forward | One port on one host, at `192.168.1.13:<wan_port>`, such as postgres on 5432 | `expose:` on the host |
+| External proxy route | One web service by name, such as `https://git.lab.home.arpa/`, through the router's 443 and 80 | `external: true` on the host's `proxy:` entry |
+| [VPN](roles/router/README.md#vpn) | Every host and every proxy route, with the lab's DNS | `vpn:` in the router's settings |
+
+Proxy routes are picked by name, so `https://192.168.1.13/` doesn't work. Home machines ask the home router for names, not the lab router, so point each external route's name at `192.168.1.13`. Either set this on your home router for every machine, or in `/etc/hosts` for just your machine. One line can hold several names:
+
+```text
+192.168.1.13  git.lab.home.arpa  other.lab.home.arpa
+```
+
+Only names of external routes work this way. Internal routes, like `www`, refuse connections from home addresses; use the VPN for those. VPN clients use the lab router's DNS, so they need no overrides. Either way, trust the proxy's certificate, `secrets/lab/proxy-ca.crt`, to avoid browser warnings (see [roles/proxy](roles/proxy/README.md#https)).
 
 With every server on the isolated network, traffic flows like this:
 

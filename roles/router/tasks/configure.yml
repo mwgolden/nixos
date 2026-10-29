@@ -29,6 +29,27 @@
   vars:
     nixos_base_hostname: "{{ vm.name }}"
 
+# Before the switch, which starts WireGuard with this key.
+- name: Install the VPN's private key
+  when: router_vpn_enabled
+  block:
+    - name: Create the WireGuard folder
+      ansible.builtin.file:
+        path: "{{ router_vpn_key_path | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Copy the router's private key
+      ansible.builtin.copy:
+        src: "{{ router_vpn_dir }}/{{ vm.name }}.key"
+        dest: "{{ router_vpn_key_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
 - name: Install router settings
   ansible.builtin.template:
     src: router-vars.nix.j2
@@ -157,6 +178,30 @@
   loop: "{{ router_port_forwards }}"
   loop_control:
     label: "{{ item.name }}"
+
+- name: Check the VPN
+  when: router_vpn_enabled
+  block:
+    # Only public values; 'wg show dump' would print the private key.
+    - name: Read the VPN's key, port and peers
+      ansible.builtin.command:
+        cmd: wg show wg0 {{ item }}
+      register: wg_show
+      changed_when: false
+      loop: [public-key, listen-port, peers]
+
+    - name: Require the VPN to use the router's key, port and peers
+      ansible.builtin.assert:
+        that:
+          - wg_show.results[0].stdout == router_vpn_public_key
+          - wg_show.results[1].stdout | int == router_vpn.port
+          - wg_show.results[2].stdout_lines | sort == router_vpn_peers | map(attribute='public_key') | sort
+        fail_msg: >-
+          wg0 on the router doesn't match settings.vpn in
+          networks/{{ vm.network.name }}.yaml (its key, port
+          {{ router_vpn.port }} or peers). See 'sudo wg show' and
+          'journalctl -u wireguard-wg0' on the router.
+        quiet: true
 
 # Uses TCP rather than ping: the home network drops outbound ping.
 # These are the servers dnsmasq forwards LAN clients' DNS queries to.

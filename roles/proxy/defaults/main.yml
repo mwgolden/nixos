@@ -1,0 +1,15 @@
+# Defaults for proxy hosts. A proxy has no settings of its own: its routes
+# come from the proxy: entries of the other hosts on its network.
+
+# {name, fqdn, host, backend_ip, port, external} for each route.
+proxy_routes: "{{ vm.network.proxy_routes }}"
+# Who may use routes that aren't external: the network, its VPN, and the
+# proxy itself (for the deploy's own checks).
+proxy_internal_sources: "{{ vm.network.proxy_internal_sources }}"
+proxy_vm_name: "{{ vm.name }}"
+# Caddy's root certificate is copied here after each deploy, for adding
+# to your machines' trusted certificates. Not secret, but specific to
+# this proxy VM, so it lives next to the secrets, which git ignores.
+proxy_ca_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}-ca.crt"
+# Shown in the certificate, so you can tell which proxy it belongs to.
+proxy_ca_name: "nixlab {{ vm.network.name }} {{ vm.name }}"

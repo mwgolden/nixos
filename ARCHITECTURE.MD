@@ -327,14 +327,13 @@ The target layout, reached in stages (see [PLAN.md](PLAN.md)):
 │   ├── nixos_base/              # common.nix, network.nix, placement, switch
 │   ├── dotenv/                  # reads secrets files
 │   ├── isolated_bridge/
-│   ├── router/
+│   ├── router/                  # firewall, NAT, DNS, WireGuard VPN
 │   ├── webserver/
 │   ├── postgres/
 │   ├── gitea/
 │   ├── garage/
-│   ├── reverse_proxy/
-│   ├── vpn/
-│   └── ldap/
+│   ├── proxy/                   # Caddy reverse proxy (type: proxy)
+│   └── ldap/                    # lldap (type: ldap)
 ├── modules/                     # NixOS modules shared by every VM
 └── proxmox/                     # template bootstrap
 ```

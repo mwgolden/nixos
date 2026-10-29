@@ -8,8 +8,8 @@ postgres_settings_defaults:
   port: 5432
   # Networks allowed to connect over TCP with a password, as network names
   # (from networks/) or subnets. Left unset, it is the host's own network,
-  # plus the upstream network when the host has expose: entries: forwarded
-  # connections keep their home address.
+  # its router's VPN if it has one, plus the upstream network when the
+  # host has expose: entries: forwarded connections keep their home address.
   # allowed_networks: [home, lab]
   # The AdventureWorks sample database. Only loaded if the database doesn't
   # exist yet, so re-runs never overwrite it.

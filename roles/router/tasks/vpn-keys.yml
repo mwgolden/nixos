@@ -1,0 +1,36 @@
+# Makes the VPN's key pairs in secrets/<network>/vpn/ on this machine, and
+# notes the public keys. Existing keys are kept. Runs on localhost from
+# prepare.yml when settings.vpn is set.
+
+- name: Create the VPN secrets folder
+  ansible.builtin.file:
+    path: "{{ router_vpn_dir }}"
+    state: directory
+    mode: "0700"
+
+# Kept across redeploys, so clients keep working when the router is
+# rebuilt.
+- name: Make the router's key pair
+  ansible.builtin.command:
+    cmd: "{{ ansible_playbook_python }} {{ role_path }}/files/wg-keypair.py {{ router_vpn_dir }}/{{ vm.name }}"
+    creates: "{{ router_vpn_dir }}/{{ vm.name }}.key"
+
+- name: Make a key pair for each peer without a public_key
+  ansible.builtin.command:
+    cmd: "{{ ansible_playbook_python }} {{ role_path }}/files/wg-keypair.py {{ router_vpn_dir }}/{{ item.name }}"
+    creates: "{{ router_vpn_dir }}/{{ item.name }}.key"
+  loop: "{{ router_vpn.peers | rejectattr('public_key') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Note the VPN's public keys
+  ansible.builtin.set_fact:
+    router_vpn_public_key: "{{ lookup('file', router_vpn_dir ~ '/' ~ vm.name ~ '.pub') }}"
+    router_vpn_peers: >-
+      {%- set peers = [] -%}
+      {%- for peer in router_vpn.peers -%}
+      {%- set _ = peers.append(peer | combine({
+            'public_key': peer.public_key or lookup('file', router_vpn_dir ~ '/' ~ peer.name ~ '.pub'),
+            'generated': not peer.public_key})) -%}
+      {%- endfor -%}
+      {{ peers }}
