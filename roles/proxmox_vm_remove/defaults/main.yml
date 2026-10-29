@@ -7,5 +7,9 @@ vm_remove_name: ""
 vm_remove_confirm: ""
 
 # Addresses whose SSH host keys are forgotten afterwards, so a future VM on
-# them is trusted afresh.
+# them is trusted afresh. The address recorded in the VM's notes is added.
 vm_remove_known_hosts: []
+
+# Tags the VM must carry to be deleted, such as [nixlab, net-lab]. The
+# project only deletes VMs it has tagged as its own.
+vm_remove_required_tags: []

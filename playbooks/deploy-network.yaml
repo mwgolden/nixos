@@ -10,8 +10,10 @@
 # already done are only checked. To deploy a single host, use
 # playbooks/deploy-host.yaml.
 #
-# Hosts removed from the file are not deleted. Use playbooks/destroy-host.yaml
-# for that.
+# Hosts removed from the file are reported, not deleted. To delete them
+# (only VMs tagged as this network's), add -e prune=true; it asks you to
+# type the network name, or takes -e confirm_prune=<network>:
+#   ansible-playbook playbooks/deploy-network.yaml -e network=lab -e prune=true
 
 - name: Load the network files
   hosts: localhost
@@ -32,6 +34,16 @@
         name: network_config
       vars:
         network_config_name: "{{ network }}"
+
+    # Before deploying, so a deleted VM frees its address for a new host.
+    - name: Compare the network with Proxmox, and prune if asked
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: ownership
+      vars:
+        network_config_name: "{{ network }}"
+        network_config_prune: "{{ prune | default(false) }}"
+        network_config_confirm_prune: "{{ confirm_prune | default('') }}"
 
     - name: Work out the order to deploy in
       ansible.builtin.set_fact:

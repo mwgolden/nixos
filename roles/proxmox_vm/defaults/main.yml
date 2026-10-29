@@ -20,6 +20,11 @@ proxmox_vm_required_env:
 #   setting  name of the setting that holds size_gb, used in error messages
 proxmox_vm_data_disk: {}
 
+# Tags the VM should carry, such as [nixlab, net-lab, type-postgres]. Only
+# the project's own kinds of tag (nixlab, net-*, type-*) are replaced; any
+# other tags on the VM are kept. Empty leaves the tags alone.
+proxmox_vm_tags: []
+
 # Extra network cards to add before the VM starts, for example
 #   - { interface: net1, bridge: vmbr1 }
 # net0 comes from the template.

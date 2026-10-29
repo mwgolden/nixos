@@ -22,6 +22,15 @@
       ansible.builtin.include_role:
         name: network_config
 
+    - name: Compare each network with Proxmox
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: ownership
+      vars:
+        network_config_name: "{{ item }}"
+      loop: "{{ network_configs.keys() | list }}"
+      when: network_config_check_proxmox | default(true) | bool
+
     - name: Report success
       ansible.builtin.debug:
         msg: "All network files are valid: {{ network_configs.keys() | join(', ') }}."

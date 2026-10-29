@@ -4,7 +4,8 @@
 #
 # An existing bridge is left as it is, after checking that it really is
 # isolated. A missing one is created and the node's network configuration
-# applied. Runs on localhost. Needs proxmox/vars.yaml loaded and
+# applied. With isolated_bridge_state: absent, tasks from remove.yml run
+# instead. Runs on localhost. Needs proxmox/vars.yaml loaded and
 # PROXMOX_TOKEN_SECRET set. The API token needs Sys.Modify on /nodes/<node>
 # to change the network.
 
@@ -19,7 +20,12 @@
       '{{ isolated_bridge_name }}'.
     quiet: true
 
+- name: Remove {{ isolated_bridge_name }}
+  ansible.builtin.include_tasks: remove.yml
+  when: isolated_bridge_state == 'absent'
+
 - name: Make sure {{ isolated_bridge_name }} exists
+  when: isolated_bridge_state == 'present'
   module_defaults:
     group/community.proxmox.proxmox:
       api_host: "{{ proxmox_api_host }}"

@@ -1,0 +1,3 @@
+# Fixed copies of the network files for the unit tests, so the tests do
+# not change whenever networks/ is edited. tests/test_network_config.py
+# still checks that the real files in networks/ are valid.

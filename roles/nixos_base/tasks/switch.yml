@@ -102,19 +102,13 @@
 # Placement looks here first next time, even if this VM's entry has moved
 # to another network file by then. Other lines in the notes are kept.
 - name: Record the VM's address in its Proxmox notes
-  ansible.builtin.uri:
-    url: "https://{{ proxmox_api_host }}:8006/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id }}/config"
-    method: PUT
-    headers:
-      Authorization: >-
-        PVEAPIToken={{ proxmox_api_user }}!{{ proxmox_api_token_id }}={{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}
-    body_format: form-urlencoded
-    body:
+  ansible.builtin.include_role:
+    name: proxmox_vm
+    tasks_from: api-set
+  vars:
+    proxmox_vm_api_vmid: "{{ vm_id }}"
+    proxmox_vm_api_config:
       description: "{{ proxmox_vm_config.description | default('') | record_address(final.ip, final.bridge) }}"
-    validate_certs: "{{ proxmox_validate_certs }}"
-  delegate_to: localhost
-  become: false
-  no_log: true
   when: >-
     (proxmox_vm_config.description | default('') | recorded_address)
     != {'ip': final.ip, 'bridge': final.bridge}

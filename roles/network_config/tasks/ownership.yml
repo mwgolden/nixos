@@ -1,0 +1,94 @@
+# Compares one network's file with the VMs Proxmox has tagged for it (see
+# the network_config_ownership filter), reports what differs, and, only
+# when asked, deletes the VMs that were removed from the file.
+#
+# Runs on localhost after main.yml with the Proxmox checks on (it uses the
+# VM list read there). Set:
+#   network_config_name           the network
+#   network_config_prune          true to delete VMs removed from the file
+#   network_config_confirm_prune  the network's name, to skip the prompt
+#
+# Without pruning, a removed VM that still holds an address the file gives
+# another host stops the run: the new host could not take the address.
+
+- name: Compare {{ network_config_name }} with Proxmox
+  ansible.builtin.set_fact:
+    network_config_owned: >-
+      {{ network_configs | network_config_inventory
+         | network_config_ownership(network_config_name, network_config_vms.proxmox_vms) }}
+
+- name: Report VMs deployed before tagging
+  ansible.builtin.debug:
+    msg: >-
+      Not yet tagged as this project's: {{ network_config_owned.untagged | map(attribute='name') | join(', ') }}.
+      Their next deploy tags them; until then destroy-host and destroy-network
+      leave them alone.
+  when: network_config_owned.untagged | length > 0
+
+- name: Report VMs moved to another network file
+  ansible.builtin.debug:
+    msg: >-
+      {% for vm in network_config_owned.moved %}{{ vm.name }} (VM {{ vm.vmid }}) is
+      declared in networks/{{ vm.declared_in }}.yaml now; deploy it there to move it.
+      {% endfor %}These are never pruned.
+  when: network_config_owned.moved | length > 0
+
+- name: Report VMs removed from the network file
+  ansible.builtin.debug:
+    msg: >-
+      These VMs are tagged for network {{ network_config_name }} but no network
+      file lists them: {% for vm in network_config_owned.orphans %}{{ vm.name }}
+      (VM {{ vm.vmid }}{{ ', at ' ~ vm.address.ip if vm.address else '' }}){{ ', ' if not loop.last }}{% endfor %}.
+      {{ 'They are deleted next.' if network_config_prune | bool else
+         'Run with -e prune=true to delete them, or put them back in the file.' }}
+  when: network_config_owned.orphans | length > 0
+
+- name: Stop when a removed VM holds a declared address
+  ansible.builtin.assert:
+    that:
+      - network_config_owned.conflicts | length == 0
+    fail_msg: >-
+      {% for vm in network_config_owned.conflicts %}{{ vm.name }} (VM {{ vm.vmid }}) was
+      removed from the network file but still has {{ vm.address.ip }}, the address of
+      {{ vm.used_by }}. {% endfor %}Run with -e prune=true to delete it first, or
+      give {{ network_config_owned.conflicts | map(attribute='used_by') | join(', ') }}
+      another address.
+    quiet: true
+  when: not (network_config_prune | bool)
+
+- name: Delete VMs removed from the network file
+  when:
+    - network_config_prune | bool
+    - network_config_owned.orphans | length > 0
+  block:
+    - name: Ask to confirm
+      ansible.builtin.pause:
+        prompt: >-
+          This permanently deletes {{ network_config_owned.orphans | map(attribute='name') | join(', ') }}
+          and all their disks. Type the network name ({{ network_config_name }}) to confirm
+      register: network_config_prune_prompt
+      when: network_config_confirm_prune != network_config_name
+
+    - name: Check the confirmation
+      ansible.builtin.assert:
+        that:
+          - >-
+            network_config_confirm_prune == network_config_name
+            or (network_config_prune_prompt.user_input | default('')) == network_config_name
+        fail_msg: "Confirmation did not match '{{ network_config_name }}'. Nothing was deleted."
+        quiet: true
+
+    # Routers last: other removed VMs may still be reached through them.
+    - name: Delete each removed VM
+      ansible.builtin.include_role:
+        name: proxmox_vm_remove
+      vars:
+        vm_remove_id: "{{ item.vmid }}"
+        vm_remove_name: "{{ item.name }}"
+        vm_remove_confirm: "{{ item.name }}"
+        vm_remove_required_tags: [nixlab, "net-{{ network_config_name }}"]
+      loop: >-
+        {{ (network_config_owned.orphans | rejectattr('type', 'equalto', 'router') | list)
+           + (network_config_owned.orphans | selectattr('type', 'equalto', 'router') | list) }}
+      loop_control:
+        label: "{{ item.name }} (VM {{ item.vmid }})"

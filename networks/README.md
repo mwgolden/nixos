@@ -62,4 +62,6 @@ Checked against Proxmox:
 - No declared name already exists under another ID. Otherwise deploying would clone a second copy.
 - Home bridges exist, and an existing isolated bridge really is isolated.
 
+It also reports, per network, VMs tagged for it that no file lists any more, VMs moved to another file, and VMs not yet tagged. It fails if a removed VM still holds an address a file gives another host. See "Which VMs are the project's" in the main README.
+
 Validation never changes anything.

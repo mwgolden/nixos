@@ -12,3 +12,8 @@ network_config_check_proxmox: true
 
 # For tasks_from: inventory, the names of the hosts to deploy, in order.
 network_config_deploy: []
+
+# For tasks_from: ownership, whether to delete VMs removed from the network
+# file, and the network's name to skip the confirmation prompt.
+network_config_prune: false
+network_config_confirm_prune: ""

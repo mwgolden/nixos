@@ -11,6 +11,7 @@ import unittest
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+FIXTURES = ROOT / "tests" / "fixtures" / "networks"
 spec = importlib.util.spec_from_file_location(
     "network_config", ROOT / "plugins" / "filter" / "network_config.py")
 nc = importlib.util.module_from_spec(spec)
@@ -20,7 +21,7 @@ TEMPLATE_IP, TEMPLATE_BRIDGE = "192.168.1.10", "vmbr0"
 
 
 def inventory():
-    configs = {p.stem: yaml.safe_load(p.read_text()) for p in (ROOT / "networks").glob("*.yaml")}
+    configs = {p.stem: yaml.safe_load(p.read_text()) for p in FIXTURES.glob("*.yaml")}
     return nc.network_config_inventory(configs)
 
 

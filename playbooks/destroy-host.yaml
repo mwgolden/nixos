@@ -9,6 +9,8 @@
 # The host's entry stays in its network file; remove it there too, or the
 # next deploy creates it again. A router can't be deleted while other VMs
 # of its network still exist, since they would lose their only way out.
+# Only VMs tagged as the project's for this network (nixlab, net-<network>)
+# are deleted; deploying a VM tags it.
 
 - name: Destroy a host
   hosts: localhost
@@ -95,6 +97,7 @@
         vm_remove_id: "{{ destroy_vm.vm_id }}"
         vm_remove_name: "{{ destroy_vm.name }}"
         vm_remove_confirm: "{{ confirm_destroy }}"
+        vm_remove_required_tags: [nixlab, "net-{{ network }}"]
         # A future VM on this address gets a new host key.
         vm_remove_known_hosts:
           - "{{ destroy_vm.attach.ip }}"

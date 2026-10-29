@@ -34,6 +34,7 @@
                                             ~ vm.network.name ~ '.yaml'})
          if vm.data_disk else {} }}
     proxmox_vm_nics: "{{ vm.nics }}"
+    proxmox_vm_tags: "{{ vm | nixlab_tags }}"
 
 - name: Find the {{ vm.name }} VM
   ansible.builtin.include_role:

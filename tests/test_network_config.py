@@ -11,6 +11,7 @@ import unittest
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+FIXTURES = ROOT / "tests" / "fixtures" / "networks"
 spec = importlib.util.spec_from_file_location(
     "network_config", ROOT / "plugins" / "filter" / "network_config.py")
 network_config = importlib.util.module_from_spec(spec)
@@ -20,9 +21,13 @@ TEMPLATE_VM_ID = 110
 TEMPLATE_IP = "192.168.1.10"
 
 
-def load_repo_networks():
+def load_networks(folder=FIXTURES):
     return [{"file": p.stem, "config": yaml.safe_load(p.read_text())}
-            for p in sorted((ROOT / "networks").glob("*.yaml"))]
+            for p in sorted(folder.glob("*.yaml"))]
+
+
+def load_repo_networks():
+    return load_networks(ROOT / "networks")
 
 
 def errors(files):
@@ -44,7 +49,7 @@ class Examples(unittest.TestCase):
 
 class Mutations(unittest.TestCase):
     def setUp(self):
-        self.files = load_repo_networks()
+        self.files = load_networks()
         self.by_name = {f["file"]: f["config"] for f in self.files}
 
     def host(self, network, name):
@@ -172,7 +177,7 @@ IFACES = [{"iface": "vmbr0", "type": "bridge", "bridge_ports": "eno1", "cidr": "
 
 class Proxmox(unittest.TestCase):
     def setUp(self):
-        self.configs = {f["file"]: f["config"] for f in load_repo_networks()}
+        self.configs = {f["file"]: f["config"] for f in load_networks()}
 
     def check(self, vms=VMS, ifaces=IFACES):
         return network_config.network_config_proxmox_errors(self.configs, vms, ifaces, 110, "com")

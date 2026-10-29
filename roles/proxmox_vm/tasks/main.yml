@@ -91,3 +91,17 @@
     - name: Note the VM's configuration
       ansible.builtin.set_fact:
         proxmox_vm_config: "{{ (proxmox_vm_info_after.proxmox_vms | first).config }}"
+
+# Marks the VM as the project's, for its network and type. Only VMs with
+# these tags are ever deleted by destroy-host, destroy-network or pruning.
+# A VM deployed before tagging existed gets them here, on its next deploy.
+- name: Tag the {{ proxmox_vm_name }} VM
+  ansible.builtin.include_tasks: api-set.yml
+  vars:
+    proxmox_vm_api_vmid: "{{ proxmox_vm_id }}"
+    proxmox_vm_api_config:
+      tags: "{{ proxmox_vm_config.tags | default('') | proxmox_tags_merge(proxmox_vm_tags) }}"
+  when:
+    - proxmox_vm_tags | length > 0
+    - (proxmox_vm_config.tags | default('') | proxmox_tags_merge(proxmox_vm_tags))
+      != (proxmox_vm_config.tags | default(''))

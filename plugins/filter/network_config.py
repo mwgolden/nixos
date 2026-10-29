@@ -528,6 +528,106 @@ def network_config_deploy_order(inventory, network):
             + [h["name"] for h in hosts if h["type"] != "router"])
 
 
+# Ownership: tags the project puts on the VMs it deploys. Only these kinds
+# of tag are ever changed; any others on a VM are kept.
+OWNER_TAG = "nixlab"
+
+
+def _tags(value):
+    """Proxmox stores tags as one string, separated by ';' (or ',' or spaces)."""
+    return [t for t in re.split(r"[;, ]+", value or "") if t]
+
+
+def _is_managed_tag(tag):
+    return tag == OWNER_TAG or tag.startswith("net-") or tag.startswith("type-")
+
+
+def nixlab_tags(vm):
+    """The tags a deployed VM should carry."""
+    return [OWNER_TAG, f"net-{vm['network']['name']}", f"type-{vm['type']}"]
+
+
+def proxmox_tags_merge(existing, desired):
+    """existing (a Proxmox tags string) with the project's own tags replaced
+    by desired, keeping every other tag. Returns a Proxmox tags string."""
+    others = [t for t in _tags(existing) if not _is_managed_tag(t)]
+    return ";".join(others + [t for t in desired if t not in others])
+
+
+def _vm_summary(vm):
+    config = vm.get("config") or {}
+    tags = _tags(config.get("tags") or vm.get("tags"))
+    kind = next((t[len("type-"):] for t in tags if t.startswith("type-")), "")
+    nets = [t[len("net-"):] for t in tags if t.startswith("net-")]
+    return {"vmid": int(vm["vmid"]), "name": vm.get("name"), "type": kind,
+            "owned": OWNER_TAG in tags, "networks": nets,
+            "address": recorded_address(config.get("description"))}
+
+
+def network_config_ownership(inventory, network, vms):
+    """Compares a network's file with the VMs Proxmox has tagged for it.
+
+    vms: proxmox_vm_info's proxmox_vms, with config. Returns
+      orphans    VMs tagged for this network that no network file declares:
+                 removed from the file. Pruning deletes these.
+      moved      VMs tagged for this network but declared in another file,
+                 not yet redeployed there. Never pruned.
+      untagged   this network's declared hosts that exist with the right ID
+                 and name but without the project's tag, because they were
+                 deployed before tagging. The next deploy tags them.
+      conflicts  orphans still holding an address a declared host uses.
+    Each entry is {vmid, name, type, address, ...}.
+    """
+    declared = {(h["vm_id"], h["name"]): h for h in inventory["hosts"].values()}
+    attach_ips = {h["attach"]["ip"]: h["name"] for h in inventory["hosts"].values()}
+    result = {"orphans": [], "moved": [], "untagged": [], "conflicts": []}
+    for raw in vms:
+        vm = _vm_summary(raw)
+        host = declared.get((vm["vmid"], vm["name"]))
+        if host and host["network"]["name"] == network and not vm["owned"]:
+            result["untagged"].append(vm)
+        if not (vm["owned"] and network in vm["networks"]):
+            continue
+        if host is None:
+            result["orphans"].append(vm)
+            ip = vm["address"].get("ip")
+            if ip in attach_ips:
+                result["conflicts"].append(dict(vm, used_by=attach_ips[ip]))
+        elif host["network"]["name"] != network:
+            result["moved"].append(dict(vm, declared_in=host["network"]["name"]))
+    return result
+
+
+def network_config_destroy_order(inventory, network, vms):
+    """VMs to delete when destroying a network: every VM tagged for it,
+    except ones declared in another network file (moved there). Routers
+    last, since the others reach the network through them."""
+    declared = {(h["vm_id"], h["name"]): h for h in inventory["hosts"].values()}
+    chosen = []
+    for raw in vms:
+        vm = _vm_summary(raw)
+        if not (vm["owned"] and network in vm["networks"]):
+            continue
+        host = declared.get((vm["vmid"], vm["name"]))
+        if host and host["network"]["name"] != network:
+            continue
+        chosen.append(vm)
+    return ([v for v in chosen if v["type"] != "router"]
+            + [v for v in chosen if v["type"] == "router"])
+
+
+def proxmox_bridge_users(vms, bridge):
+    """Names of VMs with a network card on bridge."""
+    users = []
+    for vm in vms:
+        config = vm.get("config") or {}
+        for key, value in config.items():
+            if re.match(r"^net[0-9]+$", key) and re.search(rf"(^|,)bridge={re.escape(bridge)}(,|$)", str(value)):
+                users.append(vm.get("name") or str(vm["vmid"]))
+                break
+    return users
+
+
 class FilterModule:
     def filters(self):
         return {
@@ -539,4 +639,10 @@ class FilterModule:
             "recorded_address": recorded_address,
             "record_address": record_address,
             "network_config_deploy_order": network_config_deploy_order,
+            "nixlab_tags": nixlab_tags,
+            "proxmox_tags_merge": proxmox_tags_merge,
+            "proxmox_tags_list": _tags,
+            "network_config_ownership": network_config_ownership,
+            "network_config_destroy_order": network_config_destroy_order,
+            "proxmox_bridge_users": proxmox_bridge_users,
         }

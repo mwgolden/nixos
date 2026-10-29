@@ -25,18 +25,16 @@
       api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
       validate_certs: "{{ proxmox_validate_certs }}"
   block:
-    - name: Look up VMs on the node
+    - name: Look up VM {{ vm_remove_id }}
       community.proxmox.proxmox_vm_info:
         node: "{{ proxmox_node }}"
-        type: qemu
-      register: vm_remove_node_vms
+        vmid: "{{ vm_remove_id }}"
+        config: current
+      register: vm_remove_info
 
-    - name: Find the {{ vm_remove_name }} VM
+    - name: Note the {{ vm_remove_name }} VM
       ansible.builtin.set_fact:
-        vm_remove_existing: >-
-          {{ vm_remove_node_vms.proxmox_vms
-             | selectattr('vmid', 'equalto', vm_remove_id | int)
-             | first | default(none) }}
+        vm_remove_existing: "{{ vm_remove_info.proxmox_vms | first | default(none) }}"
 
     - name: Report that there is nothing to delete
       ansible.builtin.debug:
@@ -51,6 +49,29 @@
         fail_msg: >-
           VM {{ vm_remove_id }} is named '{{ vm_remove_existing.name }}', not
           '{{ vm_remove_name }}'. Refusing to delete it.
+      when: vm_remove_existing is not none
+
+    - name: Make sure the project owns the {{ vm_remove_name }} VM
+      ansible.builtin.assert:
+        that:
+          - vm_remove_required_tags | difference(vm_remove_tags) | length == 0
+        fail_msg: >-
+          VM {{ vm_remove_id }} ({{ vm_remove_name }}) doesn't have the tags
+          {{ vm_remove_required_tags | difference(vm_remove_tags) | join(', ') }},
+          so this project doesn't treat it as its own. Refusing to delete it. A VM
+          deployed before tagging gets its tags when it is next deployed.
+        quiet: true
+      vars:
+        vm_remove_tags: "{{ vm_remove_existing.config.tags | default('') | proxmox_tags_list }}"
+      when: vm_remove_existing is not none
+
+    - name: Note the address recorded in its notes
+      ansible.builtin.set_fact:
+        vm_remove_known_hosts: >-
+          {{ (vm_remove_known_hosts + [recorded.ip]) | unique
+             if recorded else vm_remove_known_hosts }}
+      vars:
+        recorded: "{{ vm_remove_existing.config.description | default('') | recorded_address }}"
       when: vm_remove_existing is not none
 
     - name: Stop the {{ vm_remove_name }} VM

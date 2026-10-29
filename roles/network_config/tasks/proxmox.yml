@@ -19,10 +19,13 @@
       api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
       validate_certs: "{{ proxmox_validate_certs }}"
   block:
+    # With their configuration: tags and notes say which VMs are the
+    # project's (see network_config_ownership).
     - name: Look up VMs on the node
       community.proxmox.proxmox_vm_info:
         node: "{{ proxmox_node }}"
         type: qemu
+        config: current
       register: network_config_vms
 
     - name: Look up network interfaces on the node

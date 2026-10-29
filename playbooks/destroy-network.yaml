@@ -1,0 +1,114 @@
+# Stops and permanently deletes every VM of a network, with all their disks
+# and data. Asks you to type the network's name to confirm.
+#
+#   source proxmox/.env
+#   ansible-playbook playbooks/destroy-network.yaml -e network=lab
+#   ansible-playbook playbooks/destroy-network.yaml -e network=lab -e remove_bridge=true
+#
+# To skip the prompt (for scripts): -e confirm_destroy=<network>
+#
+# Only VMs tagged as this network's (nixlab, net-<network>) are deleted:
+# the ones in its file and any removed from it since. VMs never tagged (not
+# deployed since tagging was added) are listed and left alone, as are VMs
+# moved to another network file. Routers go last. With remove_bridge=true,
+# an isolated network's bridge is removed too, once no VM uses it.
+#
+# The network file stays; deploying it again recreates everything.
+
+- name: Destroy a network
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  vars_prompt:
+    - name: confirm_destroy
+      prompt: "This permanently deletes every VM of the network named by -e network, with all their disks and data. Type the network name to confirm"
+      private: false
+
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
+
+  tasks:
+    - name: Check the arguments
+      ansible.builtin.assert:
+        that:
+          - network | default('') | length > 0
+          - confirm_destroy == network
+        fail_msg: >-
+          Run with -e network=<file in networks/>, and type that name to confirm.
+          Nothing was deleted.
+        quiet: true
+
+    # The Proxmox checks are skipped: a network in an odd state should still
+    # be deletable. Ownership comes from the tags, checked again per VM.
+    - name: Load the network files
+      ansible.builtin.include_role:
+        name: network_config
+      vars:
+        network_config_name: "{{ network }}"
+        network_config_check_proxmox: false
+
+    - name: Look up VMs on the node
+      community.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        type: qemu
+        config: current
+      register: destroy_vms
+
+    - name: Work out what to delete
+      ansible.builtin.set_fact:
+        destroy_inventory: "{{ network_configs | network_config_inventory }}"
+
+    - name: Note what to delete and what to leave
+      ansible.builtin.set_fact:
+        destroy_list: >-
+          {{ destroy_inventory | network_config_destroy_order(network, destroy_vms.proxmox_vms) }}
+        destroy_owned: >-
+          {{ destroy_inventory | network_config_ownership(network, destroy_vms.proxmox_vms) }}
+
+    - name: Show the plan
+      ansible.builtin.debug:
+        msg: >-
+          Deleting, in this order: {{ destroy_list | map(attribute='name') | join(', ') or 'nothing' }}.
+          {% if destroy_owned.untagged %}Left alone, not tagged as this project's:
+          {{ destroy_owned.untagged | map(attribute='name') | join(', ') }}.{% endif %}
+          {% if destroy_owned.moved %}Left alone, moved to another network file:
+          {{ destroy_owned.moved | map(attribute='name') | join(', ') }}.{% endif %}
+
+    - name: Delete each VM
+      ansible.builtin.include_role:
+        name: proxmox_vm_remove
+      vars:
+        vm_remove_id: "{{ item.vmid }}"
+        vm_remove_name: "{{ item.name }}"
+        vm_remove_confirm: "{{ item.name }}"
+        vm_remove_required_tags: [nixlab, "net-{{ network }}"]
+        vm_remove_known_hosts: >-
+          {{ [destroy_inventory.hosts[item.name].attach.ip]
+             if item.name in destroy_inventory.hosts else [] }}
+      loop: "{{ destroy_list }}"
+      loop_control:
+        label: "{{ item.name }} (VM {{ item.vmid }})"
+
+    - name: Remove the network's bridge
+      ansible.builtin.include_role:
+        name: isolated_bridge
+      vars:
+        isolated_bridge_name: "{{ network_config.network.bridge }}"
+        isolated_bridge_state: absent
+      when:
+        - remove_bridge | default(false) | bool
+        - network_config.network.type == 'isolated'
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Network {{ network }} is gone{{ ' (its bridge too)' if (remove_bridge | default(false) | bool
+          and network_config.network.type == 'isolated') else '' }}. networks/{{ network }}.yaml
+          is unchanged; deploy it again to recreate it, or delete the file.

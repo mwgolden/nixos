@@ -2,27 +2,55 @@
 
 Progress against [PLAN.md](PLAN.md). The newest entry is at the top.
 
-## Paused before Phase 5
+## Paused before Phase 6
 
-Phase 5 adds Proxmox tags, orphan detection and guarded pruning. Those touch which VMs can be deleted, so they should build on deploys that are known to work. Before resuming, deploy the networks with `proxmox/.env` sourced:
+Phase 6 derives port forwards, DNS records and postgres's allowed networks from the host list. Before that, please try Phases 3 to 5 live, with `proxmox/.env` sourced:
 
 ```bash
 ansible-playbook playbooks/validate-network.yaml
 ansible-playbook playbooks/deploy-network.yaml -e network=lab    # router, then postgres
-ansible-playbook playbooks/deploy-network.yaml -e network=home   # webserver, gitea, garage
+ansible-playbook playbooks/deploy-network.yaml -e network=home   # webserver, gitea (garage is commented out)
 ansible-playbook playbooks/postgres-users.yaml -e network=lab -e host=postgres
 ```
 
-The old VMs were destroyed before the refactor started, so every host is a new clone. Each one should:
+Then:
 
-1. Clone the template and add its data disk. The router also gets its `net1`.
-2. Boot on the template IP (`192.168.1.10`).
-3. Switch to its own address.
-4. Get a `nixlab-address: ... on vmbrN` line in its Proxmox notes.
+1. Run `validate-network.yaml` again. Every deployed VM should now carry `nixlab`, `net-<network>` and `type-<type>` tags, and nothing should be reported as "not yet tagged".
+2. If you'd like to test pruning safely, use the example test network (see Phase 4). Deploy it, remove `test-web` from `networks/test.yaml`, and run `deploy-network.yaml -e network=test`. It should report `test-web` as removed. Then run it with `-e prune=true`, which should delete it. Finally, `destroy-network.yaml -e network=test -e remove_bridge=true` should leave nothing behind.
 
-Then run each `deploy-network` a second time. That tests updating existing VMs: nothing should be cloned, and no address should change.
+Garage is commented out in `networks/home.yaml`, so the home run doesn't need its secrets.
 
-The home network includes garage, which needs `secrets/home/garage.env` (made from `roles/garage/env.example`). Without that file the home run stops at garage, after webserver and gitea are done. `deploy-host.yaml` still works for single hosts.
+## Phase 5: ownership and reconciliation (done 2026-10-29, not yet tested live)
+
+- **Tags:** every deploy sets `nixlab`, `net-<network>` and `type-<type>` on its VM, through the Proxmox API. Only those three kinds of tag are replaced; others, like a `backup` tag, are kept. VMs deployed before this are tagged on their next deploy, which is the adopt step from the plan. The name/ID check in `proxmox_vm` still applies first.
+- **Deletes need the tags:** `proxmox_vm_remove` has a new `vm_remove_required_tags`, and every delete path passes `[nixlab, net-<network>]`. It also forgets the SSH key of the address recorded in the VM's notes.
+- **Orphan report:** a new `network_config` step, `tasks/ownership.yml`, runs in `deploy-network.yaml` before deploying and in `validate-network.yaml` for every network. It reports:
+  - VMs removed from the file
+  - VMs moved to another file, which are never pruned
+  - VMs not yet tagged
+
+  It stops when a removed VM still holds an address that a file gives another host.
+- **Pruning:** `deploy-network.yaml -e prune=true` deletes the removed VMs, routers last, before deploying, so their addresses are free. It asks for the network name, or takes `-e confirm_prune=<network>`.
+- **[destroy-network.yaml](playbooks/destroy-network.yaml):**
+  - Deletes every VM tagged for the network, routers last.
+  - Leaves untagged and moved VMs alone.
+  - Asks for the network name, or takes `-e confirm_destroy=<network>`.
+  - With `-e remove_bridge=true`, also removes an isolated network's bridge, but only if it really is isolated and no VM has a card on it.
+- **Bridge removal:** the `isolated_bridge` role has `isolated_bridge_state: absent` (`tasks/remove.yml`), with the same staged-changes guard as creating one.
+- **One API step:** [roles/proxmox_vm/tasks/api-set.yml](roles/proxmox_vm/tasks/api-set.yml) is now the single place that writes VM options through the API. It's used for tags and for the address in the notes.
+- **New filters, all unit-tested:** `nixlab_tags`, `proxmox_tags_merge`, `proxmox_tags_list`, `network_config_ownership`, `network_config_destroy_order` and `proxmox_bridge_users`.
+- **Tests no longer read `networks/`:** they use fixed copies in `tests/fixtures/networks/`. You commented garage out of `networks/home.yaml`, and two tests broke because they read those files directly. The real files are still checked for validity.
+- **Docs:** the README has a section, "Which VMs are the project's", and notes that tagging uses `VM.Config.Options`. `networks/README.md` says what validation reports.
+
+Checked:
+- 63 unit tests pass, every playbook passes `--syntax-check`, and offline validation passes.
+- Sandbox runs, using fake Proxmox modules, a fake API on `127.0.0.1:8006`, and documentation-only addresses:
+  - **Removed VM holding postgres's address, no prune:** it was reported, the untagged router was reported, and the run stopped on the conflict with no Proxmox calls.
+  - **The same with `prune=true`:** the removed VM was deleted first. Then the router was tagged `backup;nixlab;net-lab;type-router` and deployed.
+  - **`destroy-network`:** it deleted postgres, then the router, and left the moved gitea alone. It refused to remove `vmbr1` while an untagged VM was on it, and removed it once that VM was gone. A wrong confirmation was rejected.
+  - **`destroy-host` on an untagged VM:** refused, with no calls.
+
+Not checked: anything on real VMs.
 
 ## Phase 4: deploying a whole network (done 2026-10-29, not yet tested live)
 

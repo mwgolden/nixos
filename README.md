@@ -20,7 +20,7 @@ One command, `./bootstrap.sh`, builds a custom NixOS installer ISO in Docker, up
 | `playbooks/validate-network.yaml` | Checks the network files, and checks them against Proxmox |
 | `plugins/filter/`, `tests/`  | Network file checks and their tests: `.venv/bin/python -m unittest discover -s tests` |
 | `roles/`                     | One role per host type (its NixOS configuration and service setup), plus shared roles: creating and removing VMs, reading the network files, finding a VM and switching it to its network |
-| `playbooks/`                 | `deploy-network.yaml`, `deploy-host.yaml`, `destroy-host.yaml`, `validate-network.yaml` and `postgres-users.yaml` |
+| `playbooks/`                 | `deploy-network.yaml`, `deploy-host.yaml`, `destroy-network.yaml`, `destroy-host.yaml`, `validate-network.yaml` and `postgres-users.yaml` |
 | `secrets/`                   | Host passwords and keys, gitignored. See [secrets/README.md](secrets/README.md) |
 | `Dockerfile`, `start_container.sh` | Nix build container                                     |
 
@@ -48,7 +48,7 @@ On the workstation:
 
 On Proxmox:
 
-- An API token for `ansible@pve` with the ID `automation`, allowed to manage VMs and upload ISOs to the `local` storage. Creating the isolated bridge also needs `Sys.Modify` on `/nodes/com`.
+- An API token for `ansible@pve` with the ID `automation`, allowed to manage VMs and upload ISOs to the `local` storage. Setting VM tags and notes uses `VM.Config.Options`, which managing VMs normally includes. Creating or removing an isolated bridge also needs `Sys.Modify` on `/nodes/com`.
 
 ## Configuration
 
@@ -119,7 +119,31 @@ ansible-playbook playbooks/deploy-network.yaml -e network=lab
 ansible-playbook playbooks/deploy-host.yaml -e network=lab -e host=postgres
 ```
 
-`deploy-network.yaml` deploys the network's hosts one at a time. On an isolated network the router goes first, then the rest in file order, and the run stops at the first host that fails. The router's deploy creates the network's bridge if it doesn't exist yet. Hosts removed from a file are not deleted.
+`deploy-network.yaml` deploys the network's hosts one at a time. On an isolated network the router goes first, then the rest in file order, and the run stops at the first host that fails. The router's deploy creates the network's bridge if it doesn't exist yet.
+
+### Which VMs are the project's
+
+Every deploy tags its VM in Proxmox with `nixlab`, `net-<network>` and `type-<type>`. Other tags you add are kept. The playbooks only ever delete VMs carrying `nixlab` and the right `net-` tag, so VMs this project didn't make are safe even if their ID or name is in a file by mistake.
+
+Before deploying, `deploy-network.yaml` (and `validate-network.yaml`) report:
+
+- **Removed from the file:** VMs tagged for the network that no network file lists any more. They're left running unless you prune:
+
+  ```bash
+  ansible-playbook playbooks/deploy-network.yaml -e network=lab -e prune=true
+  ```
+
+  This asks you to type the network name (or takes `-e confirm_prune=lab`), deletes them, routers last, and then deploys. If a removed VM still holds an address that the file gives another host, the deploy stops until you prune or change the address.
+- **Moved:** VMs tagged for this network but now listed in another network's file. They move when you deploy that network, and are never pruned.
+- **Not yet tagged:** VMs deployed before tagging existed. Their next deploy tags them. Until then, nothing deletes them.
+
+To delete a whole network, routers last, and optionally its bridge once no VM uses it:
+
+```bash
+ansible-playbook playbooks/destroy-network.yaml -e network=lab -e remove_bridge=true
+```
+
+It asks you to type the network name. The network file stays, so deploying it again recreates everything.
 
 The deploy:
 
@@ -148,7 +172,7 @@ To delete a host's VM and all its disks (it asks you to type the name):
 ansible-playbook playbooks/destroy-host.yaml -e network=lab -e host=postgres
 ```
 
-Remove its entry from the network file too, or the next deploy creates it again. A router can't be deleted while VMs of its network still exist.
+Remove its entry from the network file too, or the next deploy creates it again. A router can't be deleted while VMs of its network still exist, and only VMs tagged as the project's are deleted.
 
 ## Network addressing
 
