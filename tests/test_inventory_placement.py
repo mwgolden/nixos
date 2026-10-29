@@ -57,6 +57,19 @@ class Inventory(unittest.TestCase):
                          ("192.168.1.11", "", {}))
 
 
+class DeployOrder(unittest.TestCase):
+    def test_router_first(self):
+        inv = inventory()
+        # lab.yaml lists the router first already; put it last to check.
+        lab = [h for h in inv["hosts"].values() if h["network"]["name"] == "lab"]
+        inv["hosts"] = {h["name"]: h for h in reversed(lab)}
+        self.assertEqual(nc.network_config_deploy_order(inv, "lab"), ["router", "postgres"])
+
+    def test_file_order(self):
+        self.assertEqual(nc.network_config_deploy_order(inventory(), "home"),
+                         ["webserver", "gitea", "garage"])
+
+
 class RecordedAddress(unittest.TestCase):
     def test_round_trip_keeps_notes(self):
         notes = nc.record_address("My notes\nmore", "10.1.0.12", "vmbr1")

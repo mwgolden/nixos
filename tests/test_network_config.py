@@ -34,6 +34,14 @@ class RepoNetworks(unittest.TestCase):
         self.assertEqual(errors(load_repo_networks()), [])
 
 
+class Examples(unittest.TestCase):
+    def test_examples_are_valid_next_to_the_repo_networks(self):
+        for path in sorted((ROOT / "networks" / "examples").glob("*.yaml")):
+            with self.subTest(example=path.name):
+                files = load_repo_networks() + [{"file": path.stem, "config": yaml.safe_load(path.read_text())}]
+                self.assertEqual(errors(files), [])
+
+
 class Mutations(unittest.TestCase):
     def setUp(self):
         self.files = load_repo_networks()

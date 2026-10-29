@@ -1,0 +1,39 @@
+# A throwaway isolated network for trying out changes: a router and one web
+# server, on their own bridge and VM IDs, away from the real VMs.
+#
+# Files in networks/examples/ are not read by validation or deploys. To use
+# this one:
+#   1. Pick a free address on the home LAN for the router's wan_ip below:
+#      validation can only check it against the other network files, not
+#      against devices this project doesn't manage.
+#   2. cp networks/examples/test.yaml networks/test.yaml
+#   3. ansible-playbook playbooks/deploy-network.yaml -e network=test
+# Afterwards, destroy the web server, then the router, with
+# playbooks/destroy-host.yaml, and remove networks/test.yaml. The bridge
+# (vmbr2) is left in place; remove it in the Proxmox UI if you want.
+
+network:
+  name: test
+  type: isolated
+  bridge: vmbr2
+  cidr: 10.2.0.0/24
+  gateway: 10.2.0.1
+  nameserver: 10.2.0.1
+  upstream: home
+  dhcp:
+    start: 10.2.0.100
+    end: 10.2.0.199
+    lease_time: 12h
+
+hosts:
+  - name: test-router
+    type: router
+    vm_id: 901
+    ip: 10.2.0.1
+    # Must be free on the home LAN.
+    wan_ip: 192.168.1.20
+
+  - name: test-web
+    type: webserver
+    vm_id: 902
+    ip: 10.2.0.11

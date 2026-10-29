@@ -519,6 +519,15 @@ def _candidate(inventory, ip, bridge, delay, timeout):
     return {"ip": ip, "bridge": bridge, "via_router": via, "delay": delay, "timeout": timeout}
 
 
+def network_config_deploy_order(inventory, network):
+    """Names of a network's hosts in the order to deploy them: its router
+    first (everything else reaches the network through it), then the rest
+    in the order the network file lists them."""
+    hosts = [h for h in inventory["hosts"].values() if h["network"]["name"] == network]
+    return ([h["name"] for h in hosts if h["type"] == "router"]
+            + [h["name"] for h in hosts if h["type"] != "router"])
+
+
 class FilterModule:
     def filters(self):
         return {
@@ -529,4 +538,5 @@ class FilterModule:
             "placement_candidates": placement_candidates,
             "recorded_address": recorded_address,
             "record_address": record_address,
+            "network_config_deploy_order": network_config_deploy_order,
         }

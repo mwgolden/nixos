@@ -32,7 +32,7 @@ internet ── home router 192.168.1.1 ── vmbr0 ── ens18 [router] ens19
 | DNS         | The router forwards LAN queries to `1.1.1.1` and `9.9.9.9` |
 | Blocked     | `192.168.0.0/16`, `172.16.0.0/12`, `10.0.0.0/8`           |
 
-These values come from `vars.yaml`, except the bridge name, which is `isolated_bridge` in `proxmox/vars.yaml`.
+These values come from the router's network file, [networks/lab.yaml](../../networks/lab.yaml): the bridge, subnet and DHCP range from its `network:` block, the rest from the router's entry. Deploying the router creates the bridge if it is missing.
 
 ## Files
 

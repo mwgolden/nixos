@@ -20,7 +20,7 @@ One command, `./bootstrap.sh`, builds a custom NixOS installer ISO in Docker, up
 | `playbooks/validate-network.yaml` | Checks the network files, and checks them against Proxmox |
 | `plugins/filter/`, `tests/`  | Network file checks and their tests: `.venv/bin/python -m unittest discover -s tests` |
 | `roles/`                     | One role per host type (its NixOS configuration and service setup), plus shared roles: creating and removing VMs, reading the network files, finding a VM and switching it to its network |
-| `playbooks/`                 | `deploy-host.yaml`, `destroy-host.yaml`, `validate-network.yaml` and `postgres-users.yaml` |
+| `playbooks/`                 | `deploy-network.yaml`, `deploy-host.yaml`, `destroy-host.yaml`, `validate-network.yaml` and `postgres-users.yaml` |
 | `secrets/`                   | Host passwords and keys, gitignored. See [secrets/README.md](secrets/README.md) |
 | `Dockerfile`, `start_container.sh` | Nix build container                                     |
 
@@ -110,13 +110,16 @@ Each network is described by a file in [networks/](networks/README.md): its brid
 - [networks/home.yaml](networks/home.yaml): webserver, gitea and garage, directly on the home LAN.
 - [networks/lab.yaml](networks/lab.yaml): the router and postgres, on the isolated bridge.
 
-Check the files, then deploy a host:
+Check the files, then deploy a whole network, or one host:
 
 ```bash
 source proxmox/.env
 ansible-playbook playbooks/validate-network.yaml
+ansible-playbook playbooks/deploy-network.yaml -e network=lab
 ansible-playbook playbooks/deploy-host.yaml -e network=lab -e host=postgres
 ```
+
+`deploy-network.yaml` deploys the network's hosts one at a time. On an isolated network the router goes first, then the rest in file order, and the run stops at the first host that fails. The router's deploy creates the network's bridge if it doesn't exist yet. Hosts removed from a file are not deleted.
 
 The deploy:
 
@@ -164,7 +167,7 @@ Because every new clone starts on `.10`, the deploy works on one VM at a time.
 
 ### Isolated network
 
-`proxmox/scripts/isolated-bridge.yaml` creates `vmbr1`, a bridge with no physical port and no IP on the Proxmox host. The [router](roles/router/README.md) is its only way out:
+`vmbr1` is a bridge with no physical port and no IP on the Proxmox host. Deploying the router creates it if it's missing, and `proxmox/scripts/isolated-bridge.yaml -e bridge=<name>` can create one on its own. The [router](roles/router/README.md) is its only way out:
 
 | IP                          | System                                     |
 | --------------------------- | ------------------------------------------ |

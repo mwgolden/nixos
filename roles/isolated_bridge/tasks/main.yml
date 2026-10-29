@@ -1,0 +1,120 @@
+# Makes sure an isolated bridge exists on the Proxmox node: a Linux bridge
+# with no physical port and no IP on the Proxmox host. VMs attached to it
+# can only reach each other and their network's router.
+#
+# An existing bridge is left as it is, after checking that it really is
+# isolated. A missing one is created and the node's network configuration
+# applied. Runs on localhost. Needs proxmox/vars.yaml loaded and
+# PROXMOX_TOKEN_SECRET set. The API token needs Sys.Modify on /nodes/<node>
+# to change the network.
+
+- name: Check required environment variables
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'PROXMOX_TOKEN_SECRET') | length > 0
+      - isolated_bridge_name is match('^vmbr[0-9]+$')
+    fail_msg: >-
+      PROXMOX_TOKEN_SECRET must be set (run 'source proxmox/.env' first) and
+      isolated_bridge_name must be a bridge name like vmbr1, not
+      '{{ isolated_bridge_name }}'.
+    quiet: true
+
+- name: Make sure {{ isolated_bridge_name }} exists
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
+  block:
+    - name: Look up network interfaces on the node
+      community.proxmox.proxmox_node_network_info:
+        node: "{{ proxmox_node }}"
+      register: isolated_bridge_networks
+
+    - name: Find existing bridge
+      ansible.builtin.set_fact:
+        isolated_bridge_existing: >-
+          {{ isolated_bridge_networks.proxmox_node_networks
+             | selectattr('iface', 'equalto', isolated_bridge_name)
+             | first | default(none) }}
+
+    # Guards against turning a bridge that is in use into an isolated one,
+    # which would cut off whatever runs on it.
+    - name: Make sure an existing bridge is isolated
+      ansible.builtin.assert:
+        that:
+          - isolated_bridge_existing.type == 'bridge'
+          # A bridge without ports is written as "bridge-ports none".
+          - isolated_bridge_existing.bridge_ports | default('', true) in ['', 'none']
+          - isolated_bridge_existing.cidr | default('', true) | length == 0
+        fail_msg: >-
+          {{ isolated_bridge_name }} already exists but is not an isolated bridge
+          (type {{ isolated_bridge_existing.type }}, ports
+          '{{ isolated_bridge_existing.bridge_ports | default('', true) }}', address
+          '{{ isolated_bridge_existing.cidr | default('', true) }}'). Pick another
+          bridge for this network.
+      when: isolated_bridge_existing is not none
+
+    - name: Create the bridge
+      when: isolated_bridge_existing is none
+      block:
+        - name: Check for network changes already staged on the node
+          community.proxmox.proxmox_node_network_info:
+            node: "{{ proxmox_node }}"
+            check_changes: true
+          register: isolated_bridge_staged
+
+        - name: Refuse to apply changes staged by someone else
+          ansible.builtin.fail:
+            msg: |
+              The node already has staged network changes, and applying the bridge
+              would apply them too:
+
+              {{ isolated_bridge_staged.pending_changes }}
+              Apply or revert them in the Proxmox UI (System > Network), or re-run
+              with -e isolated_bridge_apply_pending=true to apply them along with
+              the bridge.
+          when:
+            - isolated_bridge_staged.has_pending_changes
+            - not (isolated_bridge_apply_pending | bool)
+
+        - name: Stage {{ isolated_bridge_name }}
+          community.proxmox.proxmox_node_network:
+            node: "{{ proxmox_node }}"
+            iface: "{{ isolated_bridge_name }}"
+            iface_type: bridge
+            autostart: true
+            comments: "Isolated network, routed by its router VM"
+            state: present
+
+        - name: Apply staged network changes
+          community.proxmox.proxmox_node_network:
+            node: "{{ proxmox_node }}"
+            state: apply
+
+    # Applying starts a background task on the node (ifreload) and returns
+    # before it finishes, so give the bridge a moment to come up.
+    - name: Wait for the bridge to be up
+      community.proxmox.proxmox_node_network_info:
+        node: "{{ proxmox_node }}"
+        iface: "{{ isolated_bridge_name }}"
+      register: isolated_bridge_info
+      retries: 10
+      delay: 3
+      until:
+        - isolated_bridge_info.proxmox_node_networks | length == 1
+        - isolated_bridge_info.proxmox_node_networks[0].get('active', false) | bool
+      ignore_errors: true
+
+    - name: Check the bridge is up
+      ansible.builtin.assert:
+        that:
+          - isolated_bridge_info.proxmox_node_networks | length == 1
+          - isolated_bridge_info.proxmox_node_networks[0].get('active', false) | bool
+        fail_msg: >-
+          {{ isolated_bridge_name }} exists but is still not up on
+          {{ proxmox_node }} after 30 seconds. Check the latest "Network" task in
+          the Proxmox UI, or run 'ifreload -a' on the node.
+        success_msg: "{{ isolated_bridge_name }} is active on {{ proxmox_node }}."

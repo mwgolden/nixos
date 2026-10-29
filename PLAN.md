@@ -111,7 +111,7 @@ Each phase can be tested on its own. The current five VMs keep their IDs and IPs
 
 ### Phase 7: New services, one at a time
 
-1. Reverse proxy: a Caddy host type, with routes from each host's `proxy:` entries and internal-only by default.
+1. Reverse proxy: a nginx host type, with routes from each host's `proxy:` entries and internal-only by default.
 2. VPN: WireGuard on the router, which replaces the SSH jump for admin access.
 3. LDAP: lldap is the simplest on NixOS.
 

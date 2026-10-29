@@ -2,29 +2,56 @@
 
 Progress against [PLAN.md](PLAN.md). The newest entry is at the top.
 
-## Paused before Phase 4
+## Paused before Phase 5
 
-Paused on purpose so Phase 3 can be tried on the live VMs. Phase 4 builds `deploy-network.yaml` on the same per-host play, so problems are easier to find first. Suggested order, with `proxmox/.env` sourced:
+Phase 5 adds Proxmox tags, orphan detection and guarded pruning. Those touch which VMs can be deleted, so they should build on deploys that are known to work. Before resuming, deploy the networks with `proxmox/.env` sourced:
 
 ```bash
 ansible-playbook playbooks/validate-network.yaml
-ansible-playbook playbooks/deploy-host.yaml -e network=lab  -e host=router
-ansible-playbook playbooks/deploy-host.yaml -e network=lab  -e host=postgres
-ansible-playbook playbooks/deploy-host.yaml -e network=home -e host=webserver
-ansible-playbook playbooks/deploy-host.yaml -e network=home -e host=gitea
+ansible-playbook playbooks/deploy-network.yaml -e network=lab    # router, then postgres
+ansible-playbook playbooks/deploy-network.yaml -e network=home   # webserver, gitea, garage
 ansible-playbook playbooks/postgres-users.yaml -e network=lab -e host=postgres
 ```
 
-All the old VMs were destroyed before the refactor started, so every deploy above is a new clone. Expect each one to:
+The old VMs were destroyed before the refactor started, so every host is a new clone. Each one should:
 
 1. Clone the template and add its data disk. The router also gets its `net1`.
 2. Boot on the template IP (`192.168.1.10`).
 3. Switch to its own address.
 4. Get a `nixlab-address: ... on vmbrN` line in its Proxmox notes.
 
-Order matters. The router must come first, since postgres is behind it, and `vmbr1` must still exist. If it doesn't, run `proxmox/scripts/isolated-bridge.yaml`. Postgres must be up before `postgres-users.yaml`. Garage also needs `secrets/home/garage.env`, made from `roles/garage/env.example`.
+Then run each `deploy-network` a second time. That tests updating existing VMs: nothing should be cloned, and no address should change.
 
-The Phase 1 live checks further down no longer apply: there were no existing VMs to check against.
+The home network includes garage, which needs `secrets/home/garage.env` (made from `roles/garage/env.example`). Without that file the home run stops at garage, after webserver and gitea are done. `deploy-host.yaml` still works for single hosts.
+
+## Phase 4: deploying a whole network (done 2026-10-29, not yet tested live)
+
+- [playbooks/deploy-network.yaml](playbooks/deploy-network.yaml) `-e network=<name>`:
+  1. Loads and checks every network file, and compares them with Proxmox.
+  2. Deploys the network's hosts with the same per-host play as `deploy-host.yaml`, using `serial: 1` and `order: inventory`. On an isolated network the router goes first, then the rest in file order.
+  3. Uses `any_errors_fatal`, so the first failure stops the run. Later hosts may depend on earlier ones.
+  4. Ends with one line per host: its address and bridge, and the router it is reached through.
+
+  Hosts removed from a file are not deleted. That belongs to Phase 5.
+- The order comes from the `network_config_deploy_order` filter, which is unit-tested.
+- The new [isolated_bridge](roles/isolated_bridge/tasks/main.yml) role is built from `proxmox/scripts/isolated-bridge.yaml`:
+  - It takes the bridge name as a parameter.
+  - An existing bridge is checked to be isolated and otherwise left alone. The old script applied the node's network configuration on every run; the role only applies it when it creates the bridge.
+  - It still refuses when someone else has staged network changes, unless `-e isolated_bridge_apply_pending=true` is given.
+- The router's `prepare.yml` now runs that role for its LAN bridge, so deploying a router on a new network creates its bridge. `proxmox/scripts/isolated-bridge.yaml` is now a thin wrapper that takes `-e bridge=<name>`, defaulting to `isolated_bridge` in `proxmox/vars.yaml`.
+- Already done in Phase 3: the router reads its LAN, DHCP, WAN and blocked ranges from the network file, and SSH goes through each network's own router.
+- New [networks/examples/test.yaml](networks/examples/test.yaml): a throwaway isolated network with `test-router` (VM 901) and `test-web` (VM 902) on `vmbr2`, at `10.2.0.0/24`. Validation and deploys don't read `networks/examples/`. To use it, pick a free home-LAN address for the router's `wan_ip` first, then copy the file into `networks/`. A unit test checks it validates next to the real files.
+- Docs: the README covers `deploy-network.yaml` and bridge creation. `networks/README.md` covers the examples folder; I removed its stale Phase 2 transition note. I fixed the router README's line on where its settings come from.
+
+Checked:
+- 54 unit tests pass, and every playbook passes `--syntax-check`.
+- I ran `deploy-network -e network=lab` in the sandbox: fake Proxmox modules, a node without `vmbr1`, and only documentation-only addresses. Results:
+  - The order was router, then postgres.
+  - `vmbr1` was staged and applied.
+  - The router was cloned with `net1` and looked for at the template address.
+  - When nothing answered, the run stopped before postgres.
+
+Not checked: anything on real VMs.
 
 ### Fix after the first live router run (2026-10-29)
 

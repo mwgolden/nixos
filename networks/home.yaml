@@ -33,16 +33,16 @@ hosts:
       public_ssh_port: ""
       allow_registration: false
 
-  - name: garage
-    type: garage
-    vm_id: 115
-    ip: 192.168.1.15
-    data_disk:
-      size_gb: 128
-      storage: local-lvm
-    settings:
-      s3_port: 3900
-      s3_region: garage
-      zone: dc1
-      key_name: default
-      buckets: []
+#  - name: garage
+#    type: garage
+#    vm_id: 115
+#    ip: 192.168.1.15
+#    data_disk:
+#      size_gb: 128
+#      storage: local-lvm
+#    settings:
+#      s3_port: 3900
+#      s3_region: garage
+#      zone: dc1
+#      key_name: default
+#      buckets: []

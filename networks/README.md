@@ -4,6 +4,9 @@ Each `<name>.yaml` here describes one network and the VMs on it. The file's name
 
 - [home.yaml](home.yaml): VMs directly on the home LAN.
 - [lab.yaml](lab.yaml): an isolated network behind the router VM.
+- [examples/](examples/): files that validation and deploys don't read, such as [examples/test.yaml](examples/test.yaml), a throwaway isolated network for trying out changes. Copy one into this folder to use it.
+
+Deploy a whole network with `ansible-playbook playbooks/deploy-network.yaml -e network=<name>`, or one host with `playbooks/deploy-host.yaml -e network=<name> -e host=<host>`.
 
 Check every file before deploying:
 
@@ -15,15 +18,13 @@ ansible-playbook playbooks/validate-network.yaml
 ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox=false
 ```
 
-> **Transition:** the host playbooks in `hosts/` still read `hosts/<name>/vars.yaml`. Until they move onto these files, keep both in step. `tests/test_networks_match_host_vars.py` fails if they differ.
-
 ## `network:`
 
 | Setting | Required | Meaning |
 |---|---|---|
 | `name` | yes | Same as the file name. Lowercase letters, digits and `-`. |
 | `type` | yes | `home`: VMs on an existing LAN whose router is outside this project. `isolated`: a bridge with no physical port, whose only way out is this network's router host. |
-| `bridge` | yes | Proxmox bridge, such as `vmbr1`. Each network has its own. A home bridge must already exist. An isolated bridge is created if it is missing, and must have no ports and no address if it already exists. |
+| `bridge` | yes | Proxmox bridge, such as `vmbr1`. Each network has its own. A home bridge must already exist. An isolated bridge is created when its router is deployed, and must have no ports and no address if it already exists. |
 | `cidr` | yes | Subnet, such as `10.1.0.0/24`. Subnets of different networks may not overlap. |
 | `gateway` | yes | Default gateway for hosts. On an isolated network, the router's LAN address. |
 | `nameserver` | yes | DNS server for hosts. |
