@@ -327,6 +327,7 @@ The target layout, reached in stages (see [PLAN.md](PLAN.md)):
 │   ├── nixos_base/              # common.nix, network.nix, placement, switch
 │   ├── dotenv/                  # reads secrets files
 │   ├── isolated_bridge/
+│   ├── network_verify/          # checks at the end of deploy-network
 │   ├── router/                  # firewall, NAT, DNS, WireGuard VPN
 │   ├── webserver/
 │   ├── postgres/

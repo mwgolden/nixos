@@ -1,0 +1,6 @@
+# Ports a webserver host may listen on, besides SSH (22). Used by
+# roles/network_verify to find unexpected services.
+
+- name: Note the ports webserver listens on
+  ansible.builtin.set_fact:
+    verify_expected_ports: [80]

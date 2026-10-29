@@ -2,7 +2,18 @@
 
 Progress against [PLAN.md](PLAN.md). The newest entry is at the top.
 
-## Paused before Phase 8
+## All phases done (paused 2026-10-29)
+
+Phases 0 to 8 of [PLAN.md](PLAN.md) are built. None of Phases 3 to 8 has run on real VMs, except your router run that found the conditional bug. Please test live, in this order:
+
+1. `ansible-playbook playbooks/validate-network.yaml`. It also compares the files with Proxmox. If VM 111 is still named `webserver` in Proxmox, rename it to `webserver-lab` first, since `home.yaml` now uses `webserver` for VM 150.
+2. `ansible-playbook playbooks/deploy-network.yaml -e network=lab`. It now ends with the network checks, and their report is the main thing to read.
+3. `ansible-playbook playbooks/verify-network.yaml -e network=home`.
+4. The test network steps below, which cover the proxy, the VPN and lldap.
+
+If a check fails on something that's fine, send me the report. The most likely false alarm is a service listening on a port its type's `ports.yml` doesn't list.
+
+### Test network steps (from the Phase 7 pause)
 
 Phase 8 adds checks at the end of `deploy-network`, from ARCHITECTURE.MD §10. Before that, please try Phases 6 and 7 live. The throwaway test network exercises all of Phase 7 without touching `lab`.
 
@@ -27,6 +38,39 @@ Phase 8 adds checks at the end of `deploy-network`, from ARCHITECTURE.MD §10. B
 6. **Phase 6 on lab:** `ansible-playbook playbooks/deploy-network.yaml -e network=lab`. Check the DNS check passes, the postgres forward answers, and Proxmox notes show `nixlab-dns:`.
 
 The [Phase 3 to 5 checks](#live-checks-for-phases-3-to-5) also still apply.
+
+## Phase 8: deployment checks (done 2026-10-29, not yet tested live)
+
+- **New role [network_verify](roles/network_verify/README.md):** runs at the end of `deploy-network.yaml` once every host is deployed, and on its own with the new [playbooks/verify-network.yaml](playbooks/verify-network.yaml), which changes nothing.
+- **On each VM:**
+  - SSH, its `ens18` address and its default gateway.
+  - On isolated networks, every DNS record of the network, including proxy routes.
+  - A public name resolving, and TCP 443 to `cache.nixos.org`.
+  - On isolated hosts, that the home gateway (TCP 53), the Proxmox web interface (8006) and other networks' gateways time out.
+  - That no non-loopback TCP listener is outside 22 plus the type's `tasks/ports.yml`.
+  - On the proxy, that each route answers over HTTPS without 502 or 504.
+- **From your machine:**
+  - Each VM exists and is running, with `net0` and a router's `net1` on the right bridges.
+  - On isolated networks, that the router's WAN address doesn't answer on any port the hosts listen on but nothing forwards.
+  - When external routes exist, that they answer through 443 and internal ones refuse.
+- **One report:** all problems for all hosts come together, `ok` otherwise, then one failure if there were any. The checks never stop half-way.
+- **New files:**
+  - [files/probe.py](roles/network_verify/files/probe.py): TCP and HTTPS probes using only Python's standard library, run on the VMs with Ansible's `script` module and on your machine.
+  - `tasks/ports.yml` in every host type role.
+  - New filters: `unexpected_listeners`, `blocked_targets`, `network_verify_proxmox`, `unforwarded_ports` and `nixlab_ssh_args`.
+- **Docs:** the role README, a paragraph in the main README's deploy section, and the ARCHITECTURE.MD layout.
+
+Checked:
+- 126 unit tests pass. The 13 new ones are in `tests/test_verify.py`.
+- Every playbook passes `--syntax-check`.
+- A sandbox run checked this machine as a stand-in for four VMs, against fake Proxmox data with planted faults. It reported:
+  - the wrong bridge on the proxy, the stopped VM, and the reachable "Proxmox" port
+  - every wrong address, route and DNS answer, and the unexpected listeners
+  - the unreachable external route
+
+  It then failed once with the total. Loopback listeners, including the IPv6 form of 127.0.0.1, were ignored.
+
+Not checked: real VMs. In particular, whether each host type listens only on the ports its `ports.yml` lists.
 
 ## Phase 7 follow-up: external proxy routes, gitea behind the proxy (done 2026-10-29, not yet tested live)
 

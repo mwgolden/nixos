@@ -121,6 +121,12 @@ ansible-playbook playbooks/deploy-host.yaml -e network=lab -e host=postgres
 
 `deploy-network.yaml` deploys the network's hosts one at a time. On an isolated network the router goes first, then the rest in file order, and the run stops at the first host that fails. The router's deploy creates the network's bridge if it doesn't exist yet.
 
+Once every host is deployed, it [checks the whole network](roles/network_verify/README.md): addresses, gateways, DNS, internet access, that isolated hosts can't reach the home LAN, that nothing unexpected is listening or forwarded, and that proxy routes answer. It reports every problem at once. To run only the checks:
+
+```bash
+ansible-playbook playbooks/verify-network.yaml -e network=lab
+```
+
 ### Which VMs are the project's
 
 Every deploy tags its VM in Proxmox with `nixlab`, `net-<network>` and `type-<type>`. Other tags you add are kept. The playbooks only ever delete VMs carrying `nixlab` and the right `net-` tag, so VMs this project didn't make are safe even if their ID or name is in a file by mistake.

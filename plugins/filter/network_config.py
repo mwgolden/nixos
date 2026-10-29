@@ -939,6 +939,105 @@ def proxmox_bridge_users(vms, bridge):
     return users
 
 
+# Deployment checks (roles/network_verify)
+
+def nixlab_ssh_args(router_wan_ip, key_path):
+    """SSH options for reaching a VM: directly, or through the router at
+    router_wan_ip ("" for direct). The deployment key also logs in to the
+    router; the inner ssh needs it given explicitly."""
+    if not router_wan_ip:
+        return "-o StrictHostKeyChecking=accept-new"
+    return ("-o StrictHostKeyChecking=accept-new "
+            f"-o ProxyCommand=\"ssh -i '{key_path}' -o StrictHostKeyChecking=accept-new "
+            f"-o BatchMode=yes -W %h:%p admin@{router_wan_ip}\"")
+
+
+LISTEN_RE = re.compile(r"^\S+\s+\d+\s+\d+\s+(\S+):(\d+)\s", re.M)
+
+
+def unexpected_listeners(ss_output, expected_ports):
+    """Addresses from 'ss -Htln' output listening on a port not in
+    expected_ports. Loopback addresses are left out: nothing else can
+    reach them."""
+    expected = {int(p) for p in expected_ports}
+    found = []
+    for address, port in LISTEN_RE.findall(ss_output or ""):
+        bare = address.strip("[]").split("%")[0]
+        if bare.startswith("::ffff:"):  # an IPv4 address in IPv6 form
+            bare = bare[len("::ffff:"):]
+        if bare.startswith("127.") or bare == "::1" or "%lo" in address:
+            continue
+        if int(port) not in expected:
+            entry = f"{address}:{port}"
+            if entry not in found:
+                found.append(entry)
+    return found
+
+
+def blocked_targets(vm, inventory, proxmox_ip=""):
+    """Places a host on an isolated network must not reach: its upstream
+    network's gateway, the Proxmox web interface, and every other network's
+    gateway. [] for routers and hosts on home networks."""
+    net = vm["network"]
+    if net["type"] != "isolated" or vm["type"] == "router":
+        return []
+    targets = []
+    upstream = inventory["networks"].get(net["upstream"])
+    if upstream:
+        targets.append({"name": f"{upstream['name']}'s gateway", "host": upstream["gateway"], "port": 53})
+    if proxmox_ip:
+        targets.append({"name": "the Proxmox web interface", "host": proxmox_ip, "port": 8006})
+    for other in inventory["networks"].values():
+        if other["name"] not in (net["name"], net["upstream"]):
+            targets.append({"name": f"{other['name']}'s gateway", "host": other["gateway"], "port": 53})
+    return targets
+
+
+def network_verify_proxmox(inventory, names, vms):
+    """Problems with the VMs of the deployed hosts in Proxmox: missing, not
+    running, or a network card on the wrong bridge. vms: proxmox_vm_info's
+    proxmox_vms, with config. Returns {host name: [problem, ...]}."""
+    by_id = {int(v["vmid"]): v for v in vms}
+    problems = {}
+    for name in names:
+        vm = inventory["hosts"][name]
+        found = by_id.get(vm["vm_id"])
+        issues = []
+        if found is None:
+            issues.append(f"VM {vm['vm_id']} doesn't exist in Proxmox.")
+        else:
+            if found.get("status") not in (None, "running"):
+                issues.append(f"VM {vm['vm_id']} is {found.get('status')}, not running.")
+            config = found.get("config") or {}
+            wanted = {"net0": vm["attach"]["bridge"]}
+            for nic in vm["nics"]:
+                wanted[nic["interface"]] = nic["bridge"]
+            for key, bridge in wanted.items():
+                match = re.search(r"(?:^|,)bridge=([^,]+)", str(config.get(key, "")))
+                actual = match.group(1) if match else None
+                if actual != bridge:
+                    issues.append(f"{key} is on {actual or 'no bridge'}, not {bridge}.")
+        if issues:
+            problems[name] = issues
+    return problems
+
+
+def unforwarded_ports(inventory, network, listening):
+    """Ports that hosts on an isolated network listen on but that its router
+    doesn't forward: from the upstream network, the router's WAN address
+    must not answer on them. listening: {host name: [port, ...]}. Port 22
+    is left out; it is the router's own SSH."""
+    net = inventory["networks"][network]
+    if net["type"] != "isolated":
+        return []
+    forwarded = {f["wan_port"] for f in net["port_forwards"] if f["proto"] == "tcp"}
+    ports = set()
+    for name, host_ports in listening.items():
+        if inventory["hosts"][name]["network"]["name"] == network:
+            ports.update(int(p) for p in host_ports)
+    return sorted(ports - forwarded - {22})
+
+
 class FilterModule:
     def filters(self):
         return {
@@ -959,4 +1058,9 @@ class FilterModule:
             "network_config_ownership": network_config_ownership,
             "network_config_destroy_order": network_config_destroy_order,
             "proxmox_bridge_users": proxmox_bridge_users,
+            "nixlab_ssh_args": nixlab_ssh_args,
+            "unexpected_listeners": unexpected_listeners,
+            "blocked_targets": blocked_targets,
+            "network_verify_proxmox": network_verify_proxmox,
+            "unforwarded_ports": unforwarded_ports,
         }

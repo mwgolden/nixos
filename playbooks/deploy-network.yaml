@@ -7,7 +7,9 @@
 #   ansible-playbook playbooks/deploy-network.yaml -e network=lab
 #
 # Stops at the first host that fails; fix it and run again, and the hosts
-# already done are only checked. To deploy a single host, use
+# already done are only checked. Once all are deployed, checks the whole
+# network (see roles/network_verify) and fails if anything is wrong;
+# playbooks/verify-network.yaml runs only those checks. To deploy a single host, use
 # playbooks/deploy-host.yaml.
 #
 # Hosts removed from the file are reported, not deleted. To delete them
@@ -85,9 +87,24 @@
       ansible.builtin.include_role:
         name: host_deploy
 
+# Once every host is deployed, so checks that involve several hosts (DNS
+# records, proxy routes, the router's forwards) see the finished network.
+- name: Check network {{ network }}
+  hosts: nixlab_deploy
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Check the host from the inside
+      ansible.builtin.include_role:
+        name: network_verify
+
 - name: Report network {{ network }}
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
 
   tasks:
     - name: Show where each host is
@@ -100,3 +117,11 @@
                                    ~ ((' (through ' ~ f.via_router ~ ')') if f.via_router else '')) -%}
           {%- endfor -%}
           {{ out }}
+
+    - name: Check the network from here and report
+      ansible.builtin.include_role:
+        name: network_verify
+        tasks_from: summary
+      vars:
+        network_verify_network: "{{ network }}"
+        network_verify_hosts: "{{ groups['nixlab_deploy'] }}"

@@ -10,6 +10,7 @@
 #   tasks/prepare.yml    on localhost: read secrets, check settings
 #   tasks/configure.yml  on the VM: install and switch its configuration
 #   tasks/verify.yml     on localhost: check the service answers
+#   tasks/ports.yml      the TCP ports it may listen on (for roles/network_verify)
 
 - name: Prepare {{ vm.name }}
   ansible.builtin.include_role:
