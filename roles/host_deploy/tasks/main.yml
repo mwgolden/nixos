@@ -1,0 +1,64 @@
+# Deploys one VM from its network file entry: creates or updates it in
+# Proxmox, finds it, installs its NixOS configuration, moves it to its
+# address, and checks its service.
+#
+# Runs in a play over hosts added by network_config's inventory.yml, with
+# serial: 1, so that no two new clones are on the template's address at
+# once. Needs proxmox/vars.yaml loaded.
+#
+# Each host type is a role named after the type, with:
+#   tasks/prepare.yml    on localhost: read secrets, check settings
+#   tasks/configure.yml  on the VM: install and switch its configuration
+#   tasks/verify.yml     on localhost: check the service answers
+
+- name: Prepare {{ vm.name }}
+  ansible.builtin.include_role:
+    name: "{{ vm.type }}"
+    tasks_from: prepare
+    apply:
+      delegate_to: localhost
+      become: false
+
+- name: Create or update the {{ vm.name }} VM
+  ansible.builtin.include_role:
+    name: proxmox_vm
+    apply:
+      delegate_to: localhost
+      become: false
+  vars:
+    proxmox_vm_id: "{{ vm.vm_id }}"
+    proxmox_vm_name: "{{ vm.name }}"
+    proxmox_vm_full_clone: "{{ vm.full_clone }}"
+    proxmox_vm_data_disk: >-
+      {{ vm.data_disk | combine({'setting': 'data_disk.size_gb of ' ~ vm.name ~ ' in networks/'
+                                            ~ vm.network.name ~ '.yaml'})
+         if vm.data_disk else {} }}
+    proxmox_vm_nics: "{{ vm.nics }}"
+
+- name: Find the {{ vm.name }} VM
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: placement
+    apply:
+      delegate_to: localhost
+      become: false
+
+- name: Make sure it is the {{ vm.name }} VM
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: identity
+
+- name: Configure {{ vm.name }}
+  ansible.builtin.include_role:
+    name: "{{ vm.type }}"
+    tasks_from: configure
+    apply:
+      become: true
+
+- name: Check {{ vm.name }}
+  ansible.builtin.include_role:
+    name: "{{ vm.type }}"
+    tasks_from: verify
+    apply:
+      delegate_to: localhost
+      become: false

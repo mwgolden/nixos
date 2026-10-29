@@ -1,0 +1,26 @@
+# Installs and switches to the webserver VM's NixOS configuration, then sets up
+# its service. Runs on the VM with become: true, from roles/host_deploy.
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+
+- name: Install webserver NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Copy site files
+  ansible.builtin.copy:
+    src: site/
+    dest: /var/www/
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: Switch to the configuration and move to the webserver's address
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch

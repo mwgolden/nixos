@@ -1,0 +1,40 @@
+# Defaults for postgres hosts. Set any of postgres_settings_defaults under the host's
+# settings: in its network file.
+
+postgres_settings_defaults:
+  # PostgreSQL major version: 16, 17 or 18. Changing it on an existing
+  # server starts a new, empty data directory; it does not migrate data.
+  version: 17
+  port: 5432
+  # Networks allowed to connect over TCP with a password. Home clients
+  # reaching an isolated postgres through a router port forward keep their
+  # home address.
+  allowed_networks: []
+  # The AdventureWorks sample database. Only loaded if the database doesn't
+  # exist yet, so re-runs never overwrite it.
+  adventureworks:
+    enabled: false
+    database: Adventureworks
+    repo: https://github.com/mwgolden/adventure-works-postgres
+    version: afcfd2dfcf031af91f03f536c1ade349cfcb3ad6
+
+postgres_settings: "{{ postgres_settings_defaults | combine(vm.settings, recursive=true) }}"
+
+# The names the configuration templates and tasks use.
+postgres_version: "{{ postgres_settings.version }}"
+postgres_port: "{{ postgres_settings.port }}"
+postgres_allowed_networks: "{{ postgres_settings.allowed_networks }}"
+adventureworks_enabled: "{{ postgres_settings.adventureworks.enabled }}"
+adventureworks_database: "{{ postgres_settings.adventureworks.database }}"
+adventureworks_repo: "{{ postgres_settings.adventureworks.repo }}"
+adventureworks_version: "{{ postgres_settings.adventureworks.version }}"
+
+postgres_vm_name: "{{ vm.name }}"
+postgres_data_disk_gb: "{{ vm.data_disk.size_gb }}"
+# The router's WAN address, where port forwards to an isolated host are.
+router_ip: "{{ nixlab.networks[vm.network.name].router_wan_ip }}"
+# Secrets for this host. See secrets/README.md.
+postgres_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}.env"
+
+data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_postgres-data"
+adventureworks_src: /var/lib/adventureworks-src

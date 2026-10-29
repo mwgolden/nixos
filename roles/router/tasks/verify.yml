@@ -1,0 +1,41 @@
+# Tests each TCP port forward from this machine and reports the router's
+# status. Runs on localhost from roles/host_deploy.
+
+- name: Report that there are no port forwards
+  ansible.builtin.debug:
+    msg: "The router has no settings.port_forwards in networks/{{ vm.network.name }}.yaml. Nothing is forwarded."
+  when: router_port_forwards | length == 0
+
+# Only TCP can be tested this way. A TCP forward only answers once the
+# service on the VM is running, so a failure here is reported, not fatal.
+- name: Try each TCP forward from this machine
+  ansible.builtin.wait_for:
+    host: "{{ router_ip }}"
+    port: "{{ item.wan_port | int }}"
+    timeout: 5
+  register: forward_tests
+  ignore_errors: true
+  loop: "{{ router_port_forwards | selectattr('proto', 'equalto', 'tcp') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Show port forwards
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.name }}: {{ item.proto }} {{ router_ip }}:{{ item.wan_port }}
+      -> {{ item.lan_ip }}:{{ item.lan_port | default(item.wan_port) }}
+      {%- if item.proto == 'udp' %} (UDP, not tested)
+      {%- elif (forward_tests.results | selectattr('item.name', 'equalto', item.name) | first) is succeeded %} (answering)
+      {%- else %} (not answering: is the service on {{ item.lan_ip }} running and listening on port {{ item.lan_port | default(item.wan_port) }}?)
+      {%- endif %}
+  loop: "{{ router_port_forwards }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Show router details
+  ansible.builtin.debug:
+    msg: >-
+      The router is up on {{ router_ip }} (WAN). VMs attached to
+      {{ router_lan_bridge }} get an address from {{ router_dhcp_range_start }}
+      to {{ router_dhcp_range_end }} with gateway and DNS
+      {{ router_lan_ip }}.

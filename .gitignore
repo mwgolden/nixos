@@ -2,5 +2,7 @@
 *.iso
 result
 
-hosts/postgres/data/*
-hosts/postgres/*.sqlbuild/
+
+# Credentials, except the README that explains them.
+secrets/*
+!secrets/README.md

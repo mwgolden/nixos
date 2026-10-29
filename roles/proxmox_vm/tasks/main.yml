@@ -6,6 +6,7 @@
 #   proxmox_vm_existing   the VM as it was before this ran (with its
 #                         config), or none if it was just cloned
 #   proxmox_vm_new_clone  true if the VM was just cloned
+#   proxmox_vm_config     the VM's configuration once it is running
 
 - name: Check required environment variables
   ansible.builtin.assert:
@@ -77,3 +78,16 @@
         node: "{{ proxmox_node }}"
         vmid: "{{ proxmox_vm_id }}"
         state: started
+
+    # A new clone's network card and the notes a deploy records are only
+    # known once the VM exists.
+    - name: Read the {{ proxmox_vm_name }} VM's configuration
+      community.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ proxmox_vm_id }}"
+        config: current
+      register: proxmox_vm_info_after
+
+    - name: Note the VM's configuration
+      ansible.builtin.set_fact:
+        proxmox_vm_config: "{{ (proxmox_vm_info_after.proxmox_vms | first).config }}"

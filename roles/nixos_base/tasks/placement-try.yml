@@ -5,10 +5,17 @@
 
 - name: Try {{ candidate.ip }} on {{ candidate.bridge }}
   when: not place_found
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
   block:
     - name: Move the VM's network card to {{ candidate.bridge }}
       community.proxmox.proxmox_nic:
-        vmid: "{{ place_vm_id }}"
+        vmid: "{{ vm.vm_id }}"
         interface: net0
         model: virtio
         bridge: "{{ candidate.bridge }}"
@@ -25,7 +32,7 @@
         port: 22
         delay: "{{ candidate.delay }}"
         timeout: "{{ candidate.timeout }}"
-      delegate_to: "{{ 'router' if candidate.via_router else 'localhost' }}"
+      delegate_to: "{{ candidate.via_router or 'localhost' }}"
       register: place_try
       ignore_errors: true
 

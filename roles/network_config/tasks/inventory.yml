@@ -1,0 +1,48 @@
+# Adds hosts from the network files to the inventory, ready for a play over
+# the group nixlab_deploy (run with serial: 1, see roles/host_deploy).
+# Every router is also added, under its own name, since VMs on its isolated
+# network are reached through it.
+#
+# Runs on localhost after main.yml. Set:
+#   network_config_deploy  names of the hosts to deploy, in order
+# Each added host gets:
+#   vm      its entry from the network_config_inventory filter
+#   nixlab  every network and host, for finding routers and other networks
+
+- name: Build the inventory from the network files
+  ansible.builtin.set_fact:
+    nixlab: "{{ network_configs | network_config_inventory }}"
+
+- name: Require the hosts to deploy
+  ansible.builtin.assert:
+    that:
+      - item in nixlab.hosts
+    fail_msg: >-
+      There is no host named '{{ item }}' in networks/. Hosts:
+      {{ nixlab.hosts.keys() | join(', ') }}.
+    quiet: true
+  loop: "{{ network_config_deploy }}"
+
+- name: Add the routers
+  ansible.builtin.add_host:
+    name: "{{ item.router }}"
+    groups: nixlab_routers
+    ansible_host: "{{ item.router_wan_ip }}"
+    ansible_user: admin
+    ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+    vm: "{{ nixlab.hosts[item.router] }}"
+    nixlab: "{{ nixlab }}"
+  loop: "{{ nixlab.networks.values() | selectattr('router') | list }}"
+  loop_control:
+    label: "{{ item.router }}"
+
+- name: Add the hosts to deploy
+  ansible.builtin.add_host:
+    name: "{{ item }}"
+    groups: nixlab_deploy
+    ansible_user: admin
+    ansible_ssh_private_key_file: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
+    vm: "{{ nixlab.hosts[item] }}"
+    nixlab: "{{ nixlab }}"
+  loop: "{{ network_config_deploy }}"

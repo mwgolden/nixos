@@ -3,8 +3,8 @@
 # host's own configuration.nix goes next to them, then tasks_from: switch
 # builds and switches to it.
 #
-# Runs on a VM added by placement.yml (or with the same host vars), with
-# become: true.
+# Runs on a VM placed by placement.yml and checked by identity.yml (it
+# needs final), with become: true.
 
 - name: Wait for login
   ansible.builtin.wait_for_connection:

@@ -66,3 +66,28 @@ hosts:
         database: Adventureworks
         repo: https://github.com/mwgolden/adventure-works-postgres
         version: afcfd2dfcf031af91f03f536c1ade349cfcb3ad6
+
+      # Database users, applied by playbooks/postgres-users.yaml. Access
+      # levels (read, write, create, execute) and extra roles are explained
+      # in roles/postgres/USERS.md. Passwords are in
+      # secrets/lab/postgres-users.env.
+      #
+      # Database the schemas live in. It must already exist.
+      users_database: Adventureworks
+      # Schemas to create if missing. Owner defaults to the admin user.
+      schemas:
+        - name: reporting
+          owner: pgadmin
+      # Access not listed is removed on the next run. Users missing from the
+      # list are left alone; set state: absent to drop one.
+      users:
+        - name: aw_analyst
+          schemas:
+            - schema: sales
+              access: [read]
+            - schema: reporting
+              access: [read, write, create]
+          roles: [pg_monitor]
+
+        - name: old_user
+          state: absent

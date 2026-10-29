@@ -1,0 +1,27 @@
+# Checks the webserver service answers and says how to reach it. Runs on
+# localhost from roles/host_deploy; on an isolated network the check goes
+# through the router.
+# On the isolated network only the router can reach the webserver, so the
+# check runs there.
+
+- name: Check the site is served
+  ansible.builtin.uri:
+    url: "http://{{ final.ip }}/"
+    status_code: 200
+  register: site_check
+  retries: 10
+  delay: 3
+  until: site_check is succeeded
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+
+- name: Show where the site is
+  ansible.builtin.debug:
+    msg: >-
+      {% if final.via_router -%}
+      The webserver is on the isolated network at http://{{ final.ip }}/.
+      To reach it from home, add a port forward to the router's settings.port_forwards in
+      networks/{{ vm.network.name }}.yaml
+      (lan_ip {{ final.ip }}) and redeploy the router.
+      {%- else -%}
+      The webserver is at http://{{ final.ip }}/.
+      {%- endif %}

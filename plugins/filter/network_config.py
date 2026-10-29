@@ -383,10 +383,150 @@ def network_config_summary(network_configs, vms):
     return lines
 
 
+def network_config_inventory(network_configs):
+    """Turns valid network files into what the deploy playbooks use.
+
+    Returns {"networks": {name: network}, "hosts": {name: vm}} where each vm
+    has its declared settings plus:
+      network  the network it belongs to
+      attach   where its first network card (net0, ens18) sits: the bridge,
+               its address there, and the gateway and DNS server it uses.
+               For a router that is the upstream network at wan_ip; for
+               everything else its own network at ip.
+      nics     extra network cards: a router's LAN card on its own bridge
+    and each network has "router": the name of its router host, or "".
+    """
+    networks = {}
+    for name, config in network_configs.items():
+        net = config["network"]
+        cidr = ipaddress.IPv4Network(str(net["cidr"]))
+        router = next((h["name"] for h in config.get("hosts") or [] if h["type"] == "router"), "")
+        networks[name] = {
+            "name": name,
+            "type": net["type"],
+            "bridge": net["bridge"],
+            "cidr": str(cidr),
+            "prefix_length": cidr.prefixlen,
+            "gateway": str(net["gateway"]),
+            "nameserver": str(net["nameserver"]),
+            "upstream": net.get("upstream", ""),
+            "dhcp": net.get("dhcp") or {},
+            "router": router,
+            "router_wan_ip": "",
+        }
+    for name, config in network_configs.items():
+        for h in config.get("hosts") or []:
+            if h["type"] == "router":
+                networks[name]["router_wan_ip"] = str(h["wan_ip"])
+
+    hosts = {}
+    for name, config in network_configs.items():
+        net = networks[name]
+        for h in config.get("hosts") or []:
+            is_router = h["type"] == "router"
+            attach_net = networks[net["upstream"]] if is_router else net
+            disk = h.get("data_disk")
+            hosts[h["name"]] = {
+                "name": h["name"],
+                "type": h["type"],
+                "vm_id": int(h["vm_id"]),
+                "ip": str(h["ip"]),
+                "full_clone": bool(h.get("full_clone", False)),
+                "settings": h.get("settings") or {},
+                # The serial is per type: each type's configuration.nix
+                # mounts /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_<type>-data.
+                "data_disk": ({"serial": f"{h['type']}-data",
+                               "size_gb": int(disk["size_gb"]),
+                               "storage": disk["storage"]} if disk else {}),
+                "network": net,
+                "attach": {
+                    "network": attach_net["name"],
+                    "bridge": attach_net["bridge"],
+                    "ip": str(h["wan_ip"] if is_router else h["ip"]),
+                    "prefix_length": attach_net["prefix_length"],
+                    "gateway": attach_net["gateway"],
+                    "nameserver": attach_net["nameserver"],
+                    "via_router": attach_net["router"] if attach_net["type"] == "isolated" else "",
+                },
+                "nics": [{"interface": "net1", "bridge": net["bridge"]}] if is_router else [],
+            }
+    return {"networks": networks, "hosts": hosts}
+
+
+ADDRESS_RE = re.compile(r"^nixlab-address: (\S+) on (\S+)$", re.M)
+
+
+def recorded_address(description):
+    """The address a deploy recorded in a VM's Proxmox notes, or {}."""
+    match = ADDRESS_RE.search(description or "")
+    return {"ip": match.group(1), "bridge": match.group(2)} if match else {}
+
+
+def record_address(description, ip, bridge):
+    """The VM's notes with its recorded address set to ip on bridge.
+
+    Other lines in the notes are kept.
+    """
+    line = f"nixlab-address: {ip} on {bridge}"
+    description = description or ""
+    if ADDRESS_RE.search(description):
+        return ADDRESS_RE.sub(line, description, count=1)
+    return (description.rstrip("\n") + "\n" + line) if description.strip() else line
+
+
+def placement_candidates(vm, inventory, net0, description, new_clone, template_ip, template_bridge):
+    """Where to look for a VM over SSH, in order.
+
+    Each candidate is {ip, bridge, via_router, delay, timeout}. via_router
+    names the router to go through ("" for direct). A candidate on another
+    bridge than net0's means moving net0 there before looking.
+    """
+    if new_clone:
+        return [_candidate(inventory, template_ip, template_bridge, 5, 300)]
+
+    match = re.search(r"bridge=([^,]+)", net0 or "")
+    current_bridge = match.group(1) if match else vm["attach"]["bridge"]
+    recorded = recorded_address(description)
+    attach = vm["attach"]
+    wanted = []
+    # Where the last deploy left it.
+    if recorded and recorded["bridge"] == current_bridge:
+        wanted.append((recorded["ip"], current_bridge, 0, 60))
+    # Where it should be, if its card is already on that bridge.
+    if attach["bridge"] == current_bridge:
+        wanted.append((attach["ip"], current_bridge, 0, 60))
+    # A first deploy that stopped before the VM left the template address.
+    if current_bridge == template_bridge:
+        wanted.append((template_ip, current_bridge, 0, 20))
+    # A move that stopped after the address changed but before the card
+    # moved, or the other way round.
+    if attach["bridge"] != current_bridge:
+        wanted.append((attach["ip"], attach["bridge"], 0, 60))
+    if recorded and recorded["bridge"] != current_bridge:
+        wanted.append((recorded["ip"], recorded["bridge"], 0, 60))
+
+    result, seen = [], set()
+    for ip, bridge, delay, timeout in wanted:
+        if (ip, bridge) not in seen:
+            seen.add((ip, bridge))
+            result.append(_candidate(inventory, ip, bridge, delay, timeout))
+    return result
+
+
+def _candidate(inventory, ip, bridge, delay, timeout):
+    net = next((n for n in inventory["networks"].values() if n["bridge"] == bridge), None)
+    via = net["router"] if net and net["type"] == "isolated" else ""
+    return {"ip": ip, "bridge": bridge, "via_router": via, "delay": delay, "timeout": timeout}
+
+
 class FilterModule:
     def filters(self):
         return {
             "network_config_errors": network_config_errors,
             "network_config_proxmox_errors": network_config_proxmox_errors,
             "network_config_summary": network_config_summary,
+            "network_config_inventory": network_config_inventory,
+            "placement_candidates": placement_candidates,
+            "recorded_address": recorded_address,
+            "record_address": record_address,
         }

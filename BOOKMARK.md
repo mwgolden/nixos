@@ -2,14 +2,103 @@
 
 Progress against [PLAN.md](PLAN.md). The newest entry is at the top.
 
-## Paused before Phase 3
+## Paused before Phase 4
 
-Work is paused here on purpose, and not because of the token limit. Phase 3 rewrites every host playbook a second time, this time to read the network files. It should build on Phase 1 only after Phase 1 has been run against the live VMs. Before resuming:
+Paused on purpose so Phase 3 can be tried on the live VMs. Phase 4 builds `deploy-network.yaml` on the same per-host play, so problems are easier to find first. Suggested order, with `proxmox/.env` sourced:
+
+```bash
+ansible-playbook playbooks/validate-network.yaml
+ansible-playbook playbooks/deploy-host.yaml -e network=lab  -e host=router
+ansible-playbook playbooks/deploy-host.yaml -e network=lab  -e host=postgres
+ansible-playbook playbooks/deploy-host.yaml -e network=home -e host=webserver
+ansible-playbook playbooks/deploy-host.yaml -e network=home -e host=gitea
+ansible-playbook playbooks/postgres-users.yaml -e network=lab -e host=postgres
+```
+
+All the old VMs were destroyed before the refactor started, so every deploy above is a new clone. Expect each one to:
+
+1. Clone the template and add its data disk. The router also gets its `net1`.
+2. Boot on the template IP (`192.168.1.10`).
+3. Switch to its own address.
+4. Get a `nixlab-address: ... on vmbrN` line in its Proxmox notes.
+
+Order matters. The router must come first, since postgres is behind it, and `vmbr1` must still exist. If it doesn't, run `proxmox/scripts/isolated-bridge.yaml`. Postgres must be up before `postgres-users.yaml`. Garage also needs `secrets/home/garage.env`, made from `roles/garage/env.example`.
+
+The Phase 1 live checks further down no longer apply: there were no existing VMs to check against.
+
+### Fix after the first live router run (2026-10-29)
+
+The router deploy failed with "Port forward 'postgres' points at 10.1.0.12, which is not a VM on the isolated LAN". Two causes:
+
+1. **The port forward check ran too early.** The router was found at the template IP (`192.168.1.10`), so its `ens19` had no LAN address yet, and the route check runs before the switch. The old `router.yaml` checked in the same place and would have failed on a new router too.
+   - Fix: the route check now runs after the switch.
+   - Validation already checks before deploying that each `lan_ip` is a host on the network.
+2. **The MAC check ran too late.** It was in `nixos_base`, which the router role only includes after its own checks.
+   - Fix: it's now in `roles/nixos_base/tasks/identity.yml`, which `host_deploy` runs right after placement, before any host-type task.
+
+## Phase 3: host types as roles, deployed from the network files (done 2026-10-28, not yet tested live)
+
+**Deploying**
+- `playbooks/deploy-host.yaml -e network=<net> -e host=<name>` replaces `hosts/<type>/<type>.yaml`.
+- The first play loads and checks the network files, then adds the host and every router to the inventory (`network_config` role, `tasks/inventory.yml`).
+- The second play runs over those hosts with `serial: 1`, using [roles/host_deploy](roles/host_deploy/tasks/main.yml). That role runs `<type>/prepare` on the workstation, then `proxmox_vm` and placement there too, then `<type>/configure` on the VM, then `<type>/verify` on the workstation. Phase 4 can use the same play for a whole network.
+- `playbooks/destroy-host.yaml` replaces the five `destroy.yaml` files. It refuses to delete a router while VMs of its network still exist.
+- `playbooks/postgres-users.yaml` replaces `hosts/postgres/users/users.yaml`. The user list is now under postgres's `settings` in `networks/lab.yaml`, and the reference notes on access levels and roles are in [roles/postgres/USERS.md](roles/postgres/USERS.md).
+
+**Host type roles:** `roles/webserver`, `postgres`, `gitea`, `garage` and `router`.
+- Each has `defaults/main.yml`, `prepare.yml`, `configure.yml` and `verify.yml`, and keeps its NixOS files in `files/` and `templates/`, moved with `git mv`.
+- Defaults map the host's `settings:` onto the old variable names, so the templates and service tasks are unchanged.
+- Rendering each role's templates with today's settings gives the same values as before.
+- The router's LAN bridge variable is now `router_lan_bridge`, because `proxmox/vars.yaml` already sets `isolated_bridge` and play vars override role defaults.
+
+**Placement (decision 10)**
+- The `network_config_inventory` and `placement_candidates` filters, in [plugins/filter/network_config.py](plugins/filter/network_config.py), work out each VM's attachment (a router attaches upstream at its `wan_ip`) and where to look for it, in this order:
+  1. The address recorded in its Proxmox notes.
+  2. Its declared address.
+  3. The template address.
+  4. The far side of an interrupted move.
+- `switch.yml` writes `nixlab-address: <ip> on <bridge>` into the VM's Proxmox notes through the API, keeping any other lines.
+- `nixos_base` stops if the guest's `ens18` MAC doesn't match `net0`.
+- Routers behind which nothing answers are skipped, and a clear error says to deploy the router first.
+
+**Secrets:** `secrets/<network>/<host>.env`, gitignored except [secrets/README.md](secrets/README.md).
+- I moved your files without reading them: `hosts/gitea/.env` to `secrets/home/gitea.env`, `hosts/postgres/.env` to `secrets/lab/postgres.env`, and `hosts/postgres/users/.env` to `secrets/lab/postgres-users.env`.
+- `gitea.env` was readable by everyone, so I set it to owner-only (600).
+- The examples are now `roles/<type>/env.example`.
+
+**Removed**
+- All of `hosts/`.
+- `hosts/move-network.yaml`. Moving a host is now: move its entry to another network file and deploy it.
+- `hosts/router/port-forwards.yaml`. Its tests now run in the router's `verify.yml`.
+- The transition test `tests/test_networks_match_host_vars.py`.
+- The broken `webserver` entry in `flake.nix`.
+
+**Docs**
+- [README.md](README.md): the deploy, addressing and moving sections were rewritten.
+- Each `roles/<type>/README.md`: commands and paths updated, plus a table at the top mapping old setting names to network file settings.
+- Follow-up: the prose of the role READMEs still uses the old setting names in places. The table covers it, but a rewrite would read better.
+
+**Kept as is on purpose:** the marker `managed by hosts/postgres/users (group)` in `users.sql.j2`. Databases set up earlier carry it, and the users playbook relies on it to recognise its groups.
+
+**Checked**
+- 51 unit tests pass.
+- Every playbook passes `--syntax-check`.
+- Sandbox runs in my scratchpad, against fake Proxmox modules and documentation-only addresses:
+  - Deploying gitea, an existing VM, got as far as the SSH lookup. Its secrets were read and its 40 GB disk was left alone.
+  - Deploying postgres as a new clone cloned it and added a 20 GB disk, then stopped because the router wasn't answering.
+  - Deploying the router added `net1` on `vmbr1`, then looked for the VM at its WAN address and at the template address.
+  - `destroy-host` refused a wrong confirmation and refused to delete the router while postgres exists. It deleted postgres once the name was confirmed.
+- Not checked: the configure and verify steps, which need real VMs.
+- A side effect: the sandbox's postgres runs removed the `10.1.0.12` entry from `~/.ssh/known_hosts`. This is harmless, since the next SSH connection accepts the key again.
+
+## Phase 3 decision (2026-10-28)
+
+Each deploy records the VM's current address in Proxmox. Placement finds the VM there, and its bridge says which network to reach it through. Placement also checks that the guest's `ens18` MAC matches `net0` before changing anything, because every clone shares the template's SSH host key. This is recorded in ARCHITECTURE.MD decision 10 and PLAN.md Phase 3. The QEMU guest agent could replace the recorded address later.
+
+## Before Phase 3: live checks
 
 1. Run the Phase 1 checks listed below (each host playbook on its existing VM).
 2. Run `ansible-playbook playbooks/validate-network.yaml` with `proxmox/.env` sourced. This is the first check of the network files against the real Proxmox.
-
-Decided for Phase 3 (2026-10-28): each deploy records the VM's current address in Proxmox. Placement finds the VM there, and its bridge says which network to reach it through. Placement also checks that the guest's `ens18` MAC matches `net0` before changing anything, because every clone shares the template's SSH host key. This is recorded in ARCHITECTURE.MD decision 10 and in PLAN.md Phase 3. The QEMU guest agent could replace the recorded address later.
 
 ## Phase 2: network files and validation (done 2026-10-28)
 

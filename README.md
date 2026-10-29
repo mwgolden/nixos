@@ -2,7 +2,7 @@
 
 Builds a NixOS template on Proxmox and deploys VMs from it.
 
-One command, `./bootstrap.sh`, builds a custom NixOS installer ISO in Docker, uploads it to Proxmox, installs NixOS onto VM 110, checks that the installed system boots, and converts VM 110 into a template. Playbooks under `hosts/` then clone the template into individual servers.
+One command, `./bootstrap.sh`, builds a custom NixOS installer ISO in Docker, uploads it to Proxmox, installs NixOS onto VM 110, checks that the installed system boots, and converts VM 110 into a template. `playbooks/deploy-host.yaml` then clones the template into the servers described in `networks/`.
 
 ## Repository layout
 
@@ -15,13 +15,13 @@ One command, `./bootstrap.sh`, builds a custom NixOS installer ISO in Docker, up
 | `proxmox/vars.yaml`          | Proxmox host, VM size, IPs and other bootstrap settings       |
 | `proxmox/bootstrap.yaml`     | Runs the three template playbooks below in order              |
 | `proxmox/scripts/`           | `upload-iso.yaml`, `create-template.yaml`, `install-nix.yaml`, and `isolated-bridge.yaml` for the isolated network |
-| `hosts/<name>/`              | Configuration and deploy playbook for each VM                 |
-| `hosts/move-network.yaml`    | Moves a deployed VM between the home and isolated networks    |
 | `ansible.cfg`                | Ansible settings. Run playbooks from the repository root so it is used |
 | `networks/`                  | One file per network and the VMs on it. See [networks/README.md](networks/README.md) |
 | `playbooks/validate-network.yaml` | Checks the network files, and checks them against Proxmox |
 | `plugins/filter/`, `tests/`  | Network file checks and their tests: `.venv/bin/python -m unittest discover -s tests` |
-| `roles/`                     | Tasks shared by the host playbooks: creating and removing VMs, reading `.env` files, finding a VM and switching it to its network |
+| `roles/`                     | One role per host type (its NixOS configuration and service setup), plus shared roles: creating and removing VMs, reading the network files, finding a VM and switching it to its network |
+| `playbooks/`                 | `deploy-host.yaml`, `destroy-host.yaml`, `validate-network.yaml` and `postgres-users.yaml` |
+| `secrets/`                   | Host passwords and keys, gitignored. See [secrets/README.md](secrets/README.md) |
 | `Dockerfile`, `start_container.sh` | Nix build container                                     |
 
 ## Prerequisites
@@ -29,7 +29,7 @@ One command, `./bootstrap.sh`, builds a custom NixOS installer ISO in Docker, up
 On the workstation:
 
 - **Docker**, to build the ISO. Nix is not needed on the workstation.
-- **Ansible** with the Proxmox modules. The bootstrap uses `.venv/` if it exists:
+- **Ansible** with the Proxmox modules. The bootstrap uses `.venv/` if it exists, and the other playbooks should be run with it too:
 
   ```bash
   uv venv .venv
@@ -105,46 +105,74 @@ ansible-playbook proxmox/scripts/install-nix.yaml -e installer_iso="$PWD/build/n
 
 ## Deploying VMs from the template
 
-Each VM has its own folder under `hosts/`, with a playbook and a README that explains how to deploy and change it:
+Each network is described by a file in [networks/](networks/README.md): its bridge, subnet and gateway, and the VMs on it. Today there are two:
 
-- [webserver](hosts/webserver/README.md): nginx serving static files
-- [postgres](hosts/postgres/README.md): PostgreSQL on a separate data disk, with optional AdventureWorks sample data
-- [gitea](hosts/gitea/README.md): Gitea Git server on a separate data disk
-- [garage](hosts/garage/README.md): Garage S3-compatible object storage on a separate data disk
-- [router](hosts/router/README.md): connects the isolated bridge (`vmbr1`) to the internet with DHCP, NAT and a firewall that blocks the home LAN
+- [networks/home.yaml](networks/home.yaml): webserver, gitea and garage, directly on the home LAN.
+- [networks/lab.yaml](networks/lab.yaml): the router and postgres, on the isolated bridge.
 
-A host playbook clones the template, boots the clone on the template's IP, installs the host's NixOS configuration, and runs `nixos-rebuild switch`. The clone then moves to its own IP. Each host's hostname, IPs and network are set in its `vars.yaml`; the playbook generates `/etc/nixos/network.nix` from them using `modules/network.nix.j2`. The webserver, postgres, gitea and garage can also live on the isolated network; see [Moving a VM between networks](#moving-a-vm-between-networks).
+Check the files, then deploy a host:
+
+```bash
+source proxmox/.env
+ansible-playbook playbooks/validate-network.yaml
+ansible-playbook playbooks/deploy-host.yaml -e network=lab -e host=postgres
+```
+
+The deploy:
+
+1. Checks every network file and compares them with Proxmox.
+2. Clones the template if the VM doesn't exist, and adds its data disk and network cards.
+3. Finds the VM. A new clone boots on the template's IP. An existing VM is found at the address its last deploy recorded in its Proxmox notes.
+4. Checks that the VM's MAC address matches Proxmox's before changing anything.
+5. Installs its NixOS configuration and runs `nixos-rebuild switch`, which moves it to its own IP.
+6. Records the new address in its Proxmox notes, then checks that its service answers.
+
+Running it again on an existing VM updates it in place. VMs on an isolated network are reached over SSH through that network's router, so deploy the router first.
+
+Each host type is a role in [roles/](roles/), with a README that explains its settings:
+
+- [webserver](roles/webserver/README.md): nginx serving static files
+- [postgres](roles/postgres/README.md): PostgreSQL on a separate data disk, with optional AdventureWorks sample data. [Database users](roles/postgres/USERS.md) are managed with `playbooks/postgres-users.yaml`.
+- [gitea](roles/gitea/README.md): Gitea Git server on a separate data disk
+- [garage](roles/garage/README.md): Garage S3-compatible object storage on a separate data disk
+- [router](roles/router/README.md): connects an isolated bridge to the internet with DHCP, NAT and a firewall that blocks the home LAN
+
+Passwords and keys for hosts go in `secrets/<network>/<host>.env`; see [secrets/README.md](secrets/README.md).
+
+To delete a host's VM and all its disks (it asks you to type the name):
+
+```bash
+ansible-playbook playbooks/destroy-host.yaml -e network=lab -e host=postgres
+```
+
+Remove its entry from the network file too, or the next deploy creates it again. A router can't be deleted while VMs of its network still exist.
 
 ## Network addressing
 
-Static addresses must stay outside the DHCP pool.
+Static addresses must stay outside the home router's DHCP pool. Validation checks that no two hosts share an address, and that no host uses the template's address or a network's gateway.
 
 | IP             | System                                                    |
 | -------------- | --------------------------------------------------------- |
-| `192.168.1.1`  | gateway and DNS                                  |
+| `192.168.1.1`  | gateway and DNS                                           |
 | `192.168.1.10` | Installer ISO and the template, on VM 110 (never at the same time). New clones also boot here first. |
 | `192.168.1.11` | webserver (VM 111)                                        |
-| `192.168.1.12` | postgres (VM 112)                                         |
 | `192.168.1.13` | router (VM 113), WAN side                                 |
-| `192.168.1.14` | gitea (VM 114)                                           |
-| `192.168.1.15` | garage (VM 115)                                          |
+| `192.168.1.14` | gitea (VM 114)                                            |
+| `192.168.1.15` | garage (VM 115)                                           |
 
-Because every new clone starts on `.10`, deploy one VM at a time.
+Because every new clone starts on `.10`, the deploy works on one VM at a time.
 
 ### Isolated network
 
-`proxmox/scripts/isolated-bridge.yaml` creates `vmbr1`, a bridge with no physical port and no IP on the Proxmox host. The [router](hosts/router/README.md) is its only way out:
+`proxmox/scripts/isolated-bridge.yaml` creates `vmbr1`, a bridge with no physical port and no IP on the Proxmox host. The [router](roles/router/README.md) is its only way out:
 
-| IP                          | System                                   |
-| --------------------------- | ---------------------------------------- |
+| IP                          | System                                     |
+| --------------------------- | ------------------------------------------ |
 | `10.1.0.1`                  | router (VM 113), LAN side: gateway and DNS |
-| `10.1.0.11`                 | webserver, when `webserver_network` is `isolated` |
-| `10.1.0.12`                 | postgres, when `postgres_network` is `isolated` |
-| `10.1.0.14`                 | gitea, when `gitea_network` is `isolated` |
-| `10.1.0.15`                 | garage, when `garage_network` is `isolated` |
-| `10.1.0.100` – `10.1.0.199` | DHCP pool                                |
+| `10.1.0.12`                 | postgres (VM 112)                          |
+| `10.1.0.100` – `10.1.0.199` | DHCP pool                                  |
 
-VMs on `vmbr1` reach the internet but not `192.168.1.0/24` or other private networks. From home, they're reachable only through [router port forwards](hosts/router/README.md#port-forwards).
+VMs on `vmbr1` reach the internet but not `192.168.1.0/24` or other private networks. From home, they're reachable only through port forwards on the router, set in the router's `settings.port_forwards` in `networks/lab.yaml`.
 
 With every server on the isolated network, traffic flows like this:
 
@@ -192,22 +220,15 @@ Solid lines are the physical and virtual links. Dashed lines are what the router
 
 ## Moving a VM between networks
 
-The webserver, postgres, gitea and garage can each live on the home network or on the isolated network. `<host>_network` in the host's `vars.yaml` sets this (`home` or `isolated`), and `<host>_isolated_ip` gives its fixed address on the isolated LAN. The router must be deployed before anything uses the isolated network.
+Move the host's entry from one network file to the other, give it an address in its new network, and deploy it:
 
-- **On the first deploy:** set `<host>_network: "isolated"` before running the host's playbook. The clone still starts on the template's IP on the home network, then switches over.
-- **Later:** change the setting and re-run the host's playbook, or move the VM without redeploying it:
+```bash
+ansible-playbook playbooks/deploy-host.yaml -e network=lab -e host=gitea
+```
 
-  ```bash
-  source proxmox/.env
-  ansible-playbook hosts/move-network.yaml -e host=postgres -e network=isolated
-  ansible-playbook hosts/move-network.yaml -e host=postgres -e network=home
-  ```
+The deploy finds the VM at the address it recorded last time, changes its address and moves its network card (net0) to the new bridge. Proxmox does that while the VM runs, and the VM keeps its MAC address and disks. The router must be deployed before anything moves onto an isolated network.
 
-  This only replaces the VM's `network.nix` and switches. Afterwards it sets `<host>_network` in `vars.yaml` to match, so the next deploy keeps the VM where it is.
-
-A move changes the VM's address and moves its network card (net0) between `vmbr0` and `vmbr1`. Proxmox does that while the VM runs, and the VM keeps its MAC address and disks. Your workstation can't reach the isolated LAN, so Ansible connects to VMs there over SSH through the router, using the deployment key for both hops.
-
-If a move is interrupted, run it again. The playbooks look for the VM on the network its card is on first, then on the other one, moving the card if needed. Once found, the move finishes from wherever the VM is.
+If a move is interrupted, run it again. The deploy also looks for the VM at its new address and on the other bridge, moving the card if needed, and finishes the move from wherever the VM is.
 
 To SSH to an isolated VM by hand, add this to `~/.ssh/config`:
 

@@ -1,0 +1,38 @@
+# Checks that the router's LAN bridge exists and is up before anything
+# changes. Port forwards are checked with the network files. Runs on
+# localhost from roles/host_deploy.
+
+- name: Check the router's LAN bridge
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
+  block:
+    - name: Look up the isolated bridge
+      community.proxmox.proxmox_node_network_info:
+        node: "{{ proxmox_node }}"
+        iface: "{{ router_lan_bridge }}"
+      register: bridge_info
+
+    - name: Require the isolated bridge
+      ansible.builtin.assert:
+        that:
+          - bridge_info.proxmox_node_networks | length == 1
+        fail_msg: >-
+          {{ router_lan_bridge }} does not exist on {{ proxmox_node }}.
+          Create it with proxmox/scripts/isolated-bridge.yaml (set isolated_bridge in proxmox/vars.yaml to {{ router_lan_bridge }}).
+        quiet: true
+
+    # Proxmox leaves out "active" when the bridge is not up in the kernel.
+    - name: Require the isolated bridge to be up
+      ansible.builtin.assert:
+        that:
+          - bridge_info.proxmox_node_networks[0].get('active', false) | bool
+        fail_msg: >-
+          {{ router_lan_bridge }} is configured on {{ proxmox_node }} but is not
+          up. On the node, check 'ip link show {{ router_lan_bridge }}' and run
+          'ifreload -a'.
+        quiet: true

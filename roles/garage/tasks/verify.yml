@@ -1,0 +1,32 @@
+# Checks the garage service answers and says how to reach it. Runs on
+# localhost from roles/host_deploy; on an isolated network the check goes
+# through the router.
+# On the isolated network only the router can reach Garage, so the check
+# runs there.
+
+# Garage turns away unsigned requests with 403, which shows the S3 API
+# is up without needing the key.
+- name: Check the S3 API answers
+  ansible.builtin.uri:
+    url: "{{ garage_endpoint }}/"
+    status_code: 403
+  register: garage_check
+  retries: 10
+  delay: 3
+  until: garage_check is succeeded
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+
+- name: Show where Garage is
+  ansible.builtin.debug:
+    msg: >-
+      {% if final.via_router -%}
+      Garage is up on the isolated network at {{ garage_endpoint }}.
+      To reach it from home, add a port forward to the router's settings.port_forwards in
+      networks/{{ vm.network.name }}.yaml
+      (lan_ip {{ final.ip }}, lan_port {{ garage_s3_port }}) and redeploy the router. S3 clients then use
+      http://{{ router_ip }}:<wan_port>.
+      {%- else -%}
+      Garage is up. S3 clients use endpoint {{ garage_endpoint }},
+      region {{ garage_s3_region }}, path-style addressing, and access key
+      {{ garage_key_id }} (secret in secrets/{{ vm.network.name }}/{{ vm.name }}.env).
+      {%- endif %}

@@ -1,0 +1,30 @@
+# Checks the gitea host's secrets and settings before anything changes.
+# Runs on localhost from roles/host_deploy. Facts it sets land on the VM's
+# inventory entry, where configure.yml and verify.yml use them.
+
+- name: Read the Gitea admin login from the secrets file
+  ansible.builtin.include_role:
+    name: dotenv
+  vars:
+    dotenv_path: "{{ gitea_secrets_file }}"
+    dotenv_missing_hint: "Copy roles/gitea/env.example there and set the admin login."
+
+- name: Note the Gitea admin login
+  ansible.builtin.set_fact:
+    gitea_admin_user: "{{ dotenv_values.GITEA_ADMIN_USER | default('') }}"
+    gitea_admin_password: "{{ dotenv_values.GITEA_ADMIN_PASSWORD | default('') }}"
+    gitea_admin_email: "{{ dotenv_values.GITEA_ADMIN_EMAIL | default('') }}"
+  no_log: true
+
+- name: Check Gitea admin login
+  ansible.builtin.assert:
+    that:
+      - gitea_admin_user is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+      - gitea_admin_user | lower != 'admin'
+      - gitea_admin_password | length >= 8
+      - gitea_admin_email is match('^[^@\s]+@[^@\s]+$')
+    fail_msg: >-
+      In secrets/{{ vm.network.name }}/{{ vm.name }}.env, set GITEA_ADMIN_USER (letters, digits, '-', '_'
+      and '.', not "admin", which Gitea reserves), GITEA_ADMIN_PASSWORD
+      (at least 8 characters) and GITEA_ADMIN_EMAIL.
+    quiet: true

@@ -1,0 +1,30 @@
+# Checks the postgres service answers and says how to reach it. Runs on
+# localhost from roles/host_deploy; on an isolated network the check goes
+# through the router.
+
+
+# On the isolated network only the router can reach postgres, so the
+# check runs there.
+- name: Check PostgreSQL accepts connections
+  ansible.builtin.wait_for:
+    host: "{{ final.ip }}"
+    port: "{{ postgres_port }}"
+    timeout: 60
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+
+- name: Show connection details
+  ansible.builtin.debug:
+    msg: >-
+      {% if final.via_router -%}
+      PostgreSQL is up on the isolated network at {{ final.ip }}:{{ postgres_port }}.
+      VMs on the isolated LAN connect there. To reach it from home, add a
+      port forward to the router's settings.port_forwards in
+      networks/{{ vm.network.name }}.yaml (proto tcp, lan_ip {{ final.ip }},
+      lan_port {{ postgres_port }}) and redeploy the router,
+      then connect to the router: psql -h {{ router_ip }} -p <wan_port>
+      -U {{ postgres_admin_user }} -d postgres
+      {%- else -%}
+      PostgreSQL is up. Connect with:
+      psql -h {{ final.ip }} -p {{ postgres_port }} -U {{ postgres_admin_user }} -d postgres
+      {%- endif %}
+      (password in secrets/{{ vm.network.name }}/{{ vm.name }}.env)

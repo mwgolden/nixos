@@ -1,0 +1,39 @@
+# Defaults for router hosts. Set any of router_settings_defaults under the
+# router's settings: in its network file. The LAN address, DHCP range and
+# bridge come from the network itself.
+
+router_settings_defaults:
+  # Upstream DNS servers the router forwards LAN clients' queries to. Public
+  # resolvers, so LAN clients don't depend on anything on the home LAN.
+  dns_servers:
+    - 1.1.1.1
+    - 9.9.9.9
+  # LAN clients can't reach these networks. Blocking all private ranges
+  # also covers any other home subnets and every other lab network.
+  blocked_networks:
+    - 192.168.0.0/16
+    - 172.16.0.0/12
+    - 10.0.0.0/8
+  # Ports on the router's WAN address forwarded to hosts on its network:
+  # name, proto (tcp or udp), wan_port, lan_ip and optionally lan_port.
+  # TCP 22 can't be forwarded: it is the router's own SSH.
+  port_forwards: []
+
+router_settings: "{{ router_settings_defaults | combine(vm.settings) }}"
+
+# The names the configuration templates and tasks use.
+router_vm_name: "{{ vm.name }}"
+# WAN side, on the upstream network (ens18, net0).
+router_ip: "{{ vm.attach.ip }}"
+# LAN side, on the network's own bridge (ens19, net1). Not called
+# isolated_bridge: proxmox/vars.yaml sets that, and play vars win over
+# role defaults.
+router_lan_bridge: "{{ vm.network.bridge }}"
+router_lan_ip: "{{ vm.ip }}"
+router_lan_prefix_length: "{{ vm.network.prefix_length }}"
+router_dhcp_range_start: "{{ vm.network.dhcp.start }}"
+router_dhcp_range_end: "{{ vm.network.dhcp.end }}"
+router_dhcp_lease_time: "{{ vm.network.dhcp.lease_time | default('12h') }}"
+router_dns_servers: "{{ router_settings.dns_servers }}"
+router_blocked_networks: "{{ router_settings.blocked_networks }}"
+router_port_forwards: "{{ router_settings.port_forwards }}"

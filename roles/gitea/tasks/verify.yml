@@ -1,0 +1,31 @@
+# Checks the gitea service answers and says how to reach it. Runs on
+# localhost from roles/host_deploy; on an isolated network the check goes
+# through the router.
+# On the isolated network only the router can reach Gitea, so the check
+# runs there.
+
+- name: Check Gitea answers
+  ansible.builtin.uri:
+    url: "http://{{ final.ip }}:{{ gitea_http_port }}/api/healthz"
+    status_code: 200
+  register: gitea_check
+  retries: 10
+  delay: 3
+  until: gitea_check is succeeded
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+
+- name: Show where Gitea is
+  ansible.builtin.debug:
+    msg: >-
+      {% if final.via_router and not gitea_public_host -%}
+      Gitea is up on the isolated network at http://{{ final.ip }}:{{ gitea_http_port }}/.
+      To reach it from home, add port forwards to the router's settings.port_forwards in
+      networks/{{ vm.network.name }}.yaml
+      (lan_ip {{ final.ip }}, lan_port {{ gitea_http_port }} for the web
+      and 22 for git over SSH, on a wan_port other than 22), redeploy the router, then set public_host and the
+      public_*_port settings of {{ vm.name }} in networks/{{ vm.network.name }}.yaml
+      and redeploy {{ vm.name }}.
+      {%- else -%}
+      Gitea is up at {{ gitea_url | trim }}. Log in as
+      {{ gitea_admin_user }} (password in secrets/{{ vm.network.name }}/{{ vm.name }}.env).
+      {%- endif %}

@@ -9,3 +9,6 @@ network_config_name: ""
 # the template exists and that each network's bridge is usable. Needs
 # PROXMOX_TOKEN_SECRET. Set false to check only the files.
 network_config_check_proxmox: true
+
+# For tasks_from: inventory, the names of the hosts to deploy, in order.
+network_config_deploy: []
