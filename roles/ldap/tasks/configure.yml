@@ -1,0 +1,67 @@
+# Installs the lldap secrets and NixOS configuration, and switches to it.
+# Runs on the VM with become: true, from roles/host_deploy.
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+
+- name: Create the secrets folder
+  ansible.builtin.file:
+    path: "{{ ldap_secrets_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Before the switch, which starts lldap with them. No newline at the end:
+# lldap would make it part of the value.
+- name: Install the lldap secrets
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "{{ ldap_secrets_dir }}/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0600"
+  register: ldap_secret_files
+  loop:
+    - {name: jwt_secret, value: "{{ ldap_jwt_secret }}"}
+    - {name: admin_password, value: "{{ ldap_admin_password }}"}
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Install lldap settings
+  ansible.builtin.template:
+    src: ldap.nix.j2
+    dest: /etc/nixos/ldap.nix
+    mode: "0644"
+
+- name: Install ldap NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Switch to the configuration and move to the ldap host's address
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch
+
+# The switch only restarts lldap when its configuration changed, so apply
+# a new password or JWT secret here.
+- name: Restart lldap for changed secrets
+  ansible.builtin.systemd_service:
+    name: lldap
+    state: restarted
+  when: ldap_secret_files is changed
+
+- name: Check lldap is running
+  ansible.builtin.command:
+    cmd: systemctl is-active lldap
+  register: lldap_active
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: lldap_active.rc == 0

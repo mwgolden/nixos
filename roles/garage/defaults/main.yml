@@ -1,0 +1,43 @@
+# Defaults for garage hosts. Set any of garage_settings_defaults under the host's
+# settings: in its network file.
+
+garage_settings_defaults:
+  # Port the S3 API listens on.
+  s3_port: 3900
+  # Region name S3 clients must use. Garage accepts only this one.
+  s3_region: garage
+  # Zone name for this node in Garage's cluster layout. With a single node
+  # it is only a label.
+  zone: dc1
+  # Name shown in Garage for the access key from the secrets file. The key
+  # can create buckets, and gets read, write and owner rights on buckets.
+  key_name: default
+  # Buckets to create. Names follow S3 rules: 3 to 63 lowercase letters,
+  # digits, '-' and '.'. Removing a name doesn't delete the bucket.
+  buckets: []
+
+garage_settings: "{{ garage_settings_defaults | combine(vm.settings) }}"
+
+# The names the configuration templates and tasks use.
+garage_s3_port: "{{ garage_settings.s3_port }}"
+garage_s3_region: "{{ garage_settings.s3_region }}"
+garage_zone: "{{ garage_settings.zone }}"
+garage_key_name: "{{ garage_settings.key_name }}"
+garage_buckets: "{{ garage_settings.buckets }}"
+
+garage_vm_name: "{{ vm.name }}"
+garage_data_disk_gb: "{{ vm.data_disk.size_gb }}"
+# The router's WAN address, where port forwards to an isolated host are.
+router_ip: "{{ nixlab.networks[vm.network.name].router_wan_ip }}"
+# Secrets for this host. See secrets/README.md.
+garage_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}.env"
+
+data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_garage-data"
+# Layout capacity in bytes: the data disk's size in decimal GB, a little
+# under its real size, so Garage doesn't plan on more than the disk holds.
+garage_capacity: "{{ garage_data_disk_gb | int * 1000000000 }}"
+# Calls Garage's admin API through the garage command, which talks to the
+# server over RPC. The JSON payload goes on stdin and the reply is JSON.
+garage_api: "garage json-api"
+
+garage_endpoint: "http://{{ final.ip }}:{{ garage_s3_port }}"

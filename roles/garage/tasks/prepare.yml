@@ -1,0 +1,40 @@
+# Checks the garage host's secrets and settings before anything changes.
+# Runs on localhost from roles/host_deploy. Facts it sets land on the VM's
+# inventory entry, where configure.yml and verify.yml use them.
+
+- name: Read the access key from the secrets file
+  ansible.builtin.include_role:
+    name: dotenv
+  vars:
+    dotenv_path: "{{ garage_secrets_file }}"
+    dotenv_missing_hint: "Copy roles/garage/env.example there and set the access key."
+
+- name: Note the access key
+  ansible.builtin.set_fact:
+    garage_key_id: "{{ dotenv_values.GARAGE_ACCESS_KEY_ID | default('') }}"
+    garage_key_secret: "{{ dotenv_values.GARAGE_SECRET_ACCESS_KEY | default('') }}"
+  no_log: true
+
+- name: Check the access key
+  ansible.builtin.assert:
+    that:
+      - garage_key_id is match('^GK[0-9a-f]{24}$')
+      - garage_key_secret is match('^[0-9a-f]{64}$')
+      - garage_key_id != 'GK000000000000000000000000'
+    fail_msg: >-
+      In secrets/{{ vm.network.name }}/{{ vm.name }}.env, set GARAGE_ACCESS_KEY_ID to "GK" and 24 hex
+      digits and GARAGE_SECRET_ACCESS_KEY to 64 hex digits. roles/garage/env.example
+      shows how to generate them.
+    quiet: true
+
+- name: Check bucket names
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is match('^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')
+    fail_msg: >-
+      '{{ item }}' in settings.buckets isn't a valid bucket name. Use 3 to 63
+      lowercase letters, digits, '-' and '.', starting and ending with a
+      letter or digit.
+    quiet: true
+  loop: "{{ garage_buckets }}"

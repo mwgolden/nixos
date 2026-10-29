@@ -1,0 +1,213 @@
+# Installs and switches to the router's NixOS configuration (LAN address,
+# DHCP, NAT, firewall) and checks it. Runs on the router with become: true,
+# from roles/host_deploy.
+
+- name: Wait for login
+  ansible.builtin.wait_for_connection:
+    timeout: 120
+
+# configuration.nix expects the LAN card as ens19. Stop here rather than
+# switch to a configuration that puts the LAN address on nothing.
+- name: Check the LAN interface exists
+  ansible.builtin.stat:
+    path: /sys/class/net/ens19
+  register: lan_interface
+
+- name: Require the LAN interface
+  ansible.builtin.assert:
+    that:
+      - lan_interface.stat.exists
+    fail_msg: >-
+      The router has no ens19 interface. Check that net1 on VM
+      {{ vm.vm_id }} is attached to {{ router_lan_bridge }}, and see
+      'ip link' on the router for the name it got.
+    quiet: true
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+
+# Before the switch, which starts WireGuard with this key.
+- name: Install the VPN's private key
+  when: router_vpn_enabled
+  block:
+    - name: Create the WireGuard folder
+      ansible.builtin.file:
+        path: "{{ router_vpn_key_path | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Copy the router's private key
+      ansible.builtin.copy:
+        src: "{{ router_vpn_dir }}/{{ vm.name }}.key"
+        dest: "{{ router_vpn_key_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+- name: Install router settings
+  ansible.builtin.template:
+    src: router-vars.nix.j2
+    dest: /etc/nixos/router-vars.nix
+    mode: "0644"
+
+- name: Install router NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Switch to the configuration and move to the router IP
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch
+
+# A live switch doesn't start this unit the first time: it is only
+# pulled in when ens19 appears, and ens19 has been there since boot.
+# (A reboot would start it too.) Already running, this does nothing.
+- name: Put the LAN address on ens19
+  ansible.builtin.systemd_service:
+    name: network-addresses-ens19.service
+    state: started
+
+# The LAN can't be reached from here, so check the router's side of it.
+- name: Check the LAN address
+  ansible.builtin.command:
+    cmd: ip -4 -br addr show dev ens19
+  register: lan_address
+  changed_when: false
+  failed_when: (router_lan_ip ~ '/' ~ router_lan_prefix_length) not in lan_address.stdout
+
+# Expected output: "10.1.0.12 dev ens19 src 10.1.0.1 ...". Anything else
+# means the address is the router itself or not on the isolated LAN. Only
+# checked after the switch: until then ens19 has no address, for example on
+# a new clone. Validation has already checked each lan_ip is a host here.
+- name: Look up where each port forward points
+  ansible.builtin.command:
+    cmd: ip -4 route get {{ item.lan_ip }}
+  register: forward_routes
+  changed_when: false
+  loop: "{{ router_port_forwards }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Require port forwards to point at the isolated LAN
+  ansible.builtin.assert:
+    that:
+      - item.stdout is match('^' ~ (item.item.lan_ip | regex_escape) ~ ' dev ens19 ')
+    fail_msg: >-
+      Port forward '{{ item.item.name }}' points at {{ item.item.lan_ip }},
+      which is not a VM on the isolated LAN
+      ({{ router_lan_ip }}/{{ router_lan_prefix_length }}, not the router
+      itself). Route: {{ item.stdout }}
+    quiet: true
+  loop: "{{ forward_routes.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Check IPv4 forwarding is on
+  ansible.builtin.command:
+    cmd: sysctl -n net.ipv4.ip_forward
+  register: ip_forward
+  changed_when: false
+  failed_when: ip_forward.stdout | trim != '1'
+
+- name: Check dnsmasq (DHCP and DNS) is running
+  ansible.builtin.command:
+    cmd: systemctl is-active dnsmasq
+  changed_when: false
+
+# Asks dnsmasq on the LAN address, the server LAN clients use.
+- name: Look up each host's name
+  ansible.builtin.command:
+    cmd: dig +short +time=2 +tries=2 @{{ router_lan_ip }} {{ item.fqdn }} A
+  register: dns_lookups
+  changed_when: false
+  # dnsmasq may still be restarting after the switch.
+  retries: 5
+  delay: 2
+  until: dns_lookups.stdout_lines == [item.ip]
+  failed_when: false
+  loop: "{{ router_dns_records }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Require each name to give the host's address
+  ansible.builtin.assert:
+    that:
+      - item.stdout_lines == [item.item.ip]
+    fail_msg: >-
+      {{ item.item.fqdn }} should be {{ item.item.ip }}, but the router's DNS
+      server answered '{{ item.stdout }}'. Check 'journalctl -u dnsmasq' on
+      the router.
+    quiet: true
+  loop: "{{ dns_lookups.results }}"
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+
+- name: Check the forward rules block private networks
+  ansible.builtin.command:
+    cmd: nft list chain inet nixos-fw forward-allow
+  register: forward_rules
+  changed_when: false
+  failed_when: "'LAN may not reach private networks' not in forward_rules.stdout"
+
+- name: Read the port forward rules
+  ansible.builtin.command:
+    cmd: nft list chain ip nixos-nat pre
+  register: nat_rules
+  changed_when: false
+  when: router_port_forwards | length > 0
+
+# nft prints each forward as "tcp . 80 : 10.1.0.10 . 80".
+- name: Check each port forward is in place
+  ansible.builtin.assert:
+    that:
+      - expected in nat_rules.stdout
+    fail_msg: "Port forward '{{ item.name }}' ({{ expected }}) is missing from the NAT rules."
+    quiet: true
+  vars:
+    expected: >-
+      {{ item.proto }} . {{ item.wan_port | int }} : {{ item.lan_ip }} .
+      {{ item.lan_port | int }}
+  loop: "{{ router_port_forwards }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Check the VPN
+  when: router_vpn_enabled
+  block:
+    # Only public values; 'wg show dump' would print the private key.
+    - name: Read the VPN's key, port and peers
+      ansible.builtin.command:
+        cmd: wg show wg0 {{ item }}
+      register: wg_show
+      changed_when: false
+      loop: [public-key, listen-port, peers]
+
+    - name: Require the VPN to use the router's key, port and peers
+      ansible.builtin.assert:
+        that:
+          - wg_show.results[0].stdout == router_vpn_public_key
+          - wg_show.results[1].stdout | int == router_vpn.port
+          - wg_show.results[2].stdout_lines | sort == router_vpn_peers | map(attribute='public_key') | sort
+        fail_msg: >-
+          wg0 on the router doesn't match settings.vpn in
+          networks/{{ vm.network.name }}.yaml (its key, port
+          {{ router_vpn.port }} or peers). See 'sudo wg show' and
+          'journalctl -u wireguard-wg0' on the router.
+        quiet: true
+
+# Uses TCP rather than ping: the home network drops outbound ping.
+# These are the servers dnsmasq forwards LAN clients' DNS queries to.
+- name: Check the router reaches the upstream DNS servers
+  ansible.builtin.wait_for:
+    host: "{{ item }}"
+    port: 53
+    timeout: 10
+  loop: "{{ router_dns_servers }}"

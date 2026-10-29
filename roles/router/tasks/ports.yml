@@ -1,0 +1,7 @@
+# Ports a router host may listen on, besides SSH (22): DNS from dnsmasq, on
+# its LAN and VPN addresses. WireGuard and DHCP are UDP, which isn't
+# checked. Used by roles/network_verify to find unexpected services.
+
+- name: Note the ports router listens on
+  ansible.builtin.set_fact:
+    verify_expected_ports: [53]

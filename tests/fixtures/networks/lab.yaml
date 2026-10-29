@@ -1,0 +1,100 @@
+# An isolated network: a Proxmox bridge with no physical port, whose only
+# way out is the router VM. Hosts here reach the internet through NAT but
+# not the home LAN. See README.md for the schema.
+
+network:
+  name: lab
+  type: isolated
+  bridge: vmbr1
+  cidr: 10.1.0.0/24
+  # The router's LAN address. Hosts use it as gateway and DNS server.
+  gateway: 10.1.0.1
+  nameserver: 10.1.0.1
+
+  # Network the router's WAN side is on.
+  upstream: home
+
+  # Addresses the router hands out by DHCP. Hosts need fixed IPs outside it.
+  dhcp:
+    start: 10.1.0.100
+    end: 10.1.0.199
+    lease_time: 12h
+
+  reserved: []
+
+  # The router's DNS server answers for every host here, as <name> and
+  # <name>.<domain>. Defaults to <network name>.home.arpa.
+  # domain: lab.home.arpa
+
+hosts:
+  - name: router
+    type: router
+    vm_id: 113
+    # LAN side; must equal network.gateway.
+    ip: 10.1.0.1
+    # WAN side, on the upstream network.
+    wan_ip: 192.168.1.13
+    settings:
+      # Upstream DNS servers the router forwards queries to.
+      dns_servers:
+        - 1.1.1.1
+        - 9.9.9.9
+      # Hosts here can't reach these networks.
+      blocked_networks:
+        - 192.168.0.0/16
+        - 172.16.0.0/12
+        - 10.0.0.0/8
+      # A WireGuard VPN into this network. See roles/router/README.md.
+      # vpn:
+      #   cidr: 10.201.0.0/24
+      #   peers:
+      #     - name: laptop
+      #       ip: 10.201.0.2
+
+  - name: postgres
+    type: postgres
+    vm_id: 112
+    ip: 10.1.0.12
+    data_disk:
+      size_gb: 20
+      storage: local-lvm
+    # Ports forwarded to this host from the router's WAN address
+    # (192.168.1.13). wan_port defaults to port.
+    expose:
+      - port: 5432
+    settings:
+      version: 17
+      port: 5432
+      # Who may log in with a password: network names or subnets. Unset, it
+      # is this network, plus home because postgres is exposed to it.
+      # allowed_networks: [home, lab]
+      adventureworks:
+        enabled: true
+        database: Adventureworks
+        repo: https://github.com/mwgolden/adventure-works-postgres
+        version: afcfd2dfcf031af91f03f536c1ade349cfcb3ad6
+
+      # Database users, applied by playbooks/postgres-users.yaml. Access
+      # levels (read, write, create, execute) and extra roles are explained
+      # in roles/postgres/USERS.md. Passwords are in
+      # secrets/lab/postgres-users.env.
+      #
+      # Database the schemas live in. It must already exist.
+      users_database: Adventureworks
+      # Schemas to create if missing. Owner defaults to the admin user.
+      schemas:
+        - name: reporting
+          owner: pgadmin
+      # Access not listed is removed on the next run. Users missing from the
+      # list are left alone; set state: absent to drop one.
+      users:
+        - name: aw_analyst
+          schemas:
+            - schema: sales
+              access: [read]
+            - schema: reporting
+              access: [read, write, create]
+          roles: [pg_monitor]
+
+        - name: old_user
+          state: absent

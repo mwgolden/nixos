@@ -1,0 +1,48 @@
+# VMs directly on the home LAN. The home router provides the gateway, DNS
+# and DHCP; this project only places VMs here. See README.md for the schema.
+
+network:
+  name: home
+  type: home
+  bridge: vmbr0
+  cidr: 192.168.1.0/24
+  gateway: 192.168.1.1
+  nameserver: 192.168.1.1
+
+  # Addresses no VM may use, besides the gateway and the template's address
+  # (template_ip in proxmox/vars.yaml), which are always reserved.
+  reserved: []
+
+hosts:
+  - name: webserver
+    type: webserver
+    vm_id: 111
+    ip: 192.168.1.11
+
+  - name: gitea
+    type: gitea
+    vm_id: 114
+    ip: 192.168.1.14
+    data_disk:
+      size_gb: 40
+      storage: local-lvm
+    settings:
+      http_port: 3000
+      public_host: ""
+      public_http_port: ""
+      public_ssh_port: ""
+      allow_registration: false
+
+  - name: garage
+    type: garage
+    vm_id: 115
+    ip: 192.168.1.15
+    data_disk:
+      size_gb: 128
+      storage: local-lvm
+    settings:
+      s3_port: 3900
+      s3_region: garage
+      zone: dc1
+      key_name: default
+      buckets: []

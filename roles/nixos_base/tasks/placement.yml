@@ -1,0 +1,119 @@
+# Finds a VM on whichever network it is on now, works out where it should
+# end up, and sets the host vars that main.yml and switch.yml need to
+# configure it and move it there:
+#   ansible_host, ansible_ssh_common_args  how to reach it now
+#   connect  where it was found: ip, bridge, via_router, ssh_args
+#   final    where it ends up: vm.attach plus ssh_args
+#   vm_mac   the MAC address of net0, checked on the VM before any change
+#
+# Places to look come from the placement_candidates filter: the address the
+# last deploy recorded in the VM's Proxmox notes, its declared address, the
+# template's address, and the other side of an interrupted move. VMs on an
+# isolated network are reached over SSH through that network's router.
+#
+# Runs for a VM host added by network_config's inventory.yml, delegated to
+# localhost, after the proxmox_vm role (it needs proxmox_vm_config and
+# proxmox_vm_new_clone). Needs proxmox/vars.yaml loaded.
+
+- name: Work out where to look for {{ vm.name }}
+  ansible.builtin.set_fact:
+    place_bridge: >-
+      {{ (proxmox_vm_config.net0 | default('') | regex_search('bridge=([^,]+)', '\1') or [vm.attach.bridge]) | first }}
+    vm_mac: >-
+      {{ (proxmox_vm_config.net0 | default('') | regex_search('=([0-9A-Fa-f:]{17})', '\1') or ['']) | first | lower }}
+    place_candidates: >-
+      {{ vm | placement_candidates(nixlab, proxmox_vm_config.net0 | default(''),
+                                   proxmox_vm_config.description | default(''),
+                                   proxmox_vm_new_clone, template_ip, network_bridge) }}
+    # Router name -> its WAN address, the way into its isolated network.
+    place_router_wan: >-
+      {{ dict(nixlab.networks.values() | selectattr('router') | map(attribute='router')
+              | zip(nixlab.networks.values() | selectattr('router') | map(attribute='router_wan_ip'))) }}
+    place_key: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
+
+# Routers that places to look, or the final place, go through.
+- name: Check whether the routers answer
+  ansible.builtin.wait_for:
+    host: "{{ place_router_wan[item] }}"
+    port: 22
+    timeout: 5
+  loop: >-
+    {{ (place_candidates | map(attribute='via_router') | list + [vm.attach.via_router])
+       | select | unique | list }}
+  register: place_router_checks
+  ignore_errors: true
+
+- name: Note which routers answer
+  ansible.builtin.set_fact:
+    place_routers_up: "{{ place_router_checks.results | select('succeeded') | map(attribute='item') | list }}"
+
+- name: Require the router of the network {{ vm.name }} goes on
+  ansible.builtin.assert:
+    that:
+      - vm.attach.via_router in place_routers_up
+    fail_msg: >-
+      {{ vm.name }} goes on the isolated network {{ vm.attach.network }}, but its
+      router ({{ vm.attach.via_router }}) isn't answering. Deploy it first:
+      ansible-playbook playbooks/deploy-host.yaml -e network={{ vm.attach.network }}
+      -e host={{ vm.attach.via_router }}
+    quiet: true
+  when: vm.attach.via_router | length > 0
+
+# Places behind a router that is down can't be reached.
+- name: List the places to look for {{ vm.name }}
+  ansible.builtin.set_fact:
+    place_candidates: >-
+      {{ place_candidates | selectattr('via_router', 'in', [''] + place_routers_up) | list }}
+
+- name: Start looking
+  ansible.builtin.set_fact:
+    place_found: false
+
+- name: Look for {{ vm.name }}
+  ansible.builtin.include_tasks: placement-try.yml
+  loop: "{{ place_candidates }}"
+  loop_control:
+    loop_var: candidate
+    label: "{{ candidate.ip }} on {{ candidate.bridge }}"
+
+- name: Require {{ vm.name }} to be found
+  ansible.builtin.assert:
+    that:
+      - place_found
+    fail_msg: >-
+      {{ vm.name }} (VM {{ vm.vm_id }}) didn't answer SSH at
+      {{ place_candidates | map(attribute='ip') | join(', ') }}. Check in
+      Proxmox that it is running and which bridge net0 is on.
+    quiet: true
+
+- name: Note how to reach {{ vm.name }}
+  ansible.builtin.set_fact:
+    # SSH options: direct, or through the router (nixlab_ssh_args).
+    connect: >-
+      {{ place_connect | combine({'ssh_args':
+           place_router_wan.get(place_connect.via_router, '') | nixlab_ssh_args(place_key)}) }}
+    final: >-
+      {{ vm.attach | combine({'ssh_args':
+           place_router_wan.get(vm.attach.via_router, '') | nixlab_ssh_args(place_key)}) }}
+    vm_id: "{{ vm.vm_id }}"
+
+- name: Connect to {{ vm.name }} where it was found
+  ansible.builtin.set_fact:
+    ansible_host: "{{ connect.ip }}"
+    ansible_ssh_common_args: "{{ connect.ssh_args }}"
+
+# A new clone has the template's host key, which may differ from the key
+# recorded for its final address by a VM that used it before.
+- name: Forget old SSH host key for {{ final.ip }}
+  ansible.builtin.known_hosts:
+    name: "{{ final.ip }}"
+    state: absent
+  when: proxmox_vm_new_clone
+
+- name: Show where {{ vm.name }} is and where it goes
+  ansible.builtin.debug:
+    msg: >-
+      {{ vm.name }} found at {{ connect.ip }} on {{ connect.bridge
+      }}{{ (' (through ' ~ connect.via_router ~ ')') if connect.via_router else '' }}.
+      {% if connect.ip == final.ip and connect.bridge == final.bridge %}It stays there.{% else %}It
+      moves to {{ final.ip }} on {{ final.bridge }} ({{ final.network }} network).{% endif %}

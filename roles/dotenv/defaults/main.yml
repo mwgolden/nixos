@@ -1,0 +1,5 @@
+# Path of the KEY=value file to read. Required.
+dotenv_path: ""
+
+# Added to the error when the file is missing, to say how to create it.
+dotenv_missing_hint: "Copy .env.example next to it to .env and fill it in."

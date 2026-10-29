@@ -1,0 +1,36 @@
+# Checks every network file in networks/ before anything is deployed:
+# unique names, VM IDs, addresses, bridges and subnets; addresses inside
+# their network, outside its DHCP range and off the gateway and template
+# address; port forwards pointing at declared hosts. Then checks the files
+# against Proxmox: VM IDs and names match, the template exists, and each
+# network's bridge is usable. Changes nothing.
+#
+#   source proxmox/.env
+#   ansible-playbook playbooks/validate-network.yaml
+#
+# Without Proxmox access, check only the files:
+#   ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox=false
+
+- name: Validate network files
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Load and check the network files
+      ansible.builtin.include_role:
+        name: network_config
+
+    - name: Compare each network with Proxmox
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: ownership
+      vars:
+        network_config_name: "{{ item }}"
+      loop: "{{ network_configs.keys() | list }}"
+      when: network_config_check_proxmox | default(true) | bool
+
+    - name: Report success
+      ansible.builtin.debug:
+        msg: "All network files are valid: {{ network_configs.keys() | join(', ') }}."

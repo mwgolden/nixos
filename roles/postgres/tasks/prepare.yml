@@ -1,0 +1,26 @@
+# Checks the postgres host's secrets and settings before anything changes.
+# Runs on localhost from roles/host_deploy. Facts it sets land on the VM's
+# inventory entry, where configure.yml and verify.yml use them.
+
+- name: Read the database admin login from the secrets file
+  ansible.builtin.include_role:
+    name: dotenv
+  vars:
+    dotenv_path: "{{ postgres_secrets_file }}"
+    dotenv_missing_hint: "Copy roles/postgres/env.example there and set the admin login."
+
+- name: Note the database admin login
+  ansible.builtin.set_fact:
+    postgres_admin_user: "{{ dotenv_values.POSTGRES_ADMIN_USER | default('') }}"
+    postgres_admin_password: "{{ dotenv_values.POSTGRES_ADMIN_PASSWORD | default('') }}"
+  no_log: true
+
+- name: Check database admin login
+  ansible.builtin.assert:
+    that:
+      - postgres_admin_user is match('^[a-z_][a-z0-9_]*$')
+      - postgres_admin_password | length > 0
+    fail_msg: >-
+      Set POSTGRES_ADMIN_USER (lowercase letters, digits, underscores) and
+      POSTGRES_ADMIN_PASSWORD in secrets/{{ vm.network.name }}/{{ vm.name }}.env.
+    quiet: true

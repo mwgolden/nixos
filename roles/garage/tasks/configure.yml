@@ -1,0 +1,173 @@
+# Installs and switches to the garage VM's NixOS configuration, then sets up
+# its service. Runs on the VM with become: true, from roles/host_deploy.
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+    nixos_base_data_disk_serial: garage-data
+
+- name: Install Garage settings
+  ansible.builtin.template:
+    src: garage.nix.j2
+    dest: /etc/nixos/garage.nix
+    mode: "0644"
+
+- name: Install garage NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Switch to the configuration and move to the garage address
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch
+
+- name: Check the data disk is mounted
+  ansible.builtin.command:
+    cmd: findmnt --source {{ data_disk_device }} --target /var/lib/garage
+  changed_when: false
+
+# ---- Storage layout ----
+# Garage stores nothing until its node has a role in the cluster layout.
+
+- name: Wait for Garage
+  ansible.builtin.command:
+    cmd: "{{ garage_api }} GetClusterStatus"
+  register: garage_status
+  retries: 20
+  delay: 3
+  until: garage_status is succeeded
+  changed_when: false
+
+- name: Read the cluster layout
+  ansible.builtin.command:
+    cmd: "{{ garage_api }} GetClusterLayout"
+  register: garage_layout_result
+  changed_when: false
+
+# A single node, so the only node in the status is this one.
+- name: Note this node's role
+  ansible.builtin.set_fact:
+    garage_node_id: "{{ node.id }}"
+    garage_layout: "{{ layout }}"
+    garage_role: "{{ layout.roles | selectattr('id', 'equalto', node.id) | first | default(none) }}"
+  vars:
+    node: "{{ (garage_status.stdout | from_json).nodes | first }}"
+    layout: "{{ garage_layout_result.stdout | from_json }}"
+
+- name: Give this node its storage role
+  when: >-
+    garage_role is none
+    or garage_role.zone != garage_zone
+    or (garage_role.capacity | default(0) | int) != (garage_capacity | int)
+  block:
+    - name: Stage the storage role
+      ansible.builtin.command:
+        cmd: "{{ garage_api }} UpdateClusterLayout -"
+        stdin: "{{ {'roles': [{'id': garage_node_id, 'zone': garage_zone, 'capacity': garage_capacity | int, 'tags': []}]} | to_json }}"
+
+    - name: Apply the new layout
+      ansible.builtin.command:
+        cmd: "{{ garage_api }} ApplyClusterLayout -"
+        stdin: "{{ {'version': garage_layout.version | int + 1} | to_json }}"
+
+- name: Wait for Garage to be healthy
+  ansible.builtin.command:
+    cmd: "{{ garage_api }} GetClusterHealth"
+  register: garage_health
+  retries: 20
+  delay: 3
+  until: >-
+    garage_health is succeeded
+    and (garage_health.stdout | from_json).status == 'healthy'
+  changed_when: false
+
+# ---- Access key ----
+
+- name: List access keys
+  ansible.builtin.command:
+    cmd: "{{ garage_api }} ListKeys"
+  register: garage_keys
+  changed_when: false
+
+- name: Import the access key from .env
+  ansible.builtin.command:
+    cmd: "{{ garage_api }} ImportKey -"
+    stdin: "{{ {'accessKeyId': garage_key_id, 'secretAccessKey': garage_key_secret, 'name': garage_key_name} | to_json }}"
+  when: garage_key_id not in (garage_keys.stdout | from_json | map(attribute='id') | list)
+  no_log: true
+
+- name: Read the access key
+  ansible.builtin.command:
+    cmd: "{{ garage_api }} GetKeyInfo -"
+    stdin: "{{ {'id': garage_key_id, 'showSecretKey': true} | to_json }}"
+  register: garage_key_result
+  changed_when: false
+  no_log: true
+
+- name: Note the access key
+  ansible.builtin.set_fact:
+    garage_key: "{{ garage_key_result.stdout | from_json }}"
+  no_log: true
+
+# Garage can't change a key's secret. Replacing it means deleting the key
+# and importing it again, which also drops its bucket rights.
+- name: Require the secret in .env to match Garage's
+  ansible.builtin.assert:
+    that:
+      - garage_key.secretAccessKey == garage_key_secret
+    fail_msg: >-
+      Garage already has key {{ garage_key_id }} with a different secret
+      than GARAGE_SECRET_ACCESS_KEY in secrets/{{ vm.network.name }}/{{ vm.name }}.env. Put the old
+      secret back, or delete the key on the VM
+      (sudo garage key delete --yes {{ garage_key_id }}) and re-run.
+    quiet: true
+  no_log: true
+
+- name: Let the access key create buckets and set its name
+  ansible.builtin.command:
+    cmd: "{{ garage_api }} UpdateKey -"
+    stdin: "{{ {'id': garage_key_id, 'body': {'name': garage_key_name, 'allow': {'createBucket': true}}} | to_json }}"
+  when: >-
+    garage_key.name != garage_key_name
+    or not garage_key.permissions.createBucket | default(false)
+
+# ---- Buckets ----
+
+- name: List buckets
+  ansible.builtin.command:
+    cmd: "{{ garage_api }} ListBuckets"
+  register: garage_bucket_list
+  changed_when: false
+
+- name: Create buckets
+  ansible.builtin.command:
+    cmd: "{{ garage_api }} CreateBucket -"
+    stdin: "{{ {'globalAlias': item} | to_json }}"
+  loop: "{{ garage_buckets }}"
+  when: item not in (garage_bucket_list.stdout | from_json | map(attribute='globalAliases') | flatten | list)
+
+- name: Read buckets
+  ansible.builtin.command:
+    cmd: "{{ garage_api }} GetBucketInfo -"
+    stdin: "{{ {'globalAlias': item} | to_json }}"
+  loop: "{{ garage_buckets }}"
+  register: garage_bucket_info
+  changed_when: false
+
+- name: Give the access key full rights on the buckets
+  ansible.builtin.command:
+    cmd: "{{ garage_api }} AllowBucketKey -"
+    stdin: "{{ {'bucketId': bucket.id, 'accessKeyId': garage_key_id, 'permissions': {'read': true, 'write': true, 'owner': true}} | to_json }}"
+  loop: "{{ garage_bucket_info.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  vars:
+    bucket: "{{ item.stdout | from_json }}"
+    perms: >-
+      {{ (bucket.get('keys', []) | selectattr('accessKeyId', 'equalto', garage_key_id)
+          | map(attribute='permissions') | first | default({})) }}
+  when: not (perms.read | default(false) and perms.write | default(false) and perms.owner | default(false))

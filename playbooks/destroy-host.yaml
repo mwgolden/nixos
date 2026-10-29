@@ -1,0 +1,103 @@
+# Stops and permanently deletes one host's VM, including its data disk and
+# everything on it. Asks you to type the host name to confirm.
+#
+#   source proxmox/.env
+#   ansible-playbook playbooks/destroy-host.yaml -e network=lab -e host=postgres
+#
+# To skip the prompt (for scripts): -e confirm_destroy=<host name>
+#
+# The host's entry stays in its network file; remove it there too, or the
+# next deploy creates it again. A router can't be deleted while other VMs
+# of its network still exist, since they would lose their only way out.
+# Only VMs tagged as the project's for this network (nixlab, net-<network>)
+# are deleted; deploying a VM tags it.
+
+- name: Destroy a host
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  vars_prompt:
+    - name: confirm_destroy
+      prompt: "This permanently deletes the VM named by -e host, with all its disks and data. Type the host name to confirm"
+      private: false
+
+  tasks:
+    - name: Check the arguments
+      ansible.builtin.assert:
+        that:
+          - network | default('') | length > 0
+          - host | default('') | length > 0
+        fail_msg: "Run with -e network=<file in networks/> -e host=<host name>."
+        quiet: true
+
+    # The Proxmox checks are skipped: a VM in an odd state should still be
+    # deletable. proxmox_vm_remove checks the VM's name itself.
+    - name: Load the network files
+      ansible.builtin.include_role:
+        name: network_config
+      vars:
+        network_config_name: "{{ network }}"
+        network_config_check_proxmox: false
+
+    - name: Find the host
+      ansible.builtin.set_fact:
+        destroy_inventory: "{{ network_configs | network_config_inventory }}"
+
+    - name: Require the host in that network
+      ansible.builtin.assert:
+        that:
+          - host in destroy_inventory.hosts
+          - destroy_inventory.hosts[host].network.name == network
+        fail_msg: "networks/{{ network }}.yaml has no host named '{{ host }}'."
+        quiet: true
+
+    - name: Note the host
+      ansible.builtin.set_fact:
+        destroy_vm: "{{ destroy_inventory.hosts[host] }}"
+
+    - name: Check no VMs still depend on the router
+      when: destroy_vm.type == 'router'
+      module_defaults:
+        group/community.proxmox.proxmox:
+          api_host: "{{ proxmox_api_host }}"
+          api_user: "{{ proxmox_api_user }}"
+          api_token_id: "{{ proxmox_api_token_id }}"
+          api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+          validate_certs: "{{ proxmox_validate_certs }}"
+      block:
+        - name: Look up VMs on the node
+          community.proxmox.proxmox_vm_info:
+            node: "{{ proxmox_node }}"
+            type: qemu
+          register: destroy_node_vms
+
+        - name: Refuse while other VMs of the network exist
+          ansible.builtin.assert:
+            that:
+              - dependents | length == 0
+            fail_msg: >-
+              {{ host }} is the router of network {{ network }}, and these of its
+              VMs still exist: {{ dependents | join(', ') }}. Destroy them first.
+            quiet: true
+          vars:
+            existing_ids: "{{ destroy_node_vms.proxmox_vms | map(attribute='vmid') | map('int') | list }}"
+            dependents: >-
+              {{ destroy_inventory.hosts.values()
+                 | selectattr('network.name', 'equalto', network)
+                 | rejectattr('name', 'equalto', host)
+                 | selectattr('vm_id', 'in', existing_ids)
+                 | map(attribute='name') | list }}
+
+    - name: Delete the VM
+      ansible.builtin.include_role:
+        name: proxmox_vm_remove
+      vars:
+        vm_remove_id: "{{ destroy_vm.vm_id }}"
+        vm_remove_name: "{{ destroy_vm.name }}"
+        vm_remove_confirm: "{{ confirm_destroy }}"
+        vm_remove_required_tags: [nixlab, "net-{{ network }}"]
+        # A future VM on this address gets a new host key.
+        vm_remove_known_hosts:
+          - "{{ destroy_vm.attach.ip }}"

@@ -1,0 +1,59 @@
+# Defaults for router hosts. Set any of router_settings_defaults under the
+# router's settings: in its network file. The LAN address, DHCP range,
+# bridge, DNS records and port forwards come from the network itself.
+
+router_settings_defaults:
+  # Upstream DNS servers the router forwards LAN clients' queries to. Public
+  # resolvers, so LAN clients don't depend on anything on the home LAN.
+  dns_servers:
+    - 1.1.1.1
+    - 9.9.9.9
+  # LAN clients can't reach these networks. Blocking all private ranges
+  # also covers any other home subnets and every other lab network.
+  blocked_networks:
+    - 192.168.0.0/16
+    - 172.16.0.0/12
+    - 10.0.0.0/8
+  # A WireGuard VPN into this network, off when unset. For example:
+  #   vpn:
+  #     cidr: 10.201.0.0/24     # the VPN's own subnet; the router is .1
+  #     port: 51820             # UDP, on the router's WAN address
+  #     endpoint: ""            # what clients connect to; defaults to wan_ip
+  #     peers:
+  #       - name: laptop
+  #         ip: 10.201.0.2
+  #         # public_key: ...   # leave out to have the deploy make the keys
+  # vpn:
+
+router_settings: "{{ router_settings_defaults | combine(vm.settings) }}"
+
+# The names the configuration templates and tasks use.
+router_vm_name: "{{ vm.name }}"
+# WAN side, on the upstream network (ens18, net0).
+router_ip: "{{ vm.attach.ip }}"
+# LAN side, on the network's own bridge (ens19, net1). Not called
+# isolated_bridge: proxmox/vars.yaml sets that, and play vars win over
+# role defaults.
+router_lan_bridge: "{{ vm.network.bridge }}"
+router_lan_ip: "{{ vm.ip }}"
+router_lan_prefix_length: "{{ vm.network.prefix_length }}"
+router_dhcp_range_start: "{{ vm.network.dhcp.start }}"
+router_dhcp_range_end: "{{ vm.network.dhcp.end }}"
+router_dhcp_lease_time: "{{ vm.network.dhcp.lease_time | default('12h') }}"
+router_dns_servers: "{{ router_settings.dns_servers }}"
+router_blocked_networks: "{{ router_settings.blocked_networks }}"
+# Built from the expose: entries of the network's hosts: name, host, proto,
+# wan_port, lan_ip and lan_port.
+router_port_forwards: "{{ vm.network.port_forwards }}"
+# The router's DNS server answers for every host on its network.
+router_domain: "{{ vm.network.domain }}"
+# The VPN from settings.vpn, worked out by the network_config_inventory
+# filter: cidr, address, port, endpoint, peers, allowed_ips. {} when off.
+router_vpn: "{{ vm.network.vpn }}"
+# when: needs a true/false, not the dict itself.
+router_vpn_enabled: "{{ vm.network.vpn | length > 0 }}"
+# Keys and client configuration files. See secrets/README.md.
+router_vpn_dir: "{{ role_path }}/../../secrets/{{ vm.network.name }}/vpn"
+# Where the router keeps its private key. Not in /etc/nixos or the Nix store.
+router_vpn_key_path: /var/lib/wireguard/wg0.key
+router_dns_records: "{{ vm.network.dns_records }}"

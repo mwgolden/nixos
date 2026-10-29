@@ -1,0 +1,86 @@
+# Installs and switches to the proxy's NixOS configuration, checks each
+# route from the VM itself, and copies Caddy's root certificate back.
+# Runs on the VM with become: true, from roles/host_deploy.
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+
+- name: Install the proxy's routes
+  ansible.builtin.template:
+    src: proxy.nix.j2
+    dest: /etc/nixos/proxy.nix
+    mode: "0644"
+
+- name: Install proxy NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Switch to the configuration and move to the proxy's address
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch
+
+- name: Check Caddy is running
+  ansible.builtin.command:
+    cmd: systemctl is-active caddy
+  changed_when: false
+
+# Asks Caddy on the VM itself for each name, so DNS doesn't matter here.
+# 000 means no HTTPS answer yet: Caddy may still be making the
+# certificate. 502 means the backend didn't answer.
+- name: Try each route
+  ansible.builtin.command:
+    cmd: >-
+      curl --silent --insecure --output /dev/null --max-time 10
+      --write-out '%{http_code}'
+      --resolve {{ item.fqdn }}:443:127.0.0.1 https://{{ item.fqdn }}/
+  register: route_checks
+  changed_when: false
+  failed_when: false
+  retries: 10
+  delay: 3
+  until: route_checks.stdout != '000'
+  loop: "{{ proxy_routes }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Require Caddy to answer each route over HTTPS
+  ansible.builtin.assert:
+    that:
+      - item.stdout != '000'
+    fail_msg: >-
+      Caddy didn't answer https://{{ item.item.fqdn }}/ on the proxy. See
+      'journalctl -u caddy' on {{ vm.name }}.
+    quiet: true
+  loop: "{{ route_checks.results }}"
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+
+- name: Note each route's answer
+  ansible.builtin.set_fact:
+    proxy_route_status: >-
+      {{ dict(route_checks.results | map(attribute='item.fqdn')
+              | zip(route_checks.results | map(attribute='stdout')) | list) }}
+
+# Caddy makes the authority the first time it needs a certificate.
+- name: Find Caddy's root certificate
+  ansible.builtin.find:
+    paths: /var/lib/caddy
+    recurse: true
+    patterns: root.crt
+  register: ca_files
+  when: proxy_routes | length > 0
+
+- name: Copy the root certificate to this machine
+  ansible.builtin.fetch:
+    src: "{{ (ca_files.files | selectattr('path', 'search', '/pki/authorities/local/') | first).path }}"
+    dest: "{{ proxy_ca_file }}"
+    flat: true
+  when:
+    - proxy_routes | length > 0
+    - ca_files.files | selectattr('path', 'search', '/pki/authorities/local/') | list | length > 0

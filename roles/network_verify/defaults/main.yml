@@ -1,0 +1,11 @@
+# Settings for the checks at the end of deploy-network.yaml and in
+# verify-network.yaml.
+
+# A public name every VM must resolve and reach on TCP, for outbound
+# internet. cache.nixos.org is where NixOS downloads from anyway.
+network_verify_internet_host: cache.nixos.org
+network_verify_internet_port: 443
+# Seconds to wait for each connection. Blocked connections take this long
+# to give up, since the firewall drops them without an answer.
+network_verify_timeout: 4
+network_verify_probe: "{{ role_path }}/files/probe.py"

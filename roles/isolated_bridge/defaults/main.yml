@@ -1,0 +1,11 @@
+# Name of the bridge, such as vmbr1. Required.
+isolated_bridge_name: ""
+
+# present: create the bridge if it is missing. absent: remove it, only if
+# it is an isolated bridge and no VM has a network card on it.
+isolated_bridge_state: present
+
+# Applying network changes in Proxmox applies every staged change on the
+# node, not only this bridge. When other changes are already staged (for
+# example unsaved edits in the web UI), the role stops unless this is true.
+isolated_bridge_apply_pending: false

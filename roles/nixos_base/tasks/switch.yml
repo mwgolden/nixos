@@ -1,0 +1,116 @@
+# Builds and switches to the NixOS configuration in /etc/nixos. If that
+# moves the VM to another address or network, also moves its network card
+# to the right bridge and reconnects there. Afterwards the play talks to
+# the VM on its final address.
+#
+# Run with include_role (name: nixos_base, tasks_from: switch) from a play
+# on a VM placed by placement.yml, with become: true. Uses the host vars it
+# sets: vm_id, connect and final, and proxmox_vm_config from the proxmox_vm
+# role. Needs proxmox/vars.yaml loaded and PROXMOX_TOKEN_SECRET set.
+# Afterwards it records the VM's address in its Proxmox notes, which is
+# where placement.yml looks for it next time.
+
+# Building first downloads everything and shows any errors here, so the
+# switch below is quick and unlikely to fail.
+- name: Build NixOS configuration
+  ansible.builtin.command:
+    cmd: nixos-rebuild build
+    chdir: /tmp
+  changed_when: false
+
+- name: Remove build result link
+  ansible.builtin.file:
+    path: /tmp/result
+    state: absent
+
+- name: Switch to NixOS configuration
+  ansible.builtin.command:
+    cmd: nixos-rebuild switch
+  when: connect.ip == final.ip
+
+- name: Switch to NixOS configuration and move the VM
+  when: connect.ip != final.ip
+  block:
+    # The new address drops this SSH connection, so the switch runs in the
+    # background and keeps going on the VM after the connection is gone.
+    - name: Switch to NixOS configuration in the background
+      ansible.builtin.command:
+        cmd: nixos-rebuild switch
+      async: 300
+      poll: 0
+      register: switch_job
+
+    # Proxmox moves the card while the VM runs. Until both the address and
+    # the bridge have changed, the VM can't be reached.
+    - name: Move the VM's network card to {{ final.bridge }}
+      community.proxmox.proxmox_nic:
+        vmid: "{{ vm_id }}"
+        interface: net0
+        model: virtio
+        bridge: "{{ final.bridge }}"
+      when: connect.bridge != final.bridge
+      delegate_to: localhost
+      become: false
+      module_defaults:
+        group/community.proxmox.proxmox:
+          api_host: "{{ proxmox_api_host }}"
+          api_user: "{{ proxmox_api_user }}"
+          api_token_id: "{{ proxmox_api_token_id }}"
+          api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+          validate_certs: "{{ proxmox_validate_certs }}"
+
+    # The address may have been used by another VM with a different key.
+    - name: Forget old SSH host key for {{ final.ip }}
+      ansible.builtin.known_hosts:
+        name: "{{ final.ip }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+
+    - name: Wait for SSH on {{ final.ip }}
+      ansible.builtin.wait_for:
+        host: "{{ final.ip }}"
+        port: 22
+        delay: 5
+        timeout: 300
+      delegate_to: "{{ final.via_router or 'localhost' }}"
+      become: false
+
+    - name: Connect to {{ final.ip }} from now on
+      ansible.builtin.set_fact:
+        ansible_host: "{{ final.ip }}"
+        ansible_ssh_common_args: "{{ final.ssh_args }}"
+
+- name: Reset the SSH connection
+  ansible.builtin.meta: reset_connection
+
+- name: Wait for login
+  ansible.builtin.wait_for_connection:
+    timeout: 120
+
+# SSH answers on the new address partway through the switch. Wait for the
+# rest of it (firewall, services) before anything checks the VM.
+- name: Wait for the switch to finish
+  ansible.builtin.async_status:
+    jid: "{{ switch_job.ansible_job_id }}"
+  register: switch_result
+  until: switch_result.finished
+  retries: 60
+  delay: 5
+  when: connect.ip != final.ip
+
+# Placement looks for the address here first next time, even if this VM's
+# entry has moved to another network file by then. The DNS name is for
+# people reading the notes; it only works on the VM's own network. Other
+# lines in the notes are kept.
+- name: Record the VM's address and DNS name in its Proxmox notes
+  ansible.builtin.include_role:
+    name: proxmox_vm
+    tasks_from: api-set
+  vars:
+    proxmox_vm_api_vmid: "{{ vm_id }}"
+    proxmox_vm_api_config:
+      description: "{{ notes_new }}"
+    notes_old: "{{ proxmox_vm_config.description | default('') }}"
+    notes_new: "{{ notes_old | record_address(final.ip, final.bridge, vm.dns_name) }}"
+  when: notes_new != notes_old

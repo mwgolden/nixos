@@ -1,0 +1,103 @@
+# Checks a network from this machine and reports every problem found,
+# including those main.yml noted on each VM. Fails if there are any. Runs
+# on localhost after main.yml has run on the network's hosts. Set:
+#   network_verify_network  the network's name
+#   network_verify_hosts    names of the hosts main.yml checked
+#
+# From this machine: each VM exists, is running and has its network cards
+# on the right bridges; and for an isolated network, that the router's WAN
+# address answers only on forwarded ports, that internal proxy routes
+# refuse connections from here, and that external ones answer.
+
+- name: Note what to check from here
+  ansible.builtin.set_fact:
+    verify_net: "{{ nixlab.networks[network_verify_network] }}"
+    verify_listening: >-
+      {{ dict(network_verify_hosts
+              | zip(network_verify_hosts | map('extract', hostvars, 'verify_listening')
+                    | map('default', []))) }}
+
+- name: Read the VMs in Proxmox
+  community.proxmox.proxmox_vm_info:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_token_id: "{{ proxmox_api_token_id }}"
+    api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+    node: "{{ proxmox_node }}"
+    type: qemu
+    config: current
+  register: verify_vms
+
+- name: Try the router's ports that aren't forwarded
+  ansible.builtin.command:
+    cmd: >-
+      {{ ansible_playbook_python }} {{ network_verify_probe }} tcp
+      {{ verify_net.router_wan_ip }} {{ item }} {{ network_verify_timeout }}
+  register: verify_wan
+  changed_when: false
+  loop: "{{ nixlab | unforwarded_ports(network_verify_network, verify_listening) }}"
+
+# Only when a route is external: otherwise the router doesn't forward 443
+# at all, which the check above covers.
+- name: Try each proxy route through the router
+  ansible.builtin.command:
+    cmd: >-
+      {{ ansible_playbook_python }} {{ network_verify_probe }} https
+      {{ verify_net.router_wan_ip }} 443 {{ item.fqdn }} {{ network_verify_timeout }}
+  register: verify_routes_home
+  changed_when: false
+  loop: "{{ verify_net.proxy_routes if verify_net.proxy_routes | selectattr('external') | list else [] }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Gather the problems
+  ansible.builtin.set_fact:
+    verify_report: >-
+      {%- set report = {} -%}
+      {%- set pve = nixlab | network_verify_proxmox(network_verify_hosts, verify_vms.proxmox_vms) -%}
+      {%- for name in network_verify_hosts -%}
+        {%- set _ = report.update({name: pve.get(name, []) + (hostvars[name].verify_problems | default(['was not checked']))}) -%}
+      {%- endfor -%}
+      {%- set home = [] -%}
+      {%- for r in verify_wan.results -%}
+        {%- if r.stdout | trim == 'open' -%}
+          {%- set _ = home.append('the router answers on ' ~ verify_net.router_wan_ip ~ ':' ~ r.item ~ ', which no expose: or external route asks for.') -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- for r in verify_routes_home.results -%}
+        {%- set got = r.stdout | trim -%}
+        {%- if r.item.external and (got is not match('^[0-9]{3}$') or got in ['502', '504']) -%}
+          {%- set _ = home.append('external route https://' ~ r.item.fqdn ~ '/ gave ' ~ got ~ ' from here.') -%}
+        {%- elif not r.item.external and got is match('^[0-9]{3}$') -%}
+          {%- set _ = home.append('internal route https://' ~ r.item.fqdn ~ '/ answered from here (HTTP ' ~ got ~ '); it should refuse.') -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- if home -%}
+        {%- set _ = report.update({'from this machine': home}) -%}
+      {%- endif -%}
+      {{ report }}
+
+- name: Show the checks of network {{ network_verify_network }}
+  ansible.builtin.debug:
+    msg: >-
+      {%- set out = [] -%}
+      {%- for name, problems in verify_report.items() -%}
+        {%- if problems -%}
+          {%- for problem in problems -%}{%- set _ = out.append(name ~ ': ' ~ problem) -%}{%- endfor -%}
+        {%- else -%}
+          {%- set _ = out.append(name ~ ': ok') -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Require every check to pass
+  ansible.builtin.assert:
+    that:
+      - verify_report.values() | map('length') | sum == 0
+    fail_msg: >-
+      {{ verify_report.values() | map('length') | sum }} problem(s) in network
+      {{ network_verify_network }}, listed above. The VMs are deployed;
+      fix the problems and check again with
+      ansible-playbook playbooks/verify-network.yaml -e network={{ network_verify_network }}
+    quiet: true

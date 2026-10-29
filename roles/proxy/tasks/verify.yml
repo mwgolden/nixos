@@ -1,0 +1,51 @@
+# Checks the proxy answers and says how to use its routes. Runs on
+# localhost from roles/host_deploy; on an isolated network the check goes
+# through the router.
+
+- name: Check the proxy accepts HTTPS connections
+  ansible.builtin.wait_for:
+    host: "{{ final.ip }}"
+    port: 443
+    timeout: 30
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+  when: proxy_routes | length > 0
+
+- name: Show each route
+  ansible.builtin.debug:
+    msg: >-
+      https://{{ item.fqdn }}/ -> {{ item.host }} {{ item.backend_ip }}:{{ item.port }}
+      {{- ' [external]' if item.external else ' [internal]' }}
+      {%- set status = proxy_route_status[item.fqdn] | default('') %}
+      {%- if status == '502' %} (the backend isn't answering: is {{ item.host }} deployed, and listening on port {{ item.port }}?)
+      {%- elif status %} (answering, HTTP {{ status }})
+      {%- endif %}
+  loop: "{{ proxy_routes }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Show how to use the proxy
+  ansible.builtin.debug:
+    msg: >-
+      {% if vm.network.type == 'isolated' -%}
+      The router's DNS server points these names at {{ final.ip }}, for VMs
+      on {{ vm.network.name }}. Redeploy the router after adding or
+      removing routes.
+      {%- else -%}
+      This project doesn't run DNS on {{ vm.network.name }}. To use these
+      names, point each at {{ final.ip }} on your home router (pfSense:
+      Services > DNS Resolver > Host Overrides).
+      {%- endif %}
+      {% set external = proxy_routes | selectattr('external') | list -%}
+      {% if external -%}
+      External routes ({{ external | map(attribute='fqdn') | join(', ') }})
+      are also reached through the router at {{ vm.network.router_wan_ip }},
+      ports 443 and 80. Home machines need each name pointed at
+      {{ vm.network.router_wan_ip }} on the home router (pfSense: Services >
+      DNS Resolver > Host Overrides). Other routes refuse connections from
+      outside {{ proxy_internal_sources[:-1] | join(' and ') }}.
+      {% endif -%}
+      Certificates come from the proxy's own authority. To stop browsers
+      warning, trust its root certificate, saved at
+      secrets/{{ vm.network.name }}/{{ vm.name }}-ca.crt. A new proxy VM
+      makes a new authority, which has to be trusted again.
+  when: proxy_routes | length > 0

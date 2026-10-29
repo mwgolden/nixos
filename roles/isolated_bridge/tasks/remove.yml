@@ -1,0 +1,89 @@
+# Removes an isolated bridge, after checking that it really is an isolated
+# bridge (no ports, no address) and that no VM has a network card on it.
+# A missing bridge is nothing to do. Included from main.yml.
+
+- name: Remove {{ isolated_bridge_name }} if unused
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
+  block:
+    - name: Look up network interfaces on the node
+      community.proxmox.proxmox_node_network_info:
+        node: "{{ proxmox_node }}"
+        iface: "{{ isolated_bridge_name }}"
+      register: isolated_bridge_remove_info
+
+    - name: Note the bridge
+      ansible.builtin.set_fact:
+        isolated_bridge_existing: "{{ isolated_bridge_remove_info.proxmox_node_networks | first | default(none) }}"
+
+    - name: Report that there is no bridge to remove
+      ansible.builtin.debug:
+        msg: "{{ isolated_bridge_name }} does not exist on {{ proxmox_node }}. Nothing to remove."
+      when: isolated_bridge_existing is none
+
+    - name: Remove the bridge
+      when: isolated_bridge_existing is not none
+      block:
+        - name: Make sure it is an isolated bridge
+          ansible.builtin.assert:
+            that:
+              - isolated_bridge_existing.type == 'bridge'
+              - isolated_bridge_existing.bridge_ports | default('', true) in ['', 'none']
+              - isolated_bridge_existing.cidr | default('', true) | length == 0
+            fail_msg: >-
+              {{ isolated_bridge_name }} has ports or an address, so it is not an
+              isolated bridge this project made. Refusing to remove it.
+            quiet: true
+
+        - name: Look up VMs on the node
+          community.proxmox.proxmox_vm_info:
+            node: "{{ proxmox_node }}"
+            type: qemu
+            config: current
+          register: isolated_bridge_vms
+
+        - name: Refuse while VMs use the bridge
+          ansible.builtin.assert:
+            that:
+              - users | length == 0
+            fail_msg: >-
+              These VMs still have a network card on {{ isolated_bridge_name }}:
+              {{ users | join(', ') }}. Refusing to remove it.
+            quiet: true
+          vars:
+            users: "{{ isolated_bridge_vms.proxmox_vms | proxmox_bridge_users(isolated_bridge_name) }}"
+
+        - name: Check for network changes already staged on the node
+          community.proxmox.proxmox_node_network_info:
+            node: "{{ proxmox_node }}"
+            check_changes: true
+          register: isolated_bridge_staged
+
+        - name: Refuse to apply changes staged by someone else
+          ansible.builtin.fail:
+            msg: |
+              The node already has staged network changes, and removing the bridge
+              would apply them too:
+
+              {{ isolated_bridge_staged.pending_changes }}
+              Apply or revert them in the Proxmox UI (System > Network), or re-run
+              with -e isolated_bridge_apply_pending=true.
+          when:
+            - isolated_bridge_staged.has_pending_changes
+            - not (isolated_bridge_apply_pending | bool)
+
+        - name: Stage removing {{ isolated_bridge_name }}
+          community.proxmox.proxmox_node_network:
+            node: "{{ proxmox_node }}"
+            iface: "{{ isolated_bridge_name }}"
+            state: absent
+
+        - name: Apply staged network changes
+          community.proxmox.proxmox_node_network:
+            node: "{{ proxmox_node }}"
+            state: apply

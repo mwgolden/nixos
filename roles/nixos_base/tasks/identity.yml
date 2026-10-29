@@ -1,0 +1,26 @@
+# Checks that the VM placement.yml connected to is the right one, before
+# anything on it is read or changed. Runs on the VM, from roles/host_deploy,
+# right after placement.yml (which sets vm_id and vm_mac).
+
+- name: Wait for login
+  ansible.builtin.wait_for_connection:
+    timeout: 120
+
+# Every clone has the template's SSH host key, so the key can't tell VMs
+# apart. The MAC address of net0 can: stop if this isn't the VM Proxmox
+# says it should be, for example because another VM took over the address.
+- name: Read the MAC address of ens18
+  ansible.builtin.command:
+    cmd: cat /sys/class/net/ens18/address
+  register: nixos_base_mac
+  changed_when: false
+
+- name: Make sure this is VM {{ vm_id }}
+  ansible.builtin.assert:
+    that:
+      - nixos_base_mac.stdout | trim | lower == vm_mac
+    fail_msg: >-
+      The VM at {{ ansible_host }} has MAC address {{ nixos_base_mac.stdout | trim }},
+      but VM {{ vm_id }}'s net0 is {{ vm_mac }}. It is a different VM.
+      Nothing was changed on it.
+    quiet: true

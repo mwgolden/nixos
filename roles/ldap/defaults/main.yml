@@ -1,0 +1,33 @@
+# Defaults for ldap hosts. Set any of ldap_settings_defaults under the
+# host's settings: in its network file.
+
+ldap_settings_defaults:
+  # Root of the directory. Left empty, it is made from the network's
+  # domain: lab.home.arpa gives dc=lab,dc=home,dc=arpa.
+  base_dn: ""
+  # LDAP for clients (plain, not LDAPS) and the web interface.
+  ldap_port: 3890
+  http_port: 17170
+
+ldap_settings: "{{ ldap_settings_defaults | combine(vm.settings) }}"
+
+ldap_base_dn: >-
+  {{ ldap_settings.base_dn
+     or (vm.network.domain.split('.') | map('regex_replace', '^', 'dc=') | join(',')) }}
+ldap_port: "{{ ldap_settings.ldap_port }}"
+ldap_http_port: "{{ ldap_settings.http_port }}"
+# The web interface's address, used in its links (such as password
+# resets): the proxy's HTTPS name when a proxy: entry points at it.
+ldap_http_route: >-
+  {{ vm.network.proxy_routes | selectattr('host', 'equalto', vm.name)
+     | selectattr('port', 'equalto', ldap_http_port | int) | first | default({}) }}
+ldap_http_url: >-
+  {{ ('https://' ~ ldap_http_route.fqdn) if ldap_http_route
+     else ('http://' ~ (vm.dns_name or vm.ip) ~ ':' ~ ldap_http_port) }}
+
+ldap_vm_name: "{{ vm.name }}"
+# Secrets for this host. See secrets/README.md.
+ldap_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}.env"
+# Where the secrets go on the VM: root only. lldap reads them as systemd
+# credentials, so they are never in the Nix store.
+ldap_secrets_dir: /var/lib/lldap-secrets

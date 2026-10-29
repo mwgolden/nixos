@@ -1,0 +1,62 @@
+# Deploys one host from the network files: clones the NixOS template if the
+# VM doesn't exist, adds its data disk and network cards, installs its
+# configuration and moves it to its address. Safe to re-run: an existing VM
+# is updated in place.
+#
+#   source proxmox/.env
+#   ansible-playbook playbooks/deploy-host.yaml -e network=lab -e host=postgres
+#
+# Moving a host to another network: move its entry to that network's file
+# (with an address there) and run this again. The VM is found where it was
+# last deployed, from the address recorded in its Proxmox notes.
+#
+# Secrets are read from secrets/<network>/<host>.env; see secrets/README.md.
+
+- name: Load the network files
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Check the arguments
+      ansible.builtin.assert:
+        that:
+          - network | default('') | length > 0
+          - host | default('') | length > 0
+        fail_msg: "Run with -e network=<file in networks/> -e host=<host name>."
+        quiet: true
+
+    - name: Load and check the network files
+      ansible.builtin.include_role:
+        name: network_config
+      vars:
+        network_config_name: "{{ network }}"
+
+    - name: Require the host in that network
+      ansible.builtin.assert:
+        that:
+          - host in (network_config.hosts | default([]) | map(attribute='name'))
+        fail_msg: >-
+          networks/{{ network }}.yaml has no host named '{{ host }}'. Its hosts:
+          {{ network_config.hosts | default([]) | map(attribute='name') | join(', ') }}.
+        quiet: true
+
+    - name: Add the host to the inventory
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: inventory
+      vars:
+        network_config_deploy: ["{{ host }}"]
+
+- name: Deploy {{ host }}
+  hosts: nixlab_deploy
+  serial: 1
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Deploy the host
+      ansible.builtin.include_role:
+        name: host_deploy

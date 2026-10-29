@@ -1,0 +1,67 @@
+# Loads every file in networks/ and checks them together, then (unless
+# network_config_check_proxmox is false) checks them against Proxmox.
+# Fails listing every problem found, before anything changes.
+#
+# Runs on localhost. Needs proxmox/vars.yaml loaded. Sets:
+#   network_configs  dict of network name -> parsed file
+#   network_config   the file of network_config_name, if that is set
+
+- name: Find the network files
+  ansible.builtin.find:
+    paths: "{{ network_config_dir }}"
+    patterns: "*.yaml"
+  register: network_config_found
+
+- name: Require at least one network file
+  ansible.builtin.assert:
+    that:
+      - network_config_found.files | length > 0
+    fail_msg: "No network files found in {{ network_config_dir | realpath }}."
+    quiet: true
+
+- name: Read the network files
+  ansible.builtin.set_fact:
+    network_config_files: >-
+      {{ network_config_files | default([]) + [{
+           'file': item.path | basename | regex_replace('\.yaml$', ''),
+           'config': lookup('file', item.path) | from_yaml
+         }] }}
+  loop: "{{ network_config_found.files | sort(attribute='path') }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: Check the network files
+  ansible.builtin.set_fact:
+    network_config_errors: >-
+      {{ network_config_files | network_config_errors(template_vm_id, template_ip) }}
+
+- name: Report problems in the network files
+  ansible.builtin.fail:
+    msg: "{{ ['The network files have problems:'] + network_config_errors }}"
+  when: network_config_errors | length > 0
+
+- name: Note each network
+  ansible.builtin.set_fact:
+    network_configs: >-
+      {{ dict(network_config_files | map(attribute='file')
+              | zip(network_config_files | map(attribute='config'))) }}
+
+- name: Select network {{ network_config_name }}
+  when: network_config_name | length > 0
+  block:
+    - name: Require the selected network
+      ansible.builtin.assert:
+        that:
+          - network_config_name in network_configs
+        fail_msg: >-
+          There is no networks/{{ network_config_name }}.yaml. Networks:
+          {{ network_configs.keys() | join(', ') }}.
+        quiet: true
+
+    - name: Note the selected network
+      ansible.builtin.set_fact:
+        network_config: "{{ network_configs[network_config_name] }}"
+
+- name: Check against Proxmox
+  ansible.builtin.include_tasks: proxmox.yml
+  when: network_config_check_proxmox | bool

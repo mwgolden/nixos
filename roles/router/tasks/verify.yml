@@ -1,0 +1,71 @@
+# Tests each TCP port forward from this machine and reports the router's
+# status. Runs on localhost from roles/host_deploy.
+
+- name: Report that there are no port forwards
+  ansible.builtin.debug:
+    msg: "No host in networks/{{ vm.network.name }}.yaml has expose: entries. Nothing is forwarded."
+  when: router_port_forwards | length == 0
+
+# Only TCP can be tested this way. A TCP forward only answers once the
+# service on the VM is running, so a failure here is reported, not fatal.
+- name: Try each TCP forward from this machine
+  ansible.builtin.wait_for:
+    host: "{{ router_ip }}"
+    port: "{{ item.wan_port | int }}"
+    timeout: 5
+  register: forward_tests
+  ignore_errors: true
+  loop: "{{ router_port_forwards | selectattr('proto', 'equalto', 'tcp') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Show port forwards
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.name }}: {{ item.proto }} {{ router_ip }}:{{ item.wan_port }}
+      -> {{ item.host }} {{ item.lan_ip }}:{{ item.lan_port }}
+      {%- if item.proto == 'udp' %} (UDP, not tested)
+      {%- elif (forward_tests.results | selectattr('item.name', 'equalto', item.name) | first) is succeeded %} (answering)
+      {%- else %} (not answering: is {{ item.host }} deployed, and listening on port {{ item.lan_port }}?)
+      {%- endif %}
+  loop: "{{ router_port_forwards }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Show router details
+  ansible.builtin.debug:
+    msg: >-
+      The router is up on {{ router_ip }} (WAN). VMs attached to
+      {{ router_lan_bridge }} get an address from {{ router_dhcp_range_start }}
+      to {{ router_dhcp_range_end }} with gateway and DNS
+      {{ router_lan_ip }}. Its DNS server answers for
+      {{ router_dns_records | map(attribute='name') | join(', ') }}, as the
+      name alone or under {{ router_domain }}.
+
+- name: Write the VPN clients' configuration files
+  ansible.builtin.template:
+    src: wg-client.conf.j2
+    dest: "{{ router_vpn_dir }}/{{ peer.name }}.conf"
+    mode: "0600"
+  loop: "{{ router_vpn_peers | default([]) }}"
+  loop_control:
+    loop_var: peer
+    label: "{{ peer.name }}"
+  when: router_vpn_enabled
+  no_log: true
+
+- name: Show the VPN
+  ansible.builtin.debug:
+    msg: >-
+      WireGuard is listening on udp {{ router_vpn.endpoint }}. Client
+      configuration files are in secrets/{{ vm.network.name }}/vpn/:
+      {{ router_vpn_peers | map(attribute='name') | map('regex_replace', '$', '.conf') | join(', ') }}.
+      Clients reach {{ router_vpn.allowed_ips | join(' and ') }}, and can use
+      names like {{ vm.name }}.{{ router_domain }}.
+      {% if router_vpn.endpoint.startswith(router_ip ~ ':') -%}
+      {{ router_ip }} only works from {{ vm.network.upstream }}. To connect
+      from the internet, forward udp {{ router_vpn.port }} on your home
+      router to {{ router_ip }}, and set settings.vpn.endpoint to your
+      public address or name.
+      {%- endif %}
+  when: router_vpn_enabled

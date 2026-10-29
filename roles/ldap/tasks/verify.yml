@@ -1,0 +1,32 @@
+# Checks lldap answers and says how to use it. Runs on localhost from
+# roles/host_deploy; on an isolated network the checks go through the
+# router.
+
+- name: Check the web interface answers
+  ansible.builtin.uri:
+    url: "http://{{ final.ip }}:{{ ldap_http_port }}/health"
+    status_code: 200
+  register: ldap_health
+  retries: 10
+  delay: 3
+  until: ldap_health is succeeded
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+
+- name: Check LDAP accepts connections
+  ansible.builtin.wait_for:
+    host: "{{ final.ip }}"
+    port: "{{ ldap_port }}"
+    timeout: 30
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+
+- name: Show how to use lldap
+  ansible.builtin.debug:
+    msg: >-
+      lldap is up. Web interface: {{ ldap_http_url | trim }} (user admin,
+      password in secrets/{{ vm.network.name }}/{{ vm.name }}.env).
+      LDAP clients use ldap://{{ vm.dns_name or final.ip }}:{{ ldap_port }}
+      with base DN {{ ldap_base_dn | trim }}, binding as
+      uid=admin,ou=people,{{ ldap_base_dn | trim }}. Users are under
+      ou=people and groups under ou=groups.
+      {%- if final.via_router %} Only VMs on {{ vm.network.name }}
+      {{- ' and VPN clients' if vm.network.vpn else '' }} can reach it.{% endif %}

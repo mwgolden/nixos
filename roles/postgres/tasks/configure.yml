@@ -1,0 +1,115 @@
+# Installs and switches to the postgres VM's NixOS configuration, then sets up
+# its service. Runs on the VM with become: true, from roles/host_deploy.
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+    nixos_base_data_disk_serial: postgres-data
+
+- name: Install PostgreSQL settings
+  ansible.builtin.template:
+    src: postgres.nix.j2
+    dest: /etc/nixos/postgres.nix
+    mode: "0644"
+
+- name: Install postgres NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Switch to the configuration and move to the postgres address
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch
+
+- name: Check the data disk is mounted
+  ansible.builtin.command:
+    cmd: findmnt --source {{ data_disk_device }} --target /var/lib/postgresql
+  changed_when: false
+
+- name: Wait for PostgreSQL
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ postgres_port }}"
+    timeout: 120
+
+# Creates the role if needed and always sets its password, so a changed
+# password in .env is applied on the next run.
+- name: Set database admin login
+  ansible.builtin.command:
+    cmd: runuser -u postgres -- psql -v ON_ERROR_STOP=1 -q -p {{ postgres_port }} -d postgres
+    stdin: |
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ postgres_admin_user }}') THEN
+          CREATE ROLE "{{ postgres_admin_user }}";
+        END IF;
+      END
+      $$;
+      ALTER ROLE "{{ postgres_admin_user }}" WITH LOGIN SUPERUSER PASSWORD '{{ postgres_admin_password | replace("'", "''") }}';
+  no_log: true
+  changed_when: false
+
+- name: Load AdventureWorks
+  when: adventureworks_enabled | bool
+  block:
+    - name: Check whether the AdventureWorks database exists
+      ansible.builtin.command:
+        cmd: >-
+          runuser -u postgres -- psql -tA -p {{ postgres_port }} -d postgres
+          -c "SELECT 1 FROM pg_database WHERE datname = '{{ adventureworks_database }}'"
+      register: adventureworks_exists
+      changed_when: false
+
+    - name: Create and populate the AdventureWorks database
+      when: adventureworks_exists.stdout != '1'
+      block:
+        - name: Download AdventureWorks
+          ansible.builtin.git:
+            repo: "{{ adventureworks_repo }}"
+            dest: "{{ adventureworks_src }}"
+            version: "{{ adventureworks_version }}"
+            force: true
+
+        # Some \copy lines in install.sql use 'X.csv' instead of
+        # './data/X.csv'. Linking the CSVs next to it makes both work.
+        - name: Link CSV files next to install.sql
+          ansible.builtin.shell:
+            cmd: ln -sf data/*.csv .
+            chdir: "{{ adventureworks_src }}"
+          changed_when: true
+
+        - name: Create the AdventureWorks database
+          ansible.builtin.command:
+            cmd: >-
+              runuser -u postgres -- createdb -p {{ postgres_port }}
+              --owner "{{ postgres_admin_user }}" "{{ adventureworks_database }}"
+
+        - name: Import AdventureWorks (takes a few minutes)
+          ansible.builtin.command:
+            cmd: >-
+              runuser -u postgres -- psql -v ON_ERROR_STOP=1 -q
+              -p {{ postgres_port }} -d "{{ adventureworks_database }}" -f install.sql
+            chdir: "{{ adventureworks_src }}"
+
+      # A half-loaded database would be skipped on the next run, so
+      # remove it and let the next run start over.
+      rescue:
+        - name: Remove the partly loaded database
+          ansible.builtin.command:
+            cmd: >-
+              runuser -u postgres -- dropdb -p {{ postgres_port }}
+              --if-exists "{{ adventureworks_database }}"
+
+        - name: Report the failed import
+          ansible.builtin.fail:
+            msg: "Loading AdventureWorks failed; see the error above. The partly loaded database was removed."
+
+      always:
+        - name: Remove AdventureWorks download
+          ansible.builtin.file:
+            path: "{{ adventureworks_src }}"
+            state: absent

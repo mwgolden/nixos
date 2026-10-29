@@ -1,0 +1,127 @@
+# Deploys every host of one network from its network file, one at a time:
+# on an isolated network the router first (which also creates the
+# network's bridge if it is missing), then the other hosts in the order the
+# file lists them. Safe to re-run: existing VMs are updated in place.
+#
+#   source proxmox/.env
+#   ansible-playbook playbooks/deploy-network.yaml -e network=lab
+#
+# Stops at the first host that fails; fix it and run again, and the hosts
+# already done are only checked. Once all are deployed, checks the whole
+# network (see roles/network_verify) and fails if anything is wrong;
+# playbooks/verify-network.yaml runs only those checks. To deploy a single host, use
+# playbooks/deploy-host.yaml.
+#
+# Hosts removed from the file are reported, not deleted. To delete them
+# (only VMs tagged as this network's), add -e prune=true; it asks you to
+# type the network name, or takes -e confirm_prune=<network>:
+#   ansible-playbook playbooks/deploy-network.yaml -e network=lab -e prune=true
+
+- name: Load the network files
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Check the arguments
+      ansible.builtin.assert:
+        that:
+          - network | default('') | length > 0
+        fail_msg: "Run with -e network=<file in networks/>."
+        quiet: true
+
+    - name: Load and check the network files
+      ansible.builtin.include_role:
+        name: network_config
+      vars:
+        network_config_name: "{{ network }}"
+
+    # Before deploying, so a deleted VM frees its address for a new host.
+    - name: Compare the network with Proxmox, and prune if asked
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: ownership
+      vars:
+        network_config_name: "{{ network }}"
+        network_config_prune: "{{ prune | default(false) }}"
+        network_config_confirm_prune: "{{ confirm_prune | default('') }}"
+
+    - name: Work out the order to deploy in
+      ansible.builtin.set_fact:
+        deploy_order: >-
+          {{ network_configs | network_config_inventory
+             | network_config_deploy_order(network) }}
+
+    - name: Require at least one host
+      ansible.builtin.assert:
+        that:
+          - deploy_order | length > 0
+        fail_msg: "networks/{{ network }}.yaml has no hosts."
+        quiet: true
+
+    - name: Show the plan
+      ansible.builtin.debug:
+        msg: "Deploying network {{ network }}, in this order: {{ deploy_order | join(', ') }}."
+
+    - name: Add the hosts to the inventory
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: inventory
+      vars:
+        network_config_deploy: "{{ deploy_order }}"
+
+- name: Deploy network {{ network }}
+  hosts: nixlab_deploy
+  serial: 1
+  order: inventory
+  # One failed host stops the rest: later hosts may depend on it, such as
+  # everything on an isolated network on its router.
+  any_errors_fatal: true
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Deploy the host
+      ansible.builtin.include_role:
+        name: host_deploy
+
+# Once every host is deployed, so checks that involve several hosts (DNS
+# records, proxy routes, the router's forwards) see the finished network.
+- name: Check network {{ network }}
+  hosts: nixlab_deploy
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Check the host from the inside
+      ansible.builtin.include_role:
+        name: network_verify
+
+- name: Report network {{ network }}
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Show where each host is
+      ansible.builtin.debug:
+        msg: >-
+          {%- set out = [] -%}
+          {%- for name in groups['nixlab_deploy'] -%}
+            {%- set f = hostvars[name].final -%}
+            {%- set _ = out.append(name ~ ': ' ~ f.ip ~ ' on ' ~ f.bridge
+                                   ~ ((' (through ' ~ f.via_router ~ ')') if f.via_router else '')) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Check the network from here and report
+      ansible.builtin.include_role:
+        name: network_verify
+        tasks_from: summary
+      vars:
+        network_verify_network: "{{ network }}"
+        network_verify_hosts: "{{ groups['nixlab_deploy'] }}"

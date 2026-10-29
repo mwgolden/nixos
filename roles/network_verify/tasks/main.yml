@@ -1,0 +1,167 @@
+# Checks one deployed VM from the inside, and notes what is wrong in
+# verify_problems (a list of messages). Doesn't stop on a problem:
+# summary.yml reports every host's problems at the end. Runs in a play over
+# the hosts added by network_config's inventory.yml.
+#
+# Checks: SSH, the address and default gateway, DNS (the network's own
+# names on an isolated network, and a public name), outbound internet, that
+# an isolated host can't reach the home LAN, Proxmox or other networks, that
+# nothing listens on an unexpected port, and on a proxy that every route
+# answers.
+
+- name: Connect to {{ vm.name }} at its address
+  ansible.builtin.set_fact:
+    ansible_host: "{{ vm.attach.ip }}"
+    ansible_ssh_common_args: >-
+      {{ (nixlab.networks[vm.attach.network].router_wan_ip if vm.attach.via_router else '')
+         | nixlab_ssh_args(lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY')) }}
+    verify_problems: []
+    verify_listening: []
+    # Looked up on this machine: VMs on an isolated network can't resolve
+    # home names.
+    verify_proxmox_ip: >-
+      {{ lookup('pipe', ansible_playbook_python ~ ' ' ~ network_verify_probe ~ ' resolve ' ~ proxmox_api_host) }}
+
+- name: Check SSH to {{ vm.name }}
+  ansible.builtin.wait_for_connection:
+    timeout: 30
+  register: verify_ssh
+  ignore_errors: true
+
+- name: Note that SSH failed
+  ansible.builtin.set_fact:
+    verify_problems:
+      - >-
+        SSH to {{ vm.attach.ip }}{{ (' through ' ~ vm.attach.via_router) if vm.attach.via_router else '' }}
+        failed: {{ verify_ssh.msg | default('no answer') }}
+  when: verify_ssh is failed
+
+- name: Check {{ vm.name }} from the inside
+  when: verify_ssh is succeeded
+  block:
+    - name: Note what to look for
+      ansible.builtin.set_fact:
+        verify_records: >-
+          {{ vm.network.dns_records
+             if vm.network.type == 'isolated' and vm.type != 'router' else [] }}
+        verify_blocked: "{{ vm | blocked_targets(nixlab, verify_proxmox_ip | default('')) }}"
+        verify_routes: "{{ vm.network.proxy_routes if vm.type == 'proxy' else [] }}"
+
+    - name: Read the address
+      ansible.builtin.command:
+        cmd: ip -4 -br addr show dev ens18
+      register: verify_addr
+      changed_when: false
+      failed_when: false
+
+    - name: Read the default route
+      ansible.builtin.command:
+        cmd: ip -4 route show default
+      register: verify_route
+      changed_when: false
+      failed_when: false
+
+    - name: Look up the network's names
+      ansible.builtin.command:
+        cmd: getent hosts {{ item.fqdn }}
+      register: verify_dns
+      changed_when: false
+      failed_when: false
+      loop: "{{ verify_records }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+
+    - name: Look up a public name
+      ansible.builtin.command:
+        cmd: getent ahostsv4 {{ network_verify_internet_host }}
+      register: verify_public_dns
+      changed_when: false
+      failed_when: false
+
+    - name: Try the internet
+      ansible.builtin.script:
+        cmd: >-
+          {{ network_verify_probe }} tcp {{ network_verify_internet_host }}
+          {{ network_verify_internet_port }} {{ network_verify_timeout }}
+        executable: python3
+      register: verify_internet
+      changed_when: false
+      failed_when: false
+
+    - name: Try places this host must not reach
+      ansible.builtin.script:
+        cmd: "{{ network_verify_probe }} tcp {{ item.host }} {{ item.port }} {{ network_verify_timeout }}"
+        executable: python3
+      register: verify_reach
+      changed_when: false
+      failed_when: false
+      loop: "{{ verify_blocked }}"
+      loop_control:
+        label: "{{ item.name }} ({{ item.host }}:{{ item.port }})"
+
+    - name: List listening TCP ports
+      ansible.builtin.command:
+        cmd: ss -Htln
+      register: verify_ss
+      changed_when: false
+      failed_when: false
+
+    - name: Note the ports {{ vm.name }} may listen on
+      ansible.builtin.include_role:
+        name: "{{ vm.type }}"
+        tasks_from: ports
+
+    # On the proxy itself, so DNS and the network don't matter here. 502
+    # means the backend didn't answer.
+    - name: Try each proxy route
+      ansible.builtin.script:
+        cmd: "{{ network_verify_probe }} https 127.0.0.1 443 {{ item.fqdn }} {{ network_verify_timeout }}"
+        executable: python3
+      register: verify_proxy
+      changed_when: false
+      failed_when: false
+      loop: "{{ verify_routes }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+
+    - name: Note what is wrong with {{ vm.name }}
+      ansible.builtin.set_fact:
+        verify_listening: >-
+          {{ verify_ss.stdout | unexpected_listeners([])
+             | map('regex_replace', '^.*:', '') | map('int') | unique | list }}
+        verify_problems: >-
+          {%- set p = [] -%}
+          {%- set want = vm.attach.ip ~ '/' ~ vm.attach.prefix_length -%}
+          {%- if want not in verify_addr.stdout.split() -%}
+            {%- set _ = p.append('ens18 has ' ~ (verify_addr.stdout.split()[2:] | join(' ') or 'no address') ~ ', not ' ~ want ~ '.') -%}
+          {%- endif -%}
+          {%- if not verify_route.stdout.startswith('default via ' ~ vm.attach.gateway ~ ' dev ens18') -%}
+            {%- set _ = p.append('the default route is "' ~ (verify_route.stdout | trim or 'missing') ~ '", not via ' ~ vm.attach.gateway ~ ' on ens18.') -%}
+          {%- endif -%}
+          {%- for r in verify_dns.results -%}
+            {%- set got = (r.stdout.split() or ['nothing']) | first -%}
+            {%- if got != r.item.ip -%}
+              {%- set _ = p.append(r.item.fqdn ~ ' resolves to ' ~ got ~ ', not ' ~ r.item.ip ~ '.') -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- if verify_public_dns.rc != 0 -%}
+            {%- set _ = p.append(network_verify_internet_host ~ " doesn't resolve: DNS to the internet isn't working.") -%}
+          {%- elif verify_internet.stdout | trim != 'open' -%}
+            {%- set _ = p.append(network_verify_internet_host ~ ':' ~ network_verify_internet_port ~ ' gave ' ~ (verify_internet.stdout | trim) ~ ': no outbound internet.') -%}
+          {%- endif -%}
+          {%- for r in verify_reach.results -%}
+            {%- if r.stdout | trim in ['open', 'refused'] -%}
+              {%- set _ = p.append('it can reach ' ~ r.item.name ~ ' (' ~ r.item.host ~ ':' ~ r.item.port ~ ', ' ~ (r.stdout | trim) ~ '); the router should block it.') -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- set extra = verify_ss.stdout | unexpected_listeners([22] + verify_expected_ports) -%}
+          {%- if extra -%}
+            {%- set _ = p.append('unexpected services listening on ' ~ (extra | join(', ')) ~ '. Type ' ~ vm.type ~ ' should only use ' ~ ([22] + verify_expected_ports) | join(', ') ~ ' (see roles/' ~ vm.type ~ '/tasks/ports.yml).') -%}
+          {%- endif -%}
+          {%- for r in verify_proxy.results -%}
+            {%- set got = r.stdout | trim -%}
+            {%- if got is not match('^[0-9]{3}$') or got in ['502', '504'] -%}
+              {%- set _ = p.append('proxy route https://' ~ r.item.fqdn ~ '/ gave ' ~ got ~ (' (backend ' ~ r.item.host ~ ' not answering on ' ~ r.item.port ~ ')' if got == '502' else '') ~ '.') -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ p }}

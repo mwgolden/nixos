@@ -1,0 +1,93 @@
+# Installs and switches to the gitea VM's NixOS configuration, then sets up
+# its service. Runs on the VM with become: true, from roles/host_deploy.
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+    nixos_base_data_disk_serial: gitea-data
+
+- name: Install Gitea settings
+  ansible.builtin.template:
+    src: gitea.nix.j2
+    dest: /etc/nixos/gitea.nix
+    mode: "0644"
+
+- name: Install gitea NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Switch to the configuration and move to the gitea address
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch
+
+- name: Check the data disk is mounted
+  ansible.builtin.command:
+    cmd: findmnt --source {{ data_disk_device }} --target /var/lib/gitea
+  changed_when: false
+
+- name: Wait for Gitea
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ gitea_http_port }}"
+    timeout: 120
+
+# Rows look like "1   gitadmin   gitadmin@example.com   true   true   false".
+- name: List Gitea users
+  ansible.builtin.command:
+    cmd: "{{ gitea_cli }} admin user list"
+    chdir: /var/lib/gitea
+  register: gitea_users
+  changed_when: false
+
+- name: List Gitea admins
+  ansible.builtin.command:
+    cmd: "{{ gitea_cli }} admin user list --admin"
+    chdir: /var/lib/gitea
+  register: gitea_admins
+  changed_when: false
+
+- name: Note which users exist
+  ansible.builtin.set_fact:
+    gitea_user_names: "{{ gitea_users.stdout | regex_findall('(?m)^\\d+\\s+(\\S+)') | map('lower') | list }}"
+    gitea_admin_names: "{{ gitea_admins.stdout | regex_findall('(?m)^\\d+\\s+(\\S+)') | map('lower') | list }}"
+
+- name: Require the admin login to be an admin
+  ansible.builtin.assert:
+    that:
+      - gitea_admin_user | lower not in gitea_user_names or gitea_admin_user | lower in gitea_admin_names
+    fail_msg: >-
+      Gitea already has a user named '{{ gitea_admin_user }}' who isn't an
+      admin. Make them an admin in Site Administration, or pick another
+      GITEA_ADMIN_USER in secrets/{{ vm.network.name }}/{{ vm.name }}.env.
+    quiet: true
+
+- name: Create the Gitea admin user
+  ansible.builtin.command:
+    cmd: >-
+      {{ gitea_cli }} admin user create --admin
+      --username {{ gitea_admin_user | quote }}
+      --password {{ gitea_admin_password | quote }}
+      --email {{ gitea_admin_email | quote }}
+      --must-change-password=false
+    chdir: /var/lib/gitea
+  when: gitea_admin_user | lower not in gitea_user_names
+  no_log: true
+
+# Always sets the password, so a changed password in .env is applied on
+# the next run.
+- name: Set the Gitea admin password
+  ansible.builtin.command:
+    cmd: >-
+      {{ gitea_cli }} admin user change-password
+      --username {{ gitea_admin_user | quote }}
+      --password {{ gitea_admin_password | quote }}
+      --must-change-password=false
+    chdir: /var/lib/gitea
+  when: gitea_admin_user | lower in gitea_user_names
+  no_log: true
+  changed_when: false

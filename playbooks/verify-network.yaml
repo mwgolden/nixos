@@ -1,0 +1,63 @@
+# Checks a deployed network without changing anything: the same checks
+# deploy-network.yaml runs at the end (see roles/network_verify).
+#
+#   source proxmox/.env
+#   ansible-playbook playbooks/verify-network.yaml -e network=lab
+#
+# Every host is checked at the address its network file gives it, so run it
+# after a deploy, not while a host is moving.
+
+- name: Load the network files
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Check the arguments
+      ansible.builtin.assert:
+        that:
+          - network | default('') | length > 0
+        fail_msg: "Run with -e network=<file in networks/>."
+        quiet: true
+
+    - name: Load and check the network files
+      ansible.builtin.include_role:
+        name: network_config
+      vars:
+        network_config_name: "{{ network }}"
+
+    - name: Add the network's hosts to the inventory
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: inventory
+      vars:
+        network_config_deploy: >-
+          {{ network_configs | network_config_inventory
+             | network_config_deploy_order(network) }}
+
+- name: Check network {{ network }}
+  hosts: nixlab_deploy
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Check the host from the inside
+      ansible.builtin.include_role:
+        name: network_verify
+
+- name: Report network {{ network }}
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Check the network from here and report
+      ansible.builtin.include_role:
+        name: network_verify
+        tasks_from: summary
+      vars:
+        network_verify_network: "{{ network }}"
+        network_verify_hosts: "{{ groups['nixlab_deploy'] }}"

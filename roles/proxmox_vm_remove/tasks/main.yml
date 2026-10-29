@@ -1,0 +1,101 @@
+# Stops and permanently deletes a VM and all its disks, after checking the
+# confirmation and that the VM ID has the expected name.
+# Runs on localhost. Needs proxmox/vars.yaml loaded.
+
+- name: Check confirmation
+  ansible.builtin.assert:
+    that:
+      - vm_remove_confirm == vm_remove_name
+    fail_msg: "Confirmation did not match '{{ vm_remove_name }}'. Nothing was deleted."
+    quiet: true
+
+- name: Check required environment variables
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'PROXMOX_TOKEN_SECRET') | length > 0
+    fail_msg: "PROXMOX_TOKEN_SECRET is not set. Run 'source proxmox/.env' first."
+    quiet: true
+
+- name: Delete VM {{ vm_remove_id }} ({{ vm_remove_name }})
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
+  block:
+    - name: Look up VM {{ vm_remove_id }}
+      community.proxmox.proxmox_vm_info:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_remove_id }}"
+        config: current
+      register: vm_remove_info
+
+    - name: Note the {{ vm_remove_name }} VM
+      ansible.builtin.set_fact:
+        vm_remove_existing: "{{ vm_remove_info.proxmox_vms | first | default(none) }}"
+
+    - name: Report that there is nothing to delete
+      ansible.builtin.debug:
+        msg: "VM {{ vm_remove_id }} does not exist. Nothing to delete."
+      when: vm_remove_existing is none
+
+    # Guards against deleting an unrelated VM if the configured ID is wrong.
+    - name: Make sure the VM ID belongs to the {{ vm_remove_name }} VM
+      ansible.builtin.assert:
+        that:
+          - vm_remove_existing.name == vm_remove_name
+        fail_msg: >-
+          VM {{ vm_remove_id }} is named '{{ vm_remove_existing.name }}', not
+          '{{ vm_remove_name }}'. Refusing to delete it.
+      when: vm_remove_existing is not none
+
+    - name: Make sure the project owns the {{ vm_remove_name }} VM
+      ansible.builtin.assert:
+        that:
+          - vm_remove_required_tags | difference(vm_remove_tags) | length == 0
+        fail_msg: >-
+          VM {{ vm_remove_id }} ({{ vm_remove_name }}) doesn't have the tags
+          {{ vm_remove_required_tags | difference(vm_remove_tags) | join(', ') }},
+          so this project doesn't treat it as its own. Refusing to delete it. A VM
+          deployed before tagging gets its tags when it is next deployed.
+        quiet: true
+      vars:
+        vm_remove_tags: "{{ vm_remove_existing.config.tags | default('') | proxmox_tags_list }}"
+      when: vm_remove_existing is not none
+
+    - name: Note the address recorded in its notes
+      ansible.builtin.set_fact:
+        vm_remove_known_hosts: >-
+          {{ (vm_remove_known_hosts + [recorded.ip]) | unique
+             if recorded else vm_remove_known_hosts }}
+      vars:
+        recorded: "{{ vm_remove_existing.config.description | default('') | recorded_address }}"
+      when: vm_remove_existing is not none
+
+    - name: Stop the {{ vm_remove_name }} VM
+      community.proxmox.proxmox_kvm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_remove_id }}"
+        state: stopped
+        force: true
+        timeout: 60
+      when:
+        - vm_remove_existing is not none
+        - vm_remove_existing.status == 'running'
+
+    - name: Delete the {{ vm_remove_name }} VM and its disks
+      community.proxmox.proxmox_kvm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_remove_id }}"
+        state: absent
+        purge: true
+        timeout: 120
+      when: vm_remove_existing is not none
+
+- name: Forget the {{ vm_remove_name }} VM's SSH host keys
+  ansible.builtin.known_hosts:
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ vm_remove_known_hosts }}"
