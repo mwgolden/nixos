@@ -24,7 +24,7 @@ class PortForwards(unittest.TestCase):
     def test_lab_forward_from_expose(self):
         lab = inventory()["networks"]["lab"]
         self.assertEqual(lab["port_forwards"], [
-            {"name": "postgres", "host": "postgres", "proto": "tcp",
+            {"name": "postgres", "host": "postgres", "zone": "lan", "proto": "tcp",
              "wan_port": 5432, "lan_ip": "10.1.0.12", "lan_port": 5432}])
 
     def test_named_entries_and_wan_port(self):
@@ -111,8 +111,8 @@ class ProxyRoutes(unittest.TestCase):
         lab = inventory(mutate)["networks"]["lab"]
         self.assertTrue(lab["proxy_routes"][0]["external"])
         self.assertEqual(lab["port_forwards"][1:], [
-            {"name": "proxy-https", "host": "proxy", "proto": "tcp", "wan_port": 443, "lan_ip": "10.1.0.10", "lan_port": 443},
-            {"name": "proxy-http", "host": "proxy", "proto": "tcp", "wan_port": 80, "lan_ip": "10.1.0.10", "lan_port": 80}])
+            {"name": "proxy-https", "host": "proxy", "zone": "lan", "proto": "tcp", "wan_port": 443, "lan_ip": "10.1.0.10", "lan_port": 443},
+            {"name": "proxy-http", "host": "proxy", "zone": "lan", "proto": "tcp", "wan_port": 80, "lan_ip": "10.1.0.10", "lan_port": 80}])
         self.assertEqual(lab["proxy_internal_sources"], ["10.1.0.0/24", "10.201.0.0/24", "127.0.0.0/8"])
 
     def test_no_proxy(self):

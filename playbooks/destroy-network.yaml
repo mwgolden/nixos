@@ -11,7 +11,8 @@
 # the ones in its file and any removed from it since. VMs never tagged (not
 # deployed since tagging was added) are listed and left alone, as are VMs
 # moved to another network file. Routers go last. With remove_bridge=true,
-# an isolated network's bridge is removed too, once no VM uses it.
+# an isolated network's bridge (and its DMZ bridge) is removed too, once no
+# VM uses it.
 #
 # The network file stays; deploying it again recreates everything.
 
@@ -96,12 +97,17 @@
       loop_control:
         label: "{{ item.name }} (VM {{ item.vmid }})"
 
-    - name: Remove the network's bridge
+    - name: Remove the network's bridges
       ansible.builtin.include_role:
         name: isolated_bridge
       vars:
-        isolated_bridge_name: "{{ network_config.network.bridge }}"
+        isolated_bridge_name: "{{ bridge }}"
         isolated_bridge_state: absent
+      loop: >-
+        {{ [network_config.network.bridge]
+           + ([network_config.network.dmz.bridge] if network_config.network.dmz is defined else []) }}
+      loop_control:
+        loop_var: bridge
       when:
         - remove_bridge | default(false) | bool
         - network_config.network.type == 'isolated'
@@ -109,6 +115,6 @@
     - name: Report
       ansible.builtin.debug:
         msg: >-
-          Network {{ network }} is gone{{ ' (its bridge too)' if (remove_bridge | default(false) | bool
+          Network {{ network }} is gone{{ ' (its bridges too)' if (remove_bridge | default(false) | bool
           and network_config.network.type == 'isolated') else '' }}. networks/{{ network }}.yaml
           is unchanged; deploy it again to recreate it, or delete the file.

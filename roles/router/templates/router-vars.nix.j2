@@ -29,6 +29,35 @@
 {% endfor %}
   ];
 
+  # The DMZ: a second bridge for published hosts, which can't reach the
+  # LAN except through dmzRules.
+  dmz = {
+    enable = {{ 'true' if router_dmz else 'false' }};
+{% if router_dmz %}
+    address = "{{ router_dmz.gateway }}";
+    prefixLength = {{ router_dmz.prefix_length }};
+    dhcp = {{ 'true' if router_dmz.dhcp else 'false' }};
+{% if router_dmz.dhcp %}
+    dhcpRangeStart = "{{ router_dmz.dhcp.start }}";
+    dhcpRangeEnd = "{{ router_dmz.dhcp.end }}";
+    dhcpLeaseTime = "{{ router_dmz.dhcp.lease_time | default('12h') }}";
+{% endif %}
+{% endif %}
+  };
+
+  # DMZ hosts' access to the LAN: proxy backends and reach: entries.
+  dmzRules = [
+{% for rule in router_dmz_rules %}
+    {
+      name = "{{ rule.name }}";
+      srcAddress = "{{ rule.src_ip }}";
+      dstAddress = "{{ rule.dst_ip }}";
+      proto = "{{ rule.proto }}";
+      port = {{ rule.port | int }};
+    }
+{% endfor %}
+  ];
+
   # WireGuard. The private key is in {{ router_vpn_key_path }}, not here.
   vpn = {
     enable = {{ 'true' if router_vpn else 'false' }};

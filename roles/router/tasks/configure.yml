@@ -6,22 +6,41 @@
   ansible.builtin.wait_for_connection:
     timeout: 120
 
-# configuration.nix expects the LAN card as ens19. Stop here rather than
-# switch to a configuration that puts the LAN address on nothing.
-- name: Check the LAN interface exists
-  ansible.builtin.stat:
-    path: /sys/class/net/ens19
-  register: lan_interface
+# configuration.nix expects the LAN card as ens19 and the DMZ card as
+# ens20. Stop here rather than switch to a configuration that puts an
+# address on nothing. A DMZ card added to a running router is hotplugged,
+# so it should be there already.
+- name: Note the router's internal interfaces
+  ansible.builtin.set_fact:
+    router_interfaces: >-
+      {{ [{'name': 'ens19', 'nic': 'net1', 'bridge': router_lan_bridge,
+           'address': router_lan_ip ~ '/' ~ router_lan_prefix_length}]
+         + ([{'name': 'ens20', 'nic': 'net2', 'bridge': router_dmz.bridge,
+              'address': router_dmz.gateway ~ '/' ~ router_dmz.prefix_length}]
+            if router_dmz_enabled else []) }}
 
-- name: Require the LAN interface
+- name: Check the internal interfaces exist
+  ansible.builtin.stat:
+    path: /sys/class/net/{{ item.name }}
+  register: router_interface_stats
+  loop: "{{ router_interfaces }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Require the internal interfaces
   ansible.builtin.assert:
     that:
-      - lan_interface.stat.exists
+      - item.stat.exists
     fail_msg: >-
-      The router has no ens19 interface. Check that net1 on VM
-      {{ vm.vm_id }} is attached to {{ router_lan_bridge }}, and see
-      'ip link' on the router for the name it got.
+      The router has no {{ item.item.name }} interface. Check that
+      {{ item.item.nic }} on VM {{ vm.vm_id }} is attached to
+      {{ item.item.bridge }}, and see 'ip link' on the router for the name
+      it got. A card added while the VM was running needs the VM's
+      Hotplug option to include Network, or a reboot of the router.
     quiet: true
+  loop: "{{ router_interface_stats.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
 
 - name: Install the shared NixOS configuration
   ansible.builtin.include_role:
@@ -67,26 +86,34 @@
     name: nixos_base
     tasks_from: switch
 
-# A live switch doesn't start this unit the first time: it is only
-# pulled in when ens19 appears, and ens19 has been there since boot.
-# (A reboot would start it too.) Already running, this does nothing.
-- name: Put the LAN address on ens19
+# A live switch doesn't start these units the first time: each is only
+# pulled in when its interface appears, and the interface has been there
+# since boot (or since it was hotplugged). A reboot would start them too.
+# Already running, this does nothing.
+- name: Put the addresses on the internal interfaces
   ansible.builtin.systemd_service:
-    name: network-addresses-ens19.service
+    name: network-addresses-{{ item.name }}.service
     state: started
+  loop: "{{ router_interfaces }}"
+  loop_control:
+    label: "{{ item.name }}"
 
-# The LAN can't be reached from here, so check the router's side of it.
-- name: Check the LAN address
+# The LAN and DMZ can't be reached from here, so check the router's side.
+- name: Check the internal addresses
   ansible.builtin.command:
-    cmd: ip -4 -br addr show dev ens19
+    cmd: ip -4 -br addr show dev {{ item.name }}
   register: lan_address
   changed_when: false
-  failed_when: (router_lan_ip ~ '/' ~ router_lan_prefix_length) not in lan_address.stdout
+  failed_when: item.address not in lan_address.stdout
+  loop: "{{ router_interfaces }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.address }}"
 
-# Expected output: "10.1.0.12 dev ens19 src 10.1.0.1 ...". Anything else
-# means the address is the router itself or not on the isolated LAN. Only
-# checked after the switch: until then ens19 has no address, for example on
-# a new clone. Validation has already checked each lan_ip is a host here.
+# Expected output: "10.1.0.12 dev ens19 src 10.1.0.1 ...", or dev ens20
+# for a host in the DMZ. Anything else means the address is the router
+# itself or not on the right bridge. Only checked after the switch: until
+# then the interfaces have no address, for example on a new clone.
+# Validation has already checked each lan_ip is a host here.
 - name: Look up where each port forward points
   ansible.builtin.command:
     cmd: ip -4 route get {{ item.lan_ip }}
@@ -99,12 +126,14 @@
 - name: Require port forwards to point at the isolated LAN
   ansible.builtin.assert:
     that:
-      - item.stdout is match('^' ~ (item.item.lan_ip | regex_escape) ~ ' dev ens19 ')
+      - item.stdout is match('^' ~ (item.item.lan_ip | regex_escape) ~ ' dev ' ~ dev ~ ' ')
     fail_msg: >-
       Port forward '{{ item.item.name }}' points at {{ item.item.lan_ip }},
-      which is not a VM on the isolated LAN
-      ({{ router_lan_ip }}/{{ router_lan_prefix_length }}, not the router
-      itself). Route: {{ item.stdout }}
+      which is not a VM on the router's {{ dev }}
+      ({{ item.item.zone | upper }}, not the router itself). Route:
+      {{ item.stdout }}
+  vars:
+    dev: "{{ 'ens20' if item.item.zone == 'dmz' else 'ens19' }}"
     quiet: true
   loop: "{{ forward_routes.results }}"
   loop_control:
@@ -150,12 +179,37 @@
   loop_control:
     label: "{{ item.item.fqdn }}"
 
+# DMZ hosts use the router's DMZ address as their DNS server.
+- name: Check the DNS server answers on the DMZ address
+  ansible.builtin.command:
+    cmd: dig +short +time=2 +tries=2 @{{ router_dmz.gateway }} {{ vm.name }}.{{ router_domain }} A
+  register: dmz_dns
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: dmz_dns.stdout_lines == [router_lan_ip]
+  when: router_dmz_enabled
+
 - name: Check the forward rules block private networks
   ansible.builtin.command:
     cmd: nft list chain inet nixos-fw forward-allow
   register: forward_rules
   changed_when: false
-  failed_when: "'LAN may not reach private networks' not in forward_rules.stdout"
+  failed_when: >-
+    'LAN may not reach private networks' not in forward_rules.stdout
+    or (router_dmz_enabled and 'DMZ may not reach private networks' not in forward_rules.stdout)
+
+# nft prints each rule's comment as given.
+- name: Check each DMZ rule is in place
+  ansible.builtin.assert:
+    that:
+      - >-
+        ('"DMZ: ' ~ item.name ~ '"') in forward_rules.stdout
+    fail_msg: "DMZ rule '{{ item.name }}' is missing from the forward rules."
+    quiet: true
+  loop: "{{ router_dmz_rules }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 - name: Read the port forward rules
   ansible.builtin.command:

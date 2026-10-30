@@ -1,4 +1,4 @@
-# Makes sure the router's LAN bridge exists before anything else changes,
+# Makes sure the router's LAN bridge (and DMZ bridge) exists before anything else changes,
 # creating it if it is missing, and makes the VPN's keys. Port forwards are
 # checked with the network files. Runs on localhost from roles/host_deploy.
 
@@ -7,6 +7,13 @@
     name: isolated_bridge
   vars:
     isolated_bridge_name: "{{ router_lan_bridge }}"
+
+- name: Make sure the router's DMZ bridge exists
+  ansible.builtin.include_role:
+    name: isolated_bridge
+  vars:
+    isolated_bridge_name: "{{ router_dmz.bridge }}"
+  when: router_dmz_enabled
 
 - name: Make the VPN's keys
   ansible.builtin.include_tasks: vpn-keys.yml

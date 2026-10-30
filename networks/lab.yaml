@@ -22,6 +22,13 @@ network:
 
   reserved: []
 
+  # A second bridge behind the router for published hosts. They reach the
+  # LAN only through the proxy's routes and reach: entries. See README.md.
+  dmz:
+    bridge: vmbr4
+    cidr: 10.1.1.0/24
+    gateway: 10.1.1.1
+
   # The router's DNS server answers for every host here, as <name> and
   # <name>.<domain>. Defaults to <network name>.home.arpa.
   # domain: lab.home.arpa
@@ -99,10 +106,13 @@ hosts:
         - name: old_user
           state: absent
 
+  # In the DMZ: it serves the external git route. The router lets it reach
+  # gitea:3000 and webserver-lab:80 on the LAN, from their proxy: routes.
   - name: proxy
     type: proxy
+    zone: dmz
     vm_id: 116
-    ip: 10.1.0.10
+    ip: 10.1.1.10
   
   - name: gitea
     type: gitea

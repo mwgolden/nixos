@@ -88,6 +88,22 @@ From the internet, you'd also forward 443 on the home router to the router's WAN
 
 Validation refuses `external` on a home network, where the whole LAN already reaches the proxy. It also refuses it when the router's TCP 443 or 80 is already used by an `expose:` entry.
 
+### In a DMZ
+
+On a network with a [DMZ](../../networks/README.md#dmz), the proxy belongs there, especially with external routes. Give it `zone: dmz` and an address in the DMZ's subnet:
+
+```yaml
+  - name: proxy
+    type: proxy
+    zone: dmz
+    vm_id: 116
+    ip: 10.1.1.10
+```
+
+The router then lets the proxy reach each route's backend on the LAN, on the route's port, and nothing else there. Backends that are also in the DMZ need no rule. Internal routes still only answer the LAN and VPN clients. They also turn away other DMZ hosts, so those can't use the proxy to get around the router.
+
+Validation warns when a proxy with external routes stays on the LAN of a network that has a DMZ.
+
 ### Home networks
 
 A home network has no DNS server from this project. To use a home proxy's names, point each at the proxy's address on the home router (pfSense: Services > DNS Resolver > Host Overrides).

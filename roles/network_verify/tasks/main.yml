@@ -6,8 +6,9 @@
 # Checks: SSH, the address and default gateway, DNS (the network's own
 # names on an isolated network, and a public name), outbound internet, that
 # an isolated host can't reach the home LAN, Proxmox or other networks, that
-# nothing listens on an unexpected port, and on a proxy that every route
-# answers.
+# on a network with a DMZ the LAN reaches the DMZ and the DMZ reaches only
+# its DMZ rules' ports on the LAN, that nothing listens on an unexpected
+# port, and on a proxy that every route answers.
 
 - name: Connect to {{ vm.name }} at its address
   ansible.builtin.set_fact:
@@ -45,6 +46,7 @@
           {{ vm.network.dns_records
              if vm.network.type == 'isolated' and vm.type != 'router' else [] }}
         verify_blocked: "{{ vm | blocked_targets(nixlab, verify_proxmox_ip | default('')) }}"
+        verify_needed: "{{ vm | reachable_targets(nixlab) }}"
         verify_routes: "{{ vm.network.proxy_routes if vm.type == 'proxy' else [] }}"
 
     - name: Read the address
@@ -96,6 +98,19 @@
       changed_when: false
       failed_when: false
       loop: "{{ verify_blocked }}"
+      loop_control:
+        label: "{{ item.name }} ({{ item.host }}:{{ item.port }})"
+
+    # Through the router between the LAN and the DMZ. A refusal passes: the
+    # packet got through, the service just isn't up.
+    - name: Try places this host must reach
+      ansible.builtin.script:
+        cmd: "{{ network_verify_probe }} tcp {{ item.host }} {{ item.port }} {{ network_verify_timeout }}"
+        executable: python3
+      register: verify_needed_reach
+      changed_when: false
+      failed_when: false
+      loop: "{{ verify_needed }}"
       loop_control:
         label: "{{ item.name }} ({{ item.host }}:{{ item.port }})"
 
@@ -152,6 +167,11 @@
           {%- for r in verify_reach.results -%}
             {%- if r.stdout | trim in ['open', 'refused'] -%}
               {%- set _ = p.append('it can reach ' ~ r.item.name ~ ' (' ~ r.item.host ~ ':' ~ r.item.port ~ ', ' ~ (r.stdout | trim) ~ '); the router should block it.') -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- for r in verify_needed_reach.results -%}
+            {%- if r.stdout | trim not in ['open', 'refused'] -%}
+              {%- set _ = p.append("it can't reach " ~ r.item.name ~ ' (' ~ r.item.host ~ ':' ~ r.item.port ~ ', ' ~ (r.stdout | trim) ~ '); the router should let it through.') -%}
             {%- endif -%}
           {%- endfor -%}
           {%- set extra = verify_ss.stdout | unexpected_listeners([22] + verify_expected_ports) -%}

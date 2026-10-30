@@ -57,3 +57,11 @@ router_vpn_dir: "{{ role_path }}/../../secrets/{{ vm.network.name }}/vpn"
 # Where the router keeps its private key. Not in /etc/nixos or the Nix store.
 router_vpn_key_path: /var/lib/wireguard/wg0.key
 router_dns_records: "{{ vm.network.dns_records }}"
+# The DMZ, a second bridge behind the router (ens20, net2), from the
+# network's dmz: block: bridge, cidr, prefix_length, gateway (the router's
+# DMZ address) and dhcp. {} when the network has none.
+router_dmz: "{{ vm.network.dmz }}"
+router_dmz_enabled: "{{ vm.network.dmz | length > 0 }}"
+# What DMZ hosts may reach on the LAN, from proxy routes and reach:
+# entries: name, src_ip, dst_ip, proto and port.
+router_dmz_rules: "{{ vm.network.dmz_rules }}"
