@@ -1,0 +1,46 @@
+# Checks the nats host's secrets and settings before anything changes.
+# Runs on localhost from roles/host_deploy. Facts it sets land on the VM's
+# inventory entry, where configure.yml and verify.yml use them.
+
+- name: Read the client login from the secrets file
+  ansible.builtin.include_role:
+    name: dotenv
+  vars:
+    dotenv_path: "{{ nats_secrets_file }}"
+    dotenv_missing_hint: "Copy roles/nats/env.example there and set the client login."
+
+- name: Note the client login
+  ansible.builtin.set_fact:
+    nats_user: "{{ dotenv_values.NATS_USER | default('') }}"
+    nats_password: "{{ dotenv_values.NATS_PASSWORD | default('') }}"
+  no_log: true
+
+# nats-server reads the login from the environment as a quoted string, so
+# quotes, backslashes and spaces would break it.
+- name: Check the client login
+  ansible.builtin.assert:
+    that:
+      - nats_user is match('^[A-Za-z0-9_-]+$')
+      - nats_password is match('^[A-Za-z0-9._~+/=-]{16,}$')
+      - nats_password != 'change-me-to-a-long-random-value'
+    fail_msg: >-
+      In secrets/{{ vm.network.name }}/{{ vm.name }}.env, set NATS_USER (letters,
+      digits, '_' and '-') and NATS_PASSWORD (at least 16 of letters, digits
+      and . _ ~ + / = -). roles/nats/env.example shows how to generate one.
+    quiet: true
+  no_log: true
+
+- name: Check the settings
+  ansible.builtin.assert:
+    that:
+      - nats_port | string is match('^[0-9]+$')
+      - nats_port | int >= 1 and nats_port | int <= 65535
+      - nats_port | int != nats_monitor_port
+      - nats_max_memory | string is match('^[0-9]+[KMGT]$')
+      - nats_max_file | string is match('^[0-9]+[KMGT]$')
+    fail_msg: >-
+      Check settings of {{ vm.name }} in networks/{{ vm.network.name }}.yaml:
+      port must be 1 to 65535 (not {{ nats_monitor_port }}, used for
+      monitoring), and jetstream.max_memory and jetstream.max_file a number
+      followed by K, M, G or T, like 256M or 50G.
+    quiet: true

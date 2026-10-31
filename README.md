@@ -14,7 +14,7 @@ On top of that, the project manages the parts that make a network:
 - **Isolated networks:** a Proxmox bridge with no physical port, behind a NixOS router VM that does NAT, the firewall, DHCP and DNS. The lab reaches the internet but not your home LAN.
 - **A DMZ:** an optional second bridge behind the same router for published hosts, such as the reverse proxy. If one of them is taken over, it still can't reach the rest of the lab, apart from the specific ports the configuration allows.
 - **Ways in from home**, from narrowest to widest: port forwards, published HTTPS routes through a Caddy reverse proxy, and a WireGuard VPN.
-- **Services:** PostgreSQL, Gitea, Garage (S3), LDAP and nginx, each a host type with its own role.
+- **Services:** PostgreSQL, Gitea, Garage (S3), LDAP, NATS with JetStream, and nginx, each a host type with its own role.
 - **Checks:** files are validated before anything changes, and every deploy ends by testing the network: addresses, DNS, internet access, isolation and DMZ rules.
 
 The design and its decisions are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -242,6 +242,7 @@ Each host type is a role in [roles/](roles/), with a README that explains its se
 - [router](roles/router/README.md): connects an isolated bridge (and its DMZ) to the internet with DHCP, NAT and a firewall that blocks the home LAN
 - [proxy](roles/proxy/README.md): Caddy reverse proxy that serves other hosts' web services under HTTPS names, built from their `proxy:` entries
 - [ldap](roles/ldap/README.md): lldap, a small LDAP server for user accounts and groups, with a web interface
+- [nats](roles/nats/README.md): NATS messaging server with JetStream persistence on a separate data disk
 
 Passwords and keys for hosts go in `secrets/<network>/<host>.env`; see [secrets/README.md](secrets/README.md).
 

@@ -18,6 +18,7 @@ Everything here except this README is gitignored. Each file holds `KEY=value` li
 | postgres | `<host>-users.env`: one `<USER>_PASSWORD` per user | [roles/postgres/users-env.example](../roles/postgres/users-env.example) |
 | garage | `<host>.env`: the S3 access key | [roles/garage/env.example](../roles/garage/env.example) |
 | ldap | `<host>.env`: the admin password and JWT secret | [roles/ldap/env.example](../roles/ldap/env.example) |
+| nats | `<host>.env`: the client login | [roles/nats/env.example](../roles/nats/env.example) |
 
 Two kinds of file here are written by deploys, not by you:
 

@@ -14,7 +14,7 @@ import ipaddress
 import re
 
 NETWORK_TYPES = ("home", "isolated")
-HOST_TYPES = ("webserver", "postgres", "gitea", "garage", "router", "proxy", "ldap")
+HOST_TYPES = ("webserver", "postgres", "gitea", "garage", "router", "proxy", "ldap", "nats")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 PORT_FORWARD_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -369,7 +369,7 @@ class _Checker:
                 self.error(where, "data_disk.size_gb must be a whole number of GB, at least 1.")
             if not isinstance(disk, dict) or not isinstance(disk.get("storage"), str):
                 self.error(where, "data_disk.storage must name a Proxmox storage, like local-lvm.")
-        elif kind in ("postgres", "gitea", "garage"):
+        elif kind in ("postgres", "gitea", "garage", "nats"):
             self.error(where, f"a {kind} host needs a data_disk with size_gb and storage.")
 
         if not isinstance(host.get("settings", {}), dict):

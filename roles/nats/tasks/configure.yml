@@ -1,0 +1,69 @@
+# Installs and switches to the nats VM's NixOS configuration, then checks
+# its service. Runs on the VM with become: true, from roles/host_deploy.
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+    nixos_base_data_disk_serial: nats-data
+
+- name: Create the folder for the client login
+  ansible.builtin.file:
+    path: "{{ nats_env_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Before the switch, so the service finds it on its first start. The values
+# are quoted for nats-server, which parses them as configuration.
+- name: Install the client login
+  ansible.builtin.copy:
+    dest: "{{ nats_env_file }}"
+    content: |
+      NATS_USER='"{{ nats_user }}"'
+      NATS_PASSWORD='"{{ nats_password }}"'
+    owner: root
+    group: root
+    mode: "0600"
+  register: nats_env
+  no_log: true
+
+- name: Install NATS settings
+  ansible.builtin.template:
+    src: nats.nix.j2
+    dest: /etc/nixos/nats.nix
+    mode: "0644"
+
+- name: Install nats NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Switch to the configuration and move to the nats address
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch
+
+- name: Check the data disk is mounted
+  ansible.builtin.command:
+    cmd: findmnt --source {{ data_disk_device }} --target /var/lib/nats
+  changed_when: false
+
+# The switch restarts NATS when its configuration changes, but not when
+# only the login does.
+- name: Restart NATS for the new login
+  ansible.builtin.systemd_service:
+    name: nats
+    state: restarted
+  when: nats_env.changed
+
+- name: Wait for NATS and JetStream to be healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ nats_monitor_port }}/healthz?js-enabled-only=true"
+  register: nats_health
+  retries: 20
+  delay: 3
+  until: nats_health is succeeded

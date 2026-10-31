@@ -14,21 +14,15 @@ network:
   reserved: []
 
 hosts:
-  - name: webserver
-    type: webserver
-    vm_id: 150
-    ip: 192.168.1.11
-
-#  - name: garage
-#    type: garage
-#    vm_id: 115
-#    ip: 192.168.1.15
-#    data_disk:
-#      size_gb: 128
-#      storage: local-lvm
-#    settings:
-#      s3_port: 3900
-#      s3_region: garage
-#      zone: dc1
-#      key_name: default
-#      buckets: []
+  - name: nats
+    type: nats
+    vm_id: 118
+    ip: 192.168.1.18
+    data_disk:
+      size_gb: 20
+      storage: local-lvm
+    settings:
+      port: 4222
+      jetstream:
+        max_memory: 256M
+        max_file: ""

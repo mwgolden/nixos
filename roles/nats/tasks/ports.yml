@@ -1,0 +1,7 @@
+# Ports a nats host may listen on, besides SSH (22). Used by
+# roles/network_verify to find unexpected services. The monitoring port is
+# on loopback, which the check leaves out.
+
+- name: Note the ports nats listens on
+  ansible.builtin.set_fact:
+    verify_expected_ports: ["{{ nats_port | int }}"]

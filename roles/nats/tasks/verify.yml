@@ -1,0 +1,32 @@
+# Checks the NATS port answers and says how to reach it. Runs on localhost
+# from roles/host_deploy. On an isolated network only the router can reach
+# NATS, so the check runs there.
+
+# A NATS server greets every new connection with an INFO line, which shows
+# it is up without needing the login.
+- name: Check NATS answers
+  ansible.builtin.wait_for:
+    host: "{{ final.ip }}"
+    port: "{{ nats_port }}"
+    search_regex: "^INFO "
+    timeout: 60
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+
+- name: Show where NATS is
+  ansible.builtin.debug:
+    msg: >-
+      {% if final.via_router -%}
+      NATS is up on the isolated network at nats://{{ vm.name }}.{{ vm.network.domain }}:{{ nats_port }}
+      ({{ final.ip }}), for VMs on that network.
+      {% set forward = vm.expose | selectattr('port', 'equalto', nats_port | int) | first | default(none) -%}
+      {% if forward -%}
+      From home: nats://{{ router_ip }}:{{ forward.wan_port }}. Redeploy the
+      router if you just added this expose: entry.
+      {%- else -%}
+      To reach it from home, add expose: [{port: {{ nats_port }}}] to
+      {{ vm.name }} in networks/{{ vm.network.name }}.yaml and redeploy the router.
+      {%- endif %}
+      {%- else -%}
+      NATS is up at {{ nats_url }}.
+      {%- endif %}
+      Log in as {{ nats_user }} (password in secrets/{{ vm.network.name }}/{{ vm.name }}.env).

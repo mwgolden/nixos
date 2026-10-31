@@ -1,0 +1,39 @@
+# Defaults for nats hosts. Set any of nats_settings_defaults under the host's
+# settings: in its network file.
+
+nats_settings_defaults:
+  # Port clients connect to.
+  port: 4222
+  jetstream:
+    # Most memory JetStream may use for streams kept in memory, such as
+    # 256M or 1G.
+    max_memory: 256M
+    # Most disk JetStream may use for streams kept on disk, such as 50G.
+    # Left empty, it is 90% of the data disk.
+    max_file: ""
+
+nats_settings: "{{ nats_settings_defaults | combine(vm.settings, recursive=true) }}"
+
+# The names the configuration templates and tasks use.
+nats_port: "{{ nats_settings.port }}"
+nats_max_memory: "{{ nats_settings.jetstream.max_memory }}"
+nats_max_file: >-
+  {{ nats_settings.jetstream.max_file
+     if nats_settings.jetstream.max_file | string | length > 0
+     else ([(nats_data_disk_gb | int * 0.9) | int, 1] | max) ~ 'G' }}
+# Monitoring endpoint, on loopback only: the deploy checks health through it.
+nats_monitor_port: 8222
+
+nats_vm_name: "{{ vm.name }}"
+nats_data_disk_gb: "{{ vm.data_disk.size_gb }}"
+# The router's WAN address, where port forwards to an isolated host are.
+router_ip: "{{ nixlab.networks[vm.network.name].router_wan_ip }}"
+# Secrets for this host. See secrets/README.md.
+nats_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}.env"
+# Where the client login is kept on the VM, readable only by root. systemd
+# passes it to nats-server as environment variables.
+nats_env_file: /etc/nats/nats.env
+
+data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_nats-data"
+
+nats_url: "nats://{{ final.ip }}:{{ nats_port }}"

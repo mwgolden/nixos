@@ -146,6 +146,11 @@ class Mutations(unittest.TestCase):
         del self.host("home", "gitea")["data_disk"]
         self.assertError("a gitea host needs a data_disk")
 
+    def test_nats_data_disk_required(self):
+        self.by_name["home"]["hosts"].append(
+            {"name": "nats", "type": "nats", "vm_id": 118, "ip": "192.168.1.18"})
+        self.assertError("a nats host needs a data_disk")
+
     def test_router_port_forwards_replaced(self):
         self.host("lab", "router")["settings"]["port_forwards"] = []
         self.assertError("settings.port_forwards has been replaced by expose:")

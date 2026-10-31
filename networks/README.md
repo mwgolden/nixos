@@ -39,14 +39,14 @@ ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox
 | Setting | Required | Meaning |
 |---|---|---|
 | `name` | yes | VM name in Proxmox, and the host name. Unique across all networks. |
-| `type` | yes | Which kind of VM: `webserver`, `postgres`, `gitea`, `garage`, `router`, `proxy` or `ldap`. |
+| `type` | yes | Which kind of VM: `webserver`, `postgres`, `gitea`, `garage`, `router`, `proxy`, `ldap` or `nats`. |
 | `vm_id` | yes | Proxmox VM ID. Unique across all networks, and not the template's. An existing VM with this ID must have this name. |
 | `ip` | yes | Fixed address inside `cidr` (or `dmz.cidr` for a DMZ host), outside the DHCP range, and unique across all networks. A router's `ip` is its LAN address and must equal `gateway`. |
 | `zone` | no | `lan` (the default) or `dmz`, which puts the host on the network's [DMZ](#dmz) bridge. Not for routers. |
 | `reach` | no, DMZ hosts only | LAN hosts this DMZ host may connect to, beyond its proxy's backends. Each entry has `host` (a LAN host on the same network), `port`, and optionally `proto` (`tcp` or `udp`, defaults to `tcp`). |
 | `wan_ip` | routers only | The router's address on the upstream network |
 | `full_clone` | no | `true` for a full copy of the template instead of a linked clone. Defaults to `false`. |
-| `data_disk` | postgres, gitea, garage | `size_gb` and `storage`. It can grow but never shrink. |
+| `data_disk` | postgres, gitea, garage, nats | `size_gb` and `storage`. It can grow but never shrink. |
 | `expose` | no, isolated networks only | Ports forwarded to this host from its router's WAN address. Each entry has `port` (on the host), and optionally `wan_port` (on the router, defaults to `port`), `proto` (`tcp` or `udp`, defaults to `tcp`) and `name` (needed when a host has more than one). Redeploy the router after changing these. |
 | `proxy` | no | Web services on this host for the network's `proxy` host to serve over HTTPS. Each entry has `name`, one DNS label, served as `<name>.<domain>`, and `port`, the port on this host. `external: true` also publishes it through the router's TCP 443 and 80 (isolated networks only; off by default). Needs a host of type `proxy` on the same network. See [roles/proxy](../roles/proxy/README.md). |
 | `settings` | no | Settings for this host type. The defaults are in the host type's role. |
