@@ -87,7 +87,7 @@ To build your own network, start from [networks/README.md](networks/README.md), 
 | `networks/`                  | One file per network and the VMs on it. See [networks/README.md](networks/README.md) |
 | `playbooks/validate-network.yaml` | Checks the network files, and checks them against Proxmox |
 | `plugins/filter/`, `tests/`  | Network file checks and their tests: `.venv/bin/python -m unittest discover -s tests` |
-| `roles/`                     | One role per host type (its NixOS configuration and service setup), plus shared roles: creating and removing VMs, reading the network files, finding a VM and switching it to its network |
+| `roles/`                     | One role per host type (its NixOS configuration and service setup), plus shared roles: creating and removing VMs, reading the network files, finding a VM and switching it to its network. See [roles/README.md](roles/README.md) |
 | `playbooks/`                 | `deploy-network.yaml`, `deploy-host.yaml`, `destroy-network.yaml`, `destroy-host.yaml`, `validate-network.yaml` and `postgres-users.yaml` |
 | `secrets/`                   | Host passwords and keys, gitignored. See [secrets/README.md](secrets/README.md) |
 | `docs/`                      | [ARCHITECTURE.md](docs/ARCHITECTURE.md), the design and its decisions, and [plans/](docs/plans/) for changes to it |
@@ -245,6 +245,13 @@ Each host type is a role in [roles/](roles/), with a README that explains its se
 - [nats](roles/nats/README.md): NATS messaging server with JetStream persistence on a separate data disk
 
 Passwords and keys for hosts go in `secrets/<network>/<host>.env`; see [secrets/README.md](secrets/README.md).
+
+### Adding hosts and host types
+
+- **A new host of an existing type** is just an entry under `hosts:` in a network file, plus its secrets file if the type has one. Validate, then deploy it with `deploy-host.yaml`.
+- **A new host type** is a new role named after the type, with `tasks/prepare.yml`, `configure.yml`, `verify.yml` and `ports.yml`, a `configuration.nix`, and a README. The type also has to be added to `HOST_TYPES` in `plugins/filter/network_config.py`, and to the type lists in the docs.
+
+[roles/README.md](roles/README.md) walks through both, with what each task file must do and every file to change. The [webserver](roles/webserver/) role is the smallest example to copy.
 
 To delete a host's VM and all its disks (it asks you to type the name):
 
