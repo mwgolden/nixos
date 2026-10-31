@@ -4,6 +4,9 @@
 # Safe to re-run: it brings the server in line with the settings each time.
 # See roles/postgres/USERS.md.
 #
+# Deploying the host already does this. Use this playbook to apply a change
+# to the users without a full deploy:
+#
 #   source proxmox/.env
 #   ansible-playbook playbooks/postgres-users.yaml -e network=lab -e host=postgres
 #
@@ -18,9 +21,6 @@
   gather_facts: false
   vars_files:
     - ../proxmox/vars.yaml
-
-  vars:
-    secrets_dir: "{{ playbook_dir }}/../secrets/{{ network }}"
 
   tasks:
     - name: Check the arguments
@@ -44,33 +44,16 @@
 
     - name: Find the postgres host
       ansible.builtin.set_fact:
-        pg_vm: "{{ (network_configs | network_config_inventory).hosts[host] | default(none) }}"
-        pg_routers: "{{ (network_configs | network_config_inventory).networks }}"
+        nixlab: "{{ network_configs | network_config_inventory }}"
       tags: [always]
 
     - name: Require a postgres host in that network
       ansible.builtin.assert:
         that:
-          - pg_vm is not none
-          - pg_vm.type == 'postgres'
-          - pg_vm.network.name == network
+          - host in nixlab.hosts
+          - nixlab.hosts[host].type == 'postgres'
+          - nixlab.hosts[host].network.name == network
         fail_msg: "networks/{{ network }}.yaml has no postgres host named '{{ host }}'."
-        quiet: true
-      tags: [always]
-
-    - name: Read the user settings
-      ansible.builtin.set_fact:
-        users_database: "{{ pg_vm.settings.users_database | default('') }}"
-        schemas: "{{ pg_vm.settings.schemas | default([]) }}"
-        users: "{{ pg_vm.settings.users | default([]) }}"
-        postgres_port: "{{ pg_vm.settings.port | default(5432) }}"
-      tags: [always]
-
-    - name: Require users_database
-      ansible.builtin.assert:
-        that:
-          - users_database | length > 0
-        fail_msg: "Set settings.users_database of {{ host }} in networks/{{ network }}.yaml."
         quiet: true
       tags: [always]
 
@@ -82,136 +65,41 @@
         quiet: true
       tags: [always]
 
-    - name: Read the admin user from the host's secrets file
+    - name: Note the host
+      ansible.builtin.set_fact:
+        vm: "{{ nixlab.hosts[host] }}"
+      tags: [always]
+
+    - name: Require users_database
+      ansible.builtin.assert:
+        that:
+          - vm.settings.users_database | default('') | length > 0
+        fail_msg: "Set settings.users_database of {{ host }} in networks/{{ network }}.yaml."
+        quiet: true
+      tags: [always]
+
+    # The same checks a deploy runs: the admin login, then the users settings
+    # and passwords.
+    - name: Read and check the settings
       ansible.builtin.include_role:
-        name: dotenv
+        name: postgres
+        tasks_from: prepare
         apply:
           tags: [always]
-      vars:
-        dotenv_path: "{{ secrets_dir }}/{{ host }}.env"
       tags: [always]
-
-    - name: Note the admin user
-      ansible.builtin.set_fact:
-        admin_user: "{{ dotenv_values.POSTGRES_ADMIN_USER | default('') }}"
-      no_log: true
-      tags: [always]
-
-    - name: Read user passwords from the users' secrets file
-      ansible.builtin.include_role:
-        name: dotenv
-        apply:
-          tags: [always]
-      vars:
-        dotenv_path: "{{ secrets_dir }}/{{ host }}-users.env"
-        dotenv_missing_hint: "Copy roles/postgres/users-env.example there and set each user's password."
-      tags: [always]
-
-    - name: Note user passwords
-      ansible.builtin.set_fact:
-        user_passwords: "{{ dotenv_values }}"
-      no_log: true
-      tags: [always]
-
-    - name: Fill in defaults for each user
-      ansible.builtin.set_fact:
-        managed_users: >-
-          {{ managed_users | default([]) + [{
-               'name': item.name | default(''),
-               'state': item.state | default('present'),
-               'createdb': item.createdb | default(false) | bool,
-               'schemas': item.schemas | default([]),
-               'roles': item.roles | default([])
-             }] }}
-      loop: "{{ users }}"
-      loop_control:
-        label: "{{ item.name | default('(no name)') }}"
-
-    - name: Check user names
-      ansible.builtin.assert:
-        that:
-          - item.name is match('^[a-z_][a-z0-9_]*$')
-          - item.name not in ['postgres', admin_user]
-          - item.name is not match('^pg_')
-          - item.state in ['present', 'absent']
-          - item.roles is sequence and item.roles is not string
-          - item.roles | reject('match', '^[a-z_][a-z0-9_]*$') | list | length == 0
-        fail_msg: >-
-          User '{{ item.name }}': names must be lowercase letters, digits and
-          underscores, not 'postgres', the admin user or pg_*; state must be
-          present or absent; roles must be a list of role names.
-        quiet: true
-      loop: "{{ managed_users | default([]) }}"
-      loop_control:
-        label: "{{ item.name }}"
-
-    - name: Check schema access
-      ansible.builtin.assert:
-        that:
-          - item.1.schema | default('') is match('^[a-z_][a-z0-9_]*$')
-          - item.1.access | default([]) | length > 0
-          - item.1.access | difference(['read', 'write', 'create', 'execute']) | length == 0
-        fail_msg: >-
-          User '{{ item.0.name }}', schema '{{ item.1.schema | default('') }}':
-          schema names must be lowercase letters, digits and underscores, and
-          access must be a list of read, write, create, execute.
-        quiet: true
-      loop: "{{ managed_users | default([]) | subelements('schemas') }}"
-      loop_control:
-        label: "{{ item.0.name }} / {{ item.1.schema | default('') }}"
-
-    - name: Check passwords
-      ansible.builtin.assert:
-        that:
-          - (user_passwords[item.name | upper ~ '_PASSWORD'] | default('')) | length > 0
-        fail_msg: "Set {{ item.name | upper }}_PASSWORD in secrets/{{ network }}/{{ host }}-users.env."
-        quiet: true
-      loop: "{{ managed_users | default([]) | selectattr('state', 'equalto', 'present') | list }}"
-      loop_control:
-        label: "{{ item.name }}"
-
-    - name: Collect schemas to manage
-      ansible.builtin.set_fact:
-        managed_schemas: >-
-          {{ (schemas | map(attribute='name')
-              + (managed_users | default([])
-                 | selectattr('state', 'equalto', 'present')
-                 | map(attribute='schemas') | flatten
-                 | map(attribute='schema')))
-             | unique
-             | map('community.general.dict_kv', 'name')
-             | map('combine', {'owner': admin_user})
-             | list }}
-        group_prefix: "{{ users_database | lower | regex_replace('[^a-z0-9_]', '_') }}"
-
-    - name: Apply schema owners from the settings
-      ansible.builtin.set_fact:
-        managed_schemas: >-
-          {{ managed_schemas | map('combine', {}) | list
-             | community.general.lists_mergeby(
-                 schemas | selectattr('owner', 'defined') | list, 'name') }}
-
-    - name: Check schema names
-      ansible.builtin.assert:
-        that:
-          - item.name is match('^[a-z_][a-z0-9_]*$')
-          - item.owner is match('^[a-z_][a-z0-9_]*$')
-        fail_msg: "Schema '{{ item.name }}' (owner '{{ item.owner }}'): use lowercase letters, digits and underscores."
-        quiet: true
-      loop: "{{ managed_schemas }}"
-      loop_control:
-        label: "{{ item.name }}"
 
     # On an isolated network the VM is reached over SSH through the router.
     - name: Add the postgres VM to inventory
       ansible.builtin.add_host:
         name: "{{ host }}"
-        ansible_host: "{{ pg_vm.ip }}"
+        ansible_host: "{{ vm.ip }}"
         ansible_user: admin
         ansible_ssh_private_key_file: "{{ key }}"
         ansible_ssh_common_args: "{{ router_wan | nixlab_ssh_args(key) }}"
+        vm: "{{ vm }}"
+        nixlab: "{{ nixlab }}"
       vars:
-        router_wan: "{{ pg_routers[network].router_wan_ip if pg_vm.network.type == 'isolated' else '' }}"
+        router_wan: "{{ nixlab.networks[network].router_wan_ip if vm.network.type == 'isolated' else '' }}"
         key: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
       tags: [always]
 
@@ -221,102 +109,14 @@
   become: true
 
   vars:
-    users_database: "{{ hostvars['localhost'].users_database }}"
-    postgres_port: "{{ hostvars['localhost'].postgres_port }}"
-    psql: "runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -q -p {{ postgres_port }}"
-    admin_user: "{{ hostvars['localhost'].admin_user }}"
-    managed_users: "{{ hostvars['localhost'].managed_users | default([]) }}"
-    managed_schemas: "{{ hostvars['localhost'].managed_schemas | default([]) }}"
-    group_prefix: "{{ hostvars['localhost'].group_prefix | default('') }}"
-    user_passwords: "{{ hostvars['localhost'].user_passwords }}"
+    postgres_admin_user: "{{ hostvars['localhost'].postgres_admin_user }}"
+    postgres_users_list: "{{ hostvars['localhost'].postgres_users_list }}"
+    postgres_users_schemas: "{{ hostvars['localhost'].postgres_users_schemas }}"
+    postgres_users_group_prefix: "{{ hostvars['localhost'].postgres_users_group_prefix }}"
+    postgres_users_passwords: "{{ hostvars['localhost'].postgres_users_passwords }}"
 
   tasks:
-    - name: Check the database exists
-      ansible.builtin.command:
-        cmd: >-
-          {{ psql }} -tA -d postgres
-          -c "SELECT 1 FROM pg_database WHERE datname = '{{ users_database }}'"
-      register: database_exists
-      changed_when: false
-      tags: [always]
-
-    - name: Require the database
-      ansible.builtin.assert:
-        that:
-          - database_exists.stdout == '1'
-        fail_msg: "Database '{{ users_database }}' doesn't exist. Set settings.users_database of {{ host }} in networks/{{ network }}.yaml to an existing database."
-        quiet: true
-      tags: [always]
-
-    - name: List roles on the server
-      ansible.builtin.command:
-        cmd: >-
-          {{ psql }} -tA -F ' | ' -d postgres -c
-          "SELECT rolname, CASE WHEN rolname LIKE 'pg\_%' THEN 'built-in'
-                                WHEN rolcanlogin THEN 'user'
-                                ELSE 'group' END,
-                  coalesce(shobj_description(oid, 'pg_authid'), '')
-           FROM pg_roles ORDER BY rolname LIKE 'pg\_%' DESC, rolname"
-      register: role_list
-      changed_when: false
-      tags: [never, list]
-
-    - name: Show access levels and roles
-      ansible.builtin.debug:
-        msg:
-          - "Access levels per schema (group role <database>_<schema>_<level>):"
-          - "  read     Read tables, views and sequences"
-          - "  write    read + INSERT, UPDATE, DELETE, use sequences"
-          - "  create   write + create tables, views, functions in the schema"
-          - "  execute  Run functions and procedures in the schema"
-          - "Roles on the server (name | kind | description):"
-          - "{{ role_list.stdout_lines }}"
-      tags: [never, list]
-
-    - name: Create schemas and roles, and grant access
-      ansible.builtin.command:
-        cmd: "{{ psql }} -1 -f - -d \"{{ users_database }}\""
-        stdin: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../roles/postgres/templates/users.sql.j2') }}"
-      register: grants
-      changed_when: false
-      when: managed_schemas | length > 0 or managed_users | length > 0
-
-    - name: Show changes reported by the database
-      ansible.builtin.debug:
-        msg: "{{ grants.stderr_lines | select('search', 'Revoked|Dropped') | list }}"
-      when:
-        - grants is not skipped
-        - grants.stderr_lines | select('search', 'Revoked|Dropped') | list | length > 0
-
-    # Set on every run, so a changed password in the secrets file is applied.
-    - name: Set user passwords
-      ansible.builtin.command:
-        cmd: "{{ psql }} -d postgres"
-        stdin: |
-          {% for u in managed_users if u.state == 'present' %}
-          ALTER ROLE {{ u.name }} WITH PASSWORD '{{ user_passwords[u.name | upper ~ '_PASSWORD'] | replace("'", "''") }}';
-          {% endfor %}
-      no_log: true
-      changed_when: false
-      when: managed_users | selectattr('state', 'equalto', 'present') | list | length > 0
-
-    - name: Read resulting memberships
-      ansible.builtin.command:
-        cmd: >-
-          {{ psql }} -tA -F ': ' -d postgres -c
-          "SELECT u.rolname, coalesce(string_agg(g.rolname, ', ' ORDER BY g.rolname), '(none)')
-           FROM pg_roles u
-           LEFT JOIN pg_auth_members m ON m.member = u.oid
-           LEFT JOIN pg_roles g ON g.oid = m.roleid
-           WHERE u.rolname = ANY (ARRAY['{{ present_names | join("', '") }}']::text[])
-           GROUP BY u.rolname ORDER BY u.rolname"
-      vars:
-        present_names: "{{ managed_users | selectattr('state', 'equalto', 'present') | map(attribute='name') | list }}"
-      register: memberships
-      changed_when: false
-      when: present_names | length > 0
-
-    - name: Show users and their roles
-      ansible.builtin.debug:
-        msg: "{{ memberships.stdout_lines }}"
-      when: memberships is not skipped
+    - name: Apply the users
+      ansible.builtin.import_role:
+        name: postgres
+        tasks_from: users-apply

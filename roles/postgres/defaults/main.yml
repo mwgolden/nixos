@@ -34,12 +34,19 @@ adventureworks_database: "{{ postgres_settings.adventureworks.database }}"
 adventureworks_repo: "{{ postgres_settings.adventureworks.repo }}"
 adventureworks_version: "{{ postgres_settings.adventureworks.version }}"
 
+# Database users (see USERS.md). Applied on deploy when users_database is set.
+postgres_users_database: "{{ postgres_settings.users_database | default('') }}"
+postgres_users_settings_schemas: "{{ postgres_settings.schemas | default([]) }}"
+postgres_users_settings_users: "{{ postgres_settings.users | default([]) }}"
+
 postgres_vm_name: "{{ vm.name }}"
 postgres_data_disk_gb: "{{ vm.data_disk.size_gb }}"
 # The router's WAN address, where port forwards to an isolated host are.
 router_ip: "{{ nixlab.networks[vm.network.name].router_wan_ip }}"
 # Secrets for this host. See secrets/README.md.
 postgres_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}.env"
+postgres_users_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}-users.env"
 
 data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_postgres-data"
 adventureworks_src: /var/lib/adventureworks-src
+postgres_psql: "runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -q -p {{ postgres_port }}"

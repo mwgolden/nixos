@@ -1,0 +1,125 @@
+# Reads and checks the database users settings (users_database, schemas and
+# users) and the users' passwords, before anything changes. Runs on
+# localhost, after prepare.yml has read the admin login. Used by prepare.yml
+# during a deploy and by playbooks/postgres-users.yaml. See USERS.md.
+#
+# Sets the facts users-apply.yml needs: postgres_users_list,
+# postgres_users_schemas, postgres_users_group_prefix and
+# postgres_users_passwords.
+
+- name: Read user passwords from the users' secrets file
+  ansible.builtin.include_role:
+    name: dotenv
+    apply:
+      tags: [always]
+  vars:
+    dotenv_path: "{{ postgres_users_secrets_file }}"
+    dotenv_missing_hint: "Copy roles/postgres/users-env.example there and set each user's password."
+  tags: [always]
+
+- name: Note user passwords
+  ansible.builtin.set_fact:
+    postgres_users_passwords: "{{ dotenv_values }}"
+  no_log: true
+  tags: [always]
+
+- name: Start the user list
+  ansible.builtin.set_fact:
+    postgres_users_list: []
+  tags: [always]
+
+- name: Fill in defaults for each user
+  ansible.builtin.set_fact:
+    postgres_users_list: >-
+      {{ postgres_users_list + [{
+           'name': item.name | default(''),
+           'state': item.state | default('present'),
+           'createdb': item.createdb | default(false) | bool,
+           'schemas': item.schemas | default([]),
+           'roles': item.roles | default([])
+         }] }}
+  loop: "{{ postgres_users_settings_users }}"
+  loop_control:
+    label: "{{ item.name | default('(no name)') }}"
+  tags: [always]
+
+- name: Check user names
+  ansible.builtin.assert:
+    that:
+      - item.name is match('^[a-z_][a-z0-9_]*$')
+      - item.name not in ['postgres', postgres_admin_user]
+      - item.name is not match('^pg_')
+      - item.state in ['present', 'absent']
+      - item.roles is sequence and item.roles is not string
+      - item.roles | reject('match', '^[a-z_][a-z0-9_]*$') | list | length == 0
+    fail_msg: >-
+      User '{{ item.name }}': names must be lowercase letters, digits and
+      underscores, not 'postgres', the admin user or pg_*; state must be
+      present or absent; roles must be a list of role names.
+    quiet: true
+  loop: "{{ postgres_users_list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [always]
+
+- name: Check schema access
+  ansible.builtin.assert:
+    that:
+      - item.1.schema | default('') is match('^[a-z_][a-z0-9_]*$')
+      - item.1.access | default([]) | length > 0
+      - item.1.access | difference(['read', 'write', 'create', 'execute']) | length == 0
+    fail_msg: >-
+      User '{{ item.0.name }}', schema '{{ item.1.schema | default('') }}':
+      schema names must be lowercase letters, digits and underscores, and
+      access must be a list of read, write, create, execute.
+    quiet: true
+  loop: "{{ postgres_users_list | subelements('schemas') }}"
+  loop_control:
+    label: "{{ item.0.name }} / {{ item.1.schema | default('') }}"
+  tags: [always]
+
+- name: Check passwords
+  ansible.builtin.assert:
+    that:
+      - (postgres_users_passwords[item.name | upper ~ '_PASSWORD'] | default('')) | length > 0
+    fail_msg: "Set {{ item.name | upper }}_PASSWORD in secrets/{{ vm.network.name }}/{{ vm.name }}-users.env."
+    quiet: true
+  loop: "{{ postgres_users_list | selectattr('state', 'equalto', 'present') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [always]
+
+- name: Collect schemas to manage
+  ansible.builtin.set_fact:
+    postgres_users_schemas: >-
+      {{ (postgres_users_settings_schemas | map(attribute='name')
+          + (postgres_users_list
+             | selectattr('state', 'equalto', 'present')
+             | map(attribute='schemas') | flatten
+             | map(attribute='schema')))
+         | unique
+         | map('community.general.dict_kv', 'name')
+         | map('combine', {'owner': postgres_admin_user})
+         | list }}
+    postgres_users_group_prefix: "{{ postgres_users_database | lower | regex_replace('[^a-z0-9_]', '_') }}"
+  tags: [always]
+
+- name: Apply schema owners from the settings
+  ansible.builtin.set_fact:
+    postgres_users_schemas: >-
+      {{ postgres_users_schemas | map('combine', {}) | list
+         | community.general.lists_mergeby(
+             postgres_users_settings_schemas | selectattr('owner', 'defined') | list, 'name') }}
+  tags: [always]
+
+- name: Check schema names
+  ansible.builtin.assert:
+    that:
+      - item.name is match('^[a-z_][a-z0-9_]*$')
+      - item.owner is match('^[a-z_][a-z0-9_]*$')
+    fail_msg: "Schema '{{ item.name }}' (owner '{{ item.owner }}'): use lowercase letters, digits and underscores."
+    quiet: true
+  loop: "{{ postgres_users_schemas }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [always]

@@ -24,3 +24,17 @@
       Set POSTGRES_ADMIN_USER (lowercase letters, digits, underscores) and
       POSTGRES_ADMIN_PASSWORD in secrets/{{ vm.network.name }}/{{ vm.name }}.env.
     quiet: true
+
+- name: Require users_database when users or schemas are set
+  ansible.builtin.assert:
+    that:
+      - postgres_users_database | length > 0
+    fail_msg: >-
+      {{ vm.name }} lists database users or schemas, so set
+      settings.users_database in networks/{{ vm.network.name }}.yaml.
+    quiet: true
+  when: postgres_users_settings_users | length > 0 or postgres_users_settings_schemas | length > 0
+
+- name: Check the database users settings
+  ansible.builtin.include_tasks: users-prepare.yml
+  when: postgres_users_database | length > 0

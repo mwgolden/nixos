@@ -113,3 +113,8 @@
           ansible.builtin.file:
             path: "{{ adventureworks_src }}"
             state: absent
+
+# After AdventureWorks, since users_database is often that database.
+- name: Set up database users
+  ansible.builtin.include_tasks: users-apply.yml
+  when: postgres_users_database | length > 0

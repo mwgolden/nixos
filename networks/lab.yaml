@@ -81,7 +81,8 @@ hosts:
         repo: https://github.com/mwgolden/adventure-works-postgres
         version: afcfd2dfcf031af91f03f536c1ade349cfcb3ad6
 
-      # Database users, applied by playbooks/postgres-users.yaml. Access
+      # Database users, applied on deploy (or alone with
+      # playbooks/postgres-users.yaml). Access
       # levels (read, write, create, execute) and extra roles are explained
       # in roles/postgres/USERS.md. Passwords are in
       # secrets/lab/postgres-users.env.

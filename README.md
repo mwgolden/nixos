@@ -236,7 +236,7 @@ Running it again on an existing VM updates it in place. VMs on an isolated netwo
 Each host type is a role in [roles/](roles/), with a README that explains its settings:
 
 - [webserver](roles/webserver/README.md): nginx serving static files
-- [postgres](roles/postgres/README.md): PostgreSQL on a separate data disk, with optional AdventureWorks sample data. [Database users](roles/postgres/USERS.md) are managed with `playbooks/postgres-users.yaml`.
+- [postgres](roles/postgres/README.md): PostgreSQL on a separate data disk, with optional AdventureWorks sample data. [Database users](roles/postgres/USERS.md) are set up on deploy; `playbooks/postgres-users.yaml` applies changes to them alone.
 - [gitea](roles/gitea/README.md): Gitea Git server on a separate data disk
 - [garage](roles/garage/README.md): Garage S3-compatible object storage on a separate data disk
 - [router](roles/router/README.md): connects an isolated bridge (and its DMZ) to the internet with DHCP, NAT and a firewall that blocks the home LAN

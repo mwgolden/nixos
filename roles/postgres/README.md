@@ -47,7 +47,8 @@ Besides the steps every host goes through, the deploy:
 2. Checks the disk is mounted at `/var/lib/postgresql` and PostgreSQL is running.
 3. Creates or updates the admin user.
 4. Loads AdventureWorks, if enabled.
-5. Checks the port accepts connections (from the router, on an isolated network) and prints how to connect.
+5. Creates the [database users](USERS.md) and schemas and grants their access, if `settings.users_database` is set. To apply a change to users without a full deploy, run `playbooks/postgres-users.yaml`.
+6. Checks the port accepts connections (from the router, on an isolated network) and prints how to connect.
 
 ## Connecting
 
@@ -115,7 +116,7 @@ Edit the host's entry or the files here and redeploy. An existing VM is updated 
 | `templates/postgres.nix.j2` | Generated settings: version, port, allowed networks, firewall |
 | `templates/users.sql.j2` | SQL for [database users](USERS.md) |
 | `env.example`, `users-env.example` | Templates for the admin and users' secrets files |
-| `tasks/` | `prepare.yml` (secrets), `configure.yml` (disk, switch, admin, AdventureWorks), `verify.yml`, `ports.yml` |
+| `tasks/` | `prepare.yml` (secrets), `configure.yml` (disk, switch, admin, AdventureWorks, users), `users-prepare.yml` and `users-apply.yml` (database users, also used by `playbooks/postgres-users.yaml`), `verify.yml`, `ports.yml` |
 
 ## Removing it
 

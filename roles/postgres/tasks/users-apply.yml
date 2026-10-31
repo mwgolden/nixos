@@ -1,0 +1,104 @@
+# Creates the database users and schemas and grants access, from the facts
+# users-prepare.yml set. Runs on the VM with become: true. Used by
+# configure.yml during a deploy (after AdventureWorks, since
+# users_database is often that database) and by playbooks/postgres-users.yaml.
+# Safe to re-run: it brings the server in line with the settings each time.
+
+- name: Check the database exists
+  ansible.builtin.command:
+    cmd: >-
+      {{ postgres_psql }} -tA -d postgres
+      -c "SELECT 1 FROM pg_database WHERE datname = '{{ postgres_users_database }}'"
+  register: database_exists
+  changed_when: false
+  tags: [always]
+
+- name: Require the database
+  ansible.builtin.assert:
+    that:
+      - database_exists.stdout == '1'
+    fail_msg: >-
+      Database '{{ postgres_users_database }}' doesn't exist. Set
+      settings.users_database of {{ vm.name }} in networks/{{ vm.network.name }}.yaml
+      to an existing database.
+    quiet: true
+  tags: [always]
+
+- name: List roles on the server
+  ansible.builtin.command:
+    cmd: >-
+      {{ postgres_psql }} -tA -F ' | ' -d postgres -c
+      "SELECT rolname, CASE WHEN rolname LIKE 'pg\_%' THEN 'built-in'
+                            WHEN rolcanlogin THEN 'user'
+                            ELSE 'group' END,
+              coalesce(shobj_description(oid, 'pg_authid'), '')
+       FROM pg_roles ORDER BY rolname LIKE 'pg\_%' DESC, rolname"
+  register: role_list
+  changed_when: false
+  tags: [never, list]
+
+- name: Show access levels and roles
+  ansible.builtin.debug:
+    msg:
+      - "Access levels per schema (group role <database>_<schema>_<level>):"
+      - "  read     Read tables, views and sequences"
+      - "  write    read + INSERT, UPDATE, DELETE, use sequences"
+      - "  create   write + create tables, views, functions in the schema"
+      - "  execute  Run functions and procedures in the schema"
+      - "Roles on the server (name | kind | description):"
+      - "{{ role_list.stdout_lines }}"
+  tags: [never, list]
+
+- name: Create schemas and roles, and grant access
+  ansible.builtin.command:
+    cmd: "{{ postgres_psql }} -1 -f - -d \"{{ postgres_users_database }}\""
+    stdin: "{{ lookup('ansible.builtin.template', 'users.sql.j2') }}"
+  vars:
+    users_database: "{{ postgres_users_database }}"
+    group_prefix: "{{ postgres_users_group_prefix }}"
+    admin_user: "{{ postgres_admin_user }}"
+    managed_schemas: "{{ postgres_users_schemas }}"
+    managed_users: "{{ postgres_users_list }}"
+  register: grants
+  changed_when: false
+  when: postgres_users_schemas | length > 0 or postgres_users_list | length > 0
+
+- name: Show changes reported by the database
+  ansible.builtin.debug:
+    msg: "{{ grants.stderr_lines | select('search', 'Revoked|Dropped') | list }}"
+  when:
+    - grants is not skipped
+    - grants.stderr_lines | select('search', 'Revoked|Dropped') | list | length > 0
+
+# Set on every run, so a changed password in the secrets file is applied.
+- name: Set user passwords
+  ansible.builtin.command:
+    cmd: "{{ postgres_psql }} -d postgres"
+    stdin: |
+      {% for u in postgres_users_list if u.state == 'present' %}
+      ALTER ROLE {{ u.name }} WITH PASSWORD '{{ postgres_users_passwords[u.name | upper ~ '_PASSWORD'] | replace("'", "''") }}';
+      {% endfor %}
+  no_log: true
+  changed_when: false
+  when: postgres_users_list | selectattr('state', 'equalto', 'present') | list | length > 0
+
+- name: Read resulting memberships
+  ansible.builtin.command:
+    cmd: >-
+      {{ postgres_psql }} -tA -F ': ' -d postgres -c
+      "SELECT u.rolname, coalesce(string_agg(g.rolname, ', ' ORDER BY g.rolname), '(none)')
+       FROM pg_roles u
+       LEFT JOIN pg_auth_members m ON m.member = u.oid
+       LEFT JOIN pg_roles g ON g.oid = m.roleid
+       WHERE u.rolname = ANY (ARRAY['{{ present_names | join("', '") }}']::text[])
+       GROUP BY u.rolname ORDER BY u.rolname"
+  vars:
+    present_names: "{{ postgres_users_list | selectattr('state', 'equalto', 'present') | map(attribute='name') | list }}"
+  register: memberships
+  changed_when: false
+  when: present_names | length > 0
+
+- name: Show users and their roles
+  ansible.builtin.debug:
+    msg: "{{ memberships.stdout_lines }}"
+  when: memberships is not skipped
