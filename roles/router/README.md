@@ -1,6 +1,6 @@
 # Router
 
-A NixOS VM that connects an isolated Proxmox network to the internet. VMs on the isolated bridge reach the internet through NAT, but not the home LAN or any other private network. The router also runs the network's DHCP and DNS, its [port forwards](#port-forwards) and, optionally, a [VPN](#vpn).
+A NixOS VM that connects an isolated Proxmox network to the internet. VMs on the isolated bridge reach the internet through NAT, but not the home LAN or any other private network. The router also runs the network's DHCP and DNS, its [port forwards](#port-forwards) and, optionally, a [DMZ](#dmz) and a [VPN](#vpn).
 
 ```
 internet ── home router 192.168.1.1 ── vmbr0 ── ens18 [router] ens19 ── vmbr1 (isolated) ── LAN VMs
@@ -42,12 +42,12 @@ The rest comes from the other hosts in the file: [DNS names](#dns-names) for eve
 
 | File | Purpose |
 |---|---|
-| `files/configuration.nix` | NixOS configuration: LAN interface, NAT, firewall, DHCP, DNS, VPN |
+| `files/configuration.nix` | NixOS configuration: LAN and DMZ interfaces, NAT, firewall, DHCP, DNS, VPN |
 | `templates/router-vars.nix.j2` | Generates `router-vars.nix`, which passes the network file's values to `configuration.nix` |
 | `templates/wg-client.conf.j2` | VPN client configuration files |
 | `files/wg-keypair.py` | Makes WireGuard keys on your machine |
-| `tasks/prepare.yml` | Creates the bridge if missing, makes the VPN's keys |
-| `tasks/configure.yml` | Installs the configuration, switches, and checks LAN, DNS, NAT, forwards and VPN |
+| `tasks/prepare.yml` | Creates the bridges if missing, makes the VPN's keys |
+| `tasks/configure.yml` | Installs the configuration, switches, and checks LAN, DMZ, DNS, NAT, forwards and VPN |
 | `tasks/verify.yml` | Tries each forward from your machine, writes VPN client files |
 | `tasks/ports.yml` | Ports the [network check](../network_verify/README.md) expects it to listen on: 53 |
 
@@ -55,7 +55,7 @@ The rest comes from the other hosts in the file: [DNS names](#dns-names) for eve
 
 Everything is in `configuration.nix`:
 
-- **Interfaces:** `ens18` keeps the static home-LAN address from `network.nix`, like every other VM. `ens19` gets the LAN address.
+- **Interfaces:** `ens18` keeps the static home-LAN address from `network.nix`, like every other VM. `ens19` gets the LAN address, and `ens20` the [DMZ's](#dmz) when there is one.
 - **NAT:** `networking.nat` masquerades LAN traffic leaving through `ens18` and turns on IPv4 forwarding. IPv6 isn't forwarded, so LAN clients have IPv4 only.
 - **Forwarding firewall:** `networking.firewall.filterForward` drops forwarded traffic unless a rule accepts it. Rules, in order:
   1. Replies to connections the LAN started are accepted.
@@ -63,8 +63,10 @@ Everything is in `configuration.nix`:
   3. Other LAN traffic out through the WAN is accepted.
 
   The only traffic from the WAN side let into the LAN is the [port forwards](#port-forwards) from the hosts' `expose:` entries. Without any, home-LAN machines can't reach LAN VMs at all.
+
+  A [DMZ](#dmz) adds its own rules around rule 2.
 - **Firewall on the router itself:** from the LAN, only DHCP (UDP 67), DNS (53) and ping are allowed. SSH is only open on the WAN side.
-- **DHCP and DNS:** dnsmasq listens only on `ens19` (and `wg0`, with the VPN on). It hands out addresses with `10.1.0.1` as gateway and DNS server, answers for the [network's hosts](#dns-names), and forwards other DNS queries to `settings.dns_servers`.
+- **DHCP and DNS:** dnsmasq listens only on `ens19` (and `ens20` with a DMZ, `wg0` with the VPN on). It hands out addresses with `10.1.0.1` as gateway and DNS server, answers for the [network's hosts](#dns-names), and forwards other DNS queries to `settings.dns_servers`.
 
 The order matters for rule 2. The NixOS NAT module adds its own "accept LAN to WAN" rule, and the home LAN is also reached through the WAN. `configuration.nix` uses `lib.mkBefore` so the drop comes first.
 
@@ -81,7 +83,7 @@ Deploy the router before anything else on its network: every other VM there is r
 
 1. Creates the network's bridge (`vmbr1`) if it doesn't exist, with no physical port and no address on the Proxmox host, so the host isn't reachable from the isolated network. This needs `Sys.Modify` on the node. It stops if a bridge of that name exists with a port or address, or if other network changes are already staged on the node, because applying the bridge would apply them too. Apply or revert those in the Proxmox UI, or pass `-e isolated_bridge_apply_pending=true`.
 2. Makes the [VPN's](#vpn) keys, if it is on.
-3. Adds net1 on the bridge, and checks the card shows up as `ens19`.
+3. Adds net1 on the bridge, and checks the card shows up as `ens19`. With a [DMZ](#dmz), it also creates the DMZ bridge and adds net2 on it as `ens20`.
 4. Switches to the configuration. A live switch doesn't add the LAN address on its own, because NixOS only sets it when `ens19` appears, and `ens19` has been there since boot. The deploy starts that step (`network-addresses-ens19.service`) itself.
 5. Checks the LAN address, IP forwarding, dnsmasq, every DNS name, the blocking rule, each port forward and the VPN, and that the router reaches the upstream DNS servers over TCP. It doesn't use ping, because the home network drops outbound ping.
 6. Tries each TCP port forward from your machine, and writes the VPN's client files.
@@ -127,6 +129,36 @@ Names in the domain are never sent to the upstream DNS servers, and DHCP clients
 
 Home-LAN machines use the home router for DNS, so these names don't work from there.
 
+## DMZ
+
+A DMZ is a second bridge behind the router, for hosts reached from outside the network. It is set in the network's `dmz:` block, and hosts join it with `zone: dmz`. See [networks/README.md](../../networks/README.md#dmz) for the settings.
+
+```
+                                  ens19 10.1.0.1 ── vmbr1 ── LAN: gitea, postgres, ...
+vmbr0 ── ens18 [router] ──┤
+         192.168.1.13            ens20 10.1.1.1 ── vmbr2 ── DMZ: proxy, ...
+```
+
+The router treats the DMZ like the LAN (NAT to the internet, DNS, no SSH to the router, no private networks), except for the LAN:
+
+1. **DMZ rules** are accepted first. Each lets one DMZ host reach one LAN host on one port. They come from the proxy's routes, when the proxy is in the DMZ, and from `reach:` entries.
+2. LAN to DMZ is accepted.
+3. LAN traffic to private networks is dropped (the existing rule).
+4. DMZ traffic to private networks is dropped. That includes the LAN, and the VPN.
+5. VPN clients may reach the LAN and the DMZ.
+
+Rules 1 and 2 have to come before the drops, because the DMZ's subnet is a private network too.
+
+DHCP is off in the DMZ unless `dmz.dhcp` is set, so a VM attached to the DMZ bridge by hand gets no address. DNS is answered on the DMZ address, which is the DMZ hosts' DNS server.
+
+**Adding a DMZ to a running router:** add the `dmz:` block and redeploy the router. The deploy creates the bridge and adds net2 to the running VM. Proxmox hotplugs it when the VM's Hotplug options include Network, which they do by default. The deploy stops before switching if `ens20` hasn't appeared. Then reboot the router, or turn on network hotplug, and deploy again.
+
+The deploy checks `ens20`'s address, that the DNS server answers there, and that each DMZ rule is in place. To see the rules and how much the DMZ drop has caught:
+
+```bash
+sudo nft list chain inet nixos-fw forward-allow | grep -i dmz
+```
+
 ## VPN
 
 A WireGuard VPN lets your own devices into the isolated network. Turn it on in the router's settings:
@@ -152,7 +184,7 @@ Then redeploy the router. The deploy:
 3. Checks that `wg0` has the router's key, the port and exactly the listed peers.
 4. Writes a client file for each peer, `secrets/<network>/vpn/<peer>.conf`. Import it into the WireGuard app, or run `wg-quick up ./laptop.conf`. A peer with its own `public_key` gets a file with a placeholder where its private key goes.
 
-**What clients get:** an address in the VPN subnet, and a tunnel for only the network's subnet and the VPN's. Other traffic, including to the internet, doesn't go through it. They use the router's DNS server, so names like `postgres.lab.home.arpa` and the [proxy's](../proxy/README.md) routes work. They can also SSH to the router at its VPN address. Lab hosts can't start connections to VPN clients, because the VPN subnet is inside the blocked private ranges.
+**What clients get:** an address in the VPN subnet, and a tunnel for only the network's subnet (and its DMZ's) and the VPN's. Other traffic, including to the internet, doesn't go through it. They use the router's DNS server, so names like `postgres.lab.home.arpa` and the [proxy's](../proxy/README.md) routes work. They can also SSH to the router at its VPN address. Lab hosts can't start connections to VPN clients, because the VPN subnet is inside the blocked private ranges.
 
 **Postgres:** when `settings.allowed_networks` is unset, postgres on the network also allows password logins from the VPN subnet.
 
@@ -294,7 +326,7 @@ ansible-playbook playbooks/destroy-host.yaml -e network=lab -e host=router
 
 This permanently deletes the VM. It refuses while other VMs of its network still exist, since they would lose their only way out. It asks you to type the host name.
 
-The bridge stays. To remove the whole network, routers last, and its bridge:
+The bridges stay. To remove the whole network, routers last, and its bridges (the DMZ's too):
 
 ```bash
 ansible-playbook playbooks/destroy-network.yaml -e network=lab -e remove_bridge=true

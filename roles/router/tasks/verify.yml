@@ -38,7 +38,14 @@
       The router is up on {{ router_ip }} (WAN). VMs attached to
       {{ router_lan_bridge }} get an address from {{ router_dhcp_range_start }}
       to {{ router_dhcp_range_end }} with gateway and DNS
-      {{ router_lan_ip }}. Its DNS server answers for
+      {{ router_lan_ip }}.
+      {% if router_dmz_enabled -%}
+      VMs on the DMZ bridge {{ router_dmz.bridge }} use {{ router_dmz.gateway }}
+      as gateway and DNS{{ (' and get an address from ' ~ router_dmz.dhcp.start ~ ' to ' ~ router_dmz.dhcp.end) if router_dmz.dhcp else '' }}.
+      They reach the LAN only through {{ router_dmz_rules | length }} DMZ
+      rule(s){{ (': ' ~ (router_dmz_rules | map(attribute='name') | join('; '))) if router_dmz_rules else '' }}.
+      {% endif -%}
+      Its DNS server answers for
       {{ router_dns_records | map(attribute='name') | join(', ') }}, as the
       name alone or under {{ router_domain }}.
 

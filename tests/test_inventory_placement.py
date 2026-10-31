@@ -38,7 +38,7 @@ class Inventory(unittest.TestCase):
     def test_isolated_host_attaches_to_its_network(self):
         pg = self.inv["hosts"]["postgres"]
         self.assertEqual(pg["attach"], {
-            "network": "lab", "bridge": "vmbr1", "ip": "10.1.0.12", "prefix_length": 24,
+            "network": "lab", "zone": "lan", "bridge": "vmbr1", "ip": "10.1.0.12", "prefix_length": 24,
             "gateway": "10.1.0.1", "nameserver": "10.1.0.1", "via_router": "router"})
         self.assertEqual(pg["data_disk"], {"serial": "postgres-data", "size_gb": 20, "storage": "local-lvm"})
         self.assertEqual(pg["nics"], [])

@@ -24,9 +24,12 @@ DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-
 DEFAULT_DOMAIN_SUFFIX = "home.arpa"
 
 NETWORK_KEYS = {"name", "type", "bridge", "cidr", "gateway", "nameserver",
-                "upstream", "dhcp", "reserved", "domain"}
+                "upstream", "dhcp", "reserved", "domain", "dmz"}
+DMZ_KEYS = {"bridge", "cidr", "gateway", "dhcp", "reserved"}
 HOST_KEYS = {"name", "type", "vm_id", "ip", "wan_ip", "full_clone",
-             "data_disk", "settings", "expose", "proxy"}
+             "data_disk", "settings", "expose", "proxy", "zone", "reach"}
+ZONES = ("lan", "dmz")
+REACH_KEYS = {"host", "port", "proto"}
 EXPOSE_KEYS = {"name", "proto", "port", "wan_port"}
 PROXY_KEYS = {"name", "port", "external"}
 # Router ports forwarded to the proxy when a route on its network is external.
@@ -100,11 +103,16 @@ class _Checker:
         # Per network: names of external routes.
         self.external_routes = {}
         self.cidrs = []  # (network, where)
+        # Not errors: things that work but are likely mistakes.
+        self.warnings = []
         # Parsed networks by name, for upstream and WAN checks.
         self.networks = {}
 
     def error(self, where, message):
         self.errors.append(f"{where}: {message}")
+
+    def warn(self, where, message):
+        self.warnings.append(f"{where}: {message}")
 
     def unique(self, seen, value, where, what):
         if value in seen:
@@ -193,7 +201,58 @@ class _Checker:
         elif parsed["upstream"] is not None:
             self.error(where, "upstream is only used by isolated networks.")
 
+        parsed["dmz"] = None
+        if net.get("dmz") is not None:
+            if kind != "isolated":
+                self.error(where, "dmz is only used on isolated networks; it is a second bridge behind their router.")
+            else:
+                parsed["dmz"] = self.check_dmz(where, name, net["dmz"])
+
         self.networks[name] = parsed
+        return parsed
+
+    def check_dmz(self, where, name, dmz):
+        """A network's dmz: block, parsed like a network so check_address
+        works on it. None when it is unusable."""
+        if not isinstance(dmz, dict):
+            self.error(where, "dmz must be a mapping with bridge, cidr and gateway.")
+            return None
+        for key in sorted(set(dmz) - DMZ_KEYS):
+            self.error(where, f"unknown setting dmz.{key}.")
+        bridge = dmz.get("bridge")
+        if not isinstance(bridge, str) or not re.match(r"^vmbr[0-9]+$", bridge):
+            self.error(where, f"dmz.bridge must be a Proxmox bridge name like vmbr2, not '{bridge}'.")
+        else:
+            self.unique(self.bridges, bridge, f"{where}'s DMZ", "bridge")
+        cidr = _net(dmz.get("cidr"))
+        if cidr is None:
+            self.error(where, f"dmz.cidr must be an IPv4 network like 10.1.1.0/24 (host bits zero), not '{dmz.get('cidr')}'.")
+        else:
+            for other, other_where in self.cidrs:
+                if cidr.overlaps(other):
+                    self.error(where, f"dmz.cidr {cidr} overlaps {other} of {other_where}.")
+            self.cidrs.append((cidr, f"{where}'s DMZ"))
+        gateway = _addr(dmz.get("gateway"))
+        if gateway is None:
+            self.error(where, f"dmz.gateway must be an IPv4 address, not '{dmz.get('gateway')}'.")
+        elif cidr is not None and not self.usable(cidr, gateway):
+            self.error(where, f"dmz.gateway {gateway} is not a usable address in {cidr}.")
+        parsed = {"name": f"{name} DMZ", "bridge": bridge, "cidr": cidr, "gateway": gateway,
+                  "reserved": set(), "dhcp": None}
+        reserved = dmz.get("reserved", [])
+        if not isinstance(reserved, list):
+            self.error(where, "dmz.reserved must be a list of addresses.")
+            reserved = []
+        for item in reserved:
+            addr = _addr(item)
+            if addr is None:
+                self.error(where, f"dmz.reserved address '{item}' is not an IPv4 address.")
+            else:
+                parsed["reserved"].add(addr)
+        if dmz.get("dhcp") is not None:
+            parsed["dhcp"] = self.check_dhcp(f"{where}'s DMZ", dmz["dhcp"], cidr)
+        if gateway is not None:
+            self.unique(self.addresses, gateway, f"{where}'s DMZ gateway", "address")
         return parsed
 
     def check_dhcp(self, where, dhcp, cidr):
@@ -258,11 +317,27 @@ class _Checker:
         else:
             self.unique(self.vm_ids, vm_id, where, "vm_id")
 
+        zone = host.get("zone", "lan")
+        zone_net = net
+        if zone not in ZONES:
+            self.error(where, f"zone must be lan or dmz, not '{zone}'.")
+        elif zone == "dmz":
+            if kind == "router":
+                self.error(where, "a router can't have a zone; it is on every bridge of its network.")
+            elif net.get("dmz") is None:
+                self.error(where, f"zone dmz needs a dmz: block in network {net['name']}.")
+                zone_net = None
+            else:
+                zone_net = net["dmz"]
+
         ip = _addr(host.get("ip"))
         if ip is None:
             self.error(where, f"ip must be an IPv4 address, not '{host.get('ip')}'.")
-        else:
-            self.check_address(net, where, "ip", ip, is_router=(kind == "router"))
+        elif zone_net is not None:
+            self.check_address(zone_net, where, "ip", ip, is_router=(kind == "router"))
+
+        if "reach" in host:
+            self.check_reach(net, where, host, zone)
 
         if kind == "router":
             wan_ip = _addr(host.get("wan_ip"))
@@ -364,6 +439,30 @@ class _Checker:
                 self.error(where, f"{label}: the router's {proto}/{wan_port} is already forwarded to {ports[(proto, wan_port)]}.")
             ports[(proto, wan_port)] = host["name"]
 
+    def check_reach(self, net, where, host, zone):
+        """reach: on a DMZ host. Targets are checked in run(), once every
+        host of the network is known."""
+        reach = host.get("reach")
+        if not isinstance(reach, list):
+            self.error(where, "reach must be a list.")
+            return
+        if zone != "dmz":
+            self.error(where, "reach is only used on hosts with zone: dmz; LAN hosts already reach the DMZ.")
+            return
+        for entry in reach:
+            if not isinstance(entry, dict):
+                self.error(where, f"reach entry {entry!r} must be a mapping with host and port.")
+                continue
+            label = f"reach entry {entry.get('host')}:{entry.get('port')}"
+            for key in sorted(set(entry) - REACH_KEYS):
+                self.error(where, f"{label}: unknown setting {key}.")
+            port = _int(entry.get("port"))
+            if port is None or not 1 <= port <= 65535:
+                self.error(where, f"{label}: port must be from 1 to 65535.")
+            if entry.get("proto", "tcp") not in ("tcp", "udp"):
+                self.error(where, f"{label}: proto must be tcp or udp.")
+            self.pending_reach.append((net, where, label, entry.get("host")))
+
     def check_proxy_routes(self, net, where, host, kind):
         routes = host.get("proxy")
         if not isinstance(routes, list):
@@ -454,6 +553,20 @@ class _Checker:
             if key is not None and not (isinstance(key, str) and WG_KEY_RE.match(key)):
                 self.error(where, f"{label}: public_key must be a WireGuard public key (44 characters ending in '=').")
 
+    def check_dmz_exposure(self, net, hosts, external):
+        """Warns about LAN hosts reached from the WAN on a network that has a
+        DMZ: what is published belongs in the DMZ."""
+        for h in hosts:
+            if h.get("zone", "lan") != "lan" or h.get("type") == "router":
+                continue
+            where = f"host {h.get('name')} (network {net['name']})"
+            if h.get("expose"):
+                self.warn(where, "has expose: entries but is on the LAN. Network "
+                                 f"{net['name']} has a DMZ; consider zone: dmz for published hosts.")
+            if h.get("type") == "proxy" and external:
+                self.warn(where, f"serves external routes ({', '.join(external)}) but is on the LAN. "
+                                 f"Network {net['name']} has a DMZ; consider zone: dmz for the proxy.")
+
     def check_allowed_networks(self, where, settings):
         allowed = settings.get("allowed_networks")
         if allowed is None:
@@ -471,6 +584,7 @@ class _Checker:
     def run(self, network_files):
         self.pending_wan = []
         self.pending_vpn_ports = []
+        self.pending_reach = []
         parsed = []
         # Networks first, so hosts can check against any network's settings.
         for item in network_files:
@@ -484,8 +598,10 @@ class _Checker:
                     self.error(net["where"], f"upstream '{net['upstream']}' is not a network in networks/.")
                 elif upstream["type"] != "home":
                     self.error(net["where"], f"upstream '{net['upstream']}' must be a home network.")
+        self.hosts_by_network = {}
         for net, config in parsed:
             hosts = [h for h in self.check_hosts(net, config) if isinstance(h, dict)]
+            self.hosts_by_network[net["name"]] = hosts
             proxies = [h.get("name") for h in hosts if h.get("type") == "proxy"]
             if len(proxies) > 1:
                 self.error(net["where"], f"a network can have only one proxy host, not {len(proxies)}: {', '.join(proxies)}.")
@@ -501,11 +617,21 @@ class _Checker:
                         self.error(net["where"], f"the external proxy routes ({', '.join(external)}) need the router's "
                                                  f"tcp/{port}, which is already forwarded to {ports[('tcp', port)]}.")
             host_names = {h.get("name") for h in hosts}
+            if net.get("dmz") is not None:
+                self.check_dmz_exposure(net, hosts, external)
             for route, owner in routes.items():
                 if route in host_names:
                     self.error(f"host {owner} (network {net['name']})",
                                f"proxy route '{route}' has the same name as host {route}; "
                                "both would be the same DNS name.")
+        for net, where, label, target in self.pending_reach:
+            hosts = {h.get("name"): h for h in self.hosts_by_network.get(net["name"], [])}
+            other = hosts.get(target)
+            if other is None:
+                self.error(where, f"{label}: host must be a host of network {net['name']}, not '{target}'.")
+            elif other.get("zone", "lan") != "lan" or other.get("type") == "router":
+                self.error(where, f"{label}: {target} isn't a LAN host. reach only opens DMZ → LAN; "
+                                  "DMZ hosts already reach each other.")
         for net, where, port in self.pending_vpn_ports:
             owner = self.forward_ports.get(net["name"], {}).get(("udp", port))
             if owner:
@@ -519,6 +645,13 @@ class _Checker:
 
 def network_config_errors(network_files, template_vm_id=None, template_ip=None):
     return _Checker(template_vm_id, template_ip).run(network_files)
+
+
+def network_config_warnings(network_files, template_vm_id=None, template_ip=None):
+    """Things in valid files that work but are likely mistakes."""
+    checker = _Checker(template_vm_id, template_ip)
+    checker.run(network_files)
+    return checker.warnings
 
 
 def network_config_proxmox_errors(network_configs, vms, ifaces, template_vm_id, node):
@@ -538,13 +671,20 @@ def network_config_proxmox_errors(network_configs, vms, ifaces, template_vm_id, 
         iface = by_iface.get(net["bridge"])
         if net["type"] == "home" and iface is None:
             errors.append(f"network {name}: bridge {net['bridge']} does not exist on {node}.")
-        elif net["type"] == "isolated" and iface is not None:
-            ports = iface.get("bridge_ports") or ""
-            cidr = iface.get("cidr") or ""
-            if iface.get("type") != "bridge" or ports not in ("", "none") or cidr:
-                errors.append(
-                    f"network {name}: {net['bridge']} exists but is not an isolated bridge "
-                    f"(type {iface.get('type')}, ports '{ports}', address '{cidr}').")
+        elif net["type"] == "isolated":
+            # The router's deploy creates missing ones; existing ones must be
+            # isolated already.
+            bridges = [net["bridge"]] + ([net["dmz"]["bridge"]] if net.get("dmz") else [])
+            for bridge in bridges:
+                iface = by_iface.get(bridge)
+                if iface is None:
+                    continue
+                ports = iface.get("bridge_ports") or ""
+                cidr = iface.get("cidr") or ""
+                if iface.get("type") != "bridge" or ports not in ("", "none") or cidr:
+                    errors.append(
+                        f"network {name}: {bridge} exists but is not an isolated bridge "
+                        f"(type {iface.get('type')}, ports '{ports}', address '{cidr}').")
         for host in config.get("hosts") or []:
             vm_id = int(host["vm_id"])
             found = by_id.get(vm_id)
@@ -578,11 +718,14 @@ def network_config_inventory(network_configs):
     Returns {"networks": {name: network}, "hosts": {name: vm}} where each vm
     has its declared settings plus:
       network  the network it belongs to
+      zone     "lan" or "dmz": which of its network's bridges it is on.
+               Routers are "lan".
       attach   where its first network card (net0, ens18) sits: the bridge,
                its address there, and the gateway and DNS server it uses.
                For a router that is the upstream network at wan_ip; for
-               everything else its own network at ip.
-      nics     extra network cards: a router's LAN card on its own bridge
+               everything else its own network's bridge for its zone, at ip.
+      nics     extra network cards: a router's LAN card (net1) on its own
+               bridge, and its DMZ card (net2) when the network has a DMZ
       expose   ports forwarded to it from its router's WAN address
       dns_name its name in its router's DNS server, <name>.<domain>, or ""
                on a home network, which has no DNS server here
@@ -592,8 +735,14 @@ def network_config_inventory(network_configs):
       domain         its DNS domain
       dns_records    {name, fqdn, ip} for every host on it, which its
                      router's DNS server answers
-      port_forwards  {name, host, proto, wan_port, lan_ip, lan_port} built
-                     from its hosts' expose: entries, for its router
+      port_forwards  {name, host, zone, proto, wan_port, lan_ip, lan_port}
+                     built from its hosts' expose: entries, for its router
+      dmz            its DMZ, or {}: bridge, cidr, prefix_length, gateway
+                     (the router's DMZ address, also the DMZ's DNS server)
+                     and dhcp ({} when the DMZ has no DHCP)
+      dmz_rules      what DMZ hosts may reach on the LAN: {name, src_host,
+                     src_ip, dst_host, dst_ip, proto, port}. Built from proxy
+                     routes (a DMZ proxy to its LAN backends) and reach:.
       vpn            its router's WireGuard VPN, or {}: cidr, prefix_length,
                      address (the router's), port, endpoint, peers
                      ({name, ip, public_key}; public_key "" means the deploy
@@ -633,6 +782,8 @@ def network_config_inventory(network_configs):
             "proxy_routes": [],
             "proxy_internal_sources": [],
             "vpn": {},
+            "dmz": _dmz(net.get("dmz")),
+            "dmz_rules": [],
         }
     for name, config in network_configs.items():
         for h in config.get("hosts") or []:
@@ -645,9 +796,9 @@ def network_config_inventory(network_configs):
             net["dns_records"].append({"name": h["name"], "fqdn": f"{h['name']}.{net['domain']}",
                                        "ip": str(h["ip"])})
             for e in _expose_entries(h):
-                net["port_forwards"].append({"name": e["name"], "host": h["name"], "proto": e["proto"],
-                                             "wan_port": e["wan_port"], "lan_ip": str(h["ip"]),
-                                             "lan_port": e["port"]})
+                net["port_forwards"].append({"name": e["name"], "host": h["name"], "zone": _zone(h),
+                                             "proto": e["proto"], "wan_port": e["wan_port"],
+                                             "lan_ip": str(h["ip"]), "lan_port": e["port"]})
             for r in h.get("proxy") or []:
                 net["proxy_routes"].append({"name": r["name"], "fqdn": f"{r['name']}.{net['domain']}",
                                             "host": h["name"], "backend_ip": str(h["ip"]),
@@ -658,20 +809,28 @@ def network_config_inventory(network_configs):
             proxy_ip = next(str(h["ip"]) for h in config["hosts"] if h["name"] == net["proxy"])
             for r in net["proxy_routes"]:
                 net["dns_records"].append({"name": r["name"], "fqdn": r["fqdn"], "ip": proxy_ip})
+            proxy_zone = next(_zone(h) for h in config["hosts"] if h["name"] == net["proxy"])
             if any(r["external"] for r in net["proxy_routes"]):
                 for label, port in EXTERNAL_PROXY_PORTS:
                     net["port_forwards"].append({"name": f"{net['proxy']}-{label}", "host": net["proxy"],
-                                                 "proto": "tcp", "wan_port": port, "lan_ip": proxy_ip,
-                                                 "lan_port": port})
+                                                 "zone": proxy_zone, "proto": "tcp", "wan_port": port,
+                                                 "lan_ip": proxy_ip, "lan_port": port})
+        # The DMZ isn't included: a DMZ host could otherwise use internal
+        # routes to get around the router's DMZ → LAN rules.
         net["proxy_internal_sources"] = ([net["cidr"]] + ([net["vpn"]["cidr"]] if net["vpn"] else [])
                                          + ["127.0.0.0/8"])
+        if net["dmz"]:
+            net["dmz_rules"] = _dmz_rules(net, config["hosts"])
 
     hosts = {}
     for name, config in network_configs.items():
         net = networks[name]
         for h in config.get("hosts") or []:
             is_router = h["type"] == "router"
+            zone = _zone(h)
             attach_net = networks[net["upstream"]] if is_router else net
+            # Where net0 sits: the bridge's settings, for the host's zone.
+            segment = net["dmz"] if zone == "dmz" else attach_net
             disk = h.get("data_disk")
             hosts[h["name"]] = {
                 "name": h["name"],
@@ -686,16 +845,20 @@ def network_config_inventory(network_configs):
                                "size_gb": int(disk["size_gb"]),
                                "storage": disk["storage"]} if disk else {}),
                 "network": net,
+                "zone": zone,
                 "attach": {
                     "network": attach_net["name"],
-                    "bridge": attach_net["bridge"],
+                    "zone": zone,
+                    "bridge": segment["bridge"],
                     "ip": str(h["wan_ip"] if is_router else h["ip"]),
-                    "prefix_length": attach_net["prefix_length"],
-                    "gateway": attach_net["gateway"],
-                    "nameserver": attach_net["nameserver"],
+                    "prefix_length": segment["prefix_length"],
+                    "gateway": segment["gateway"],
+                    "nameserver": segment["nameserver"],
                     "via_router": attach_net["router"] if attach_net["type"] == "isolated" else "",
                 },
-                "nics": [{"interface": "net1", "bridge": net["bridge"]}] if is_router else [],
+                "nics": (([{"interface": "net1", "bridge": net["bridge"]}]
+                          + ([{"interface": "net2", "bridge": net["dmz"]["bridge"]}] if net["dmz"] else []))
+                         if is_router else []),
                 "expose": _expose_entries(h),
                 "dns_name": f"{h['name']}.{net['domain']}" if net["type"] == "isolated" else "",
             }
@@ -715,17 +878,66 @@ def _vpn(vpn, net, wan_ip):
         "endpoint": f"{vpn.get('endpoint') or wan_ip}:{port}",
         "peers": [{"name": p["name"], "ip": str(p["ip"]), "public_key": p.get("public_key", "")}
                   for p in vpn.get("peers") or []],
-        "allowed_ips": [net["cidr"], str(cidr)],
+        "allowed_ips": [net["cidr"]] + ([net["dmz"]["cidr"]] if net["dmz"] else []) + [str(cidr)],
     }
+
+
+def _zone(host):
+    return "lan" if host["type"] == "router" else host.get("zone", "lan")
+
+
+def _dmz(dmz):
+    """A network's dmz: block as the inventory carries it, or {}."""
+    if not dmz:
+        return {}
+    cidr = ipaddress.IPv4Network(str(dmz["cidr"]))
+    return {
+        "bridge": dmz["bridge"],
+        "cidr": str(cidr),
+        "prefix_length": cidr.prefixlen,
+        "gateway": str(dmz["gateway"]),
+        # The router's DNS server answers on its DMZ address too.
+        "nameserver": str(dmz["gateway"]),
+        "dhcp": dmz.get("dhcp") or {},
+    }
+
+
+def _dmz_rules(net, hosts):
+    """What DMZ hosts may reach on the LAN: a DMZ proxy's LAN backends, then
+    each DMZ host's reach: entries. Duplicates are dropped."""
+    by_name = {h["name"]: h for h in hosts}
+    wanted = []
+    if net["proxy"] and _zone(by_name[net["proxy"]]) == "dmz":
+        for r in net["proxy_routes"]:
+            if _zone(by_name[r["host"]]) == "lan":
+                wanted.append((net["proxy"], r["host"], "tcp", r["port"], f"proxy route {r['name']}"))
+    for h in hosts:
+        for e in h.get("reach") or []:
+            wanted.append((h["name"], e["host"], e.get("proto", "tcp"), int(e["port"]), "reach"))
+    rules, seen = [], set()
+    for src, dst, proto, port, why in wanted:
+        if (src, dst, proto, port) in seen:
+            continue
+        seen.add((src, dst, proto, port))
+        rules.append({"name": f"{src} to {dst} {proto}/{port} ({why})",
+                      "src_host": src, "src_ip": str(by_name[src]["ip"]),
+                      "dst_host": dst, "dst_ip": str(by_name[dst]["ip"]),
+                      "proto": proto, "port": port})
+    return rules
 
 
 def host_client_networks(vm, inventory):
     """Subnets that can reach a host: its own network's, its router's VPN
     when there is one, and the upstream network's when the host exposes
     ports through its router (forwarded connections keep their upstream
-    source address)."""
+    source address). A LAN host also gets each DMZ host that a DMZ rule lets
+    reach it, as a /32. A DMZ host also gets its DMZ subnet."""
     net = vm["network"]
-    cidrs = [net["cidr"]]
+    dmz = net.get("dmz") or {}
+    cidrs = [dmz["cidr"], net["cidr"]] if vm.get("zone") == "dmz" else [net["cidr"]]
+    for rule in net.get("dmz_rules") or []:
+        if rule["dst_host"] == vm["name"] and f"{rule['src_ip']}/32" not in cidrs:
+            cidrs.append(f"{rule['src_ip']}/32")
     if net.get("vpn"):
         cidrs.append(net["vpn"]["cidr"])
     if vm.get("expose") and net["type"] == "isolated" and net["upstream"] in inventory["networks"]:
@@ -825,7 +1037,8 @@ def placement_candidates(vm, inventory, net0, description, new_clone, template_i
 
 
 def _candidate(inventory, ip, bridge, delay, timeout):
-    net = next((n for n in inventory["networks"].values() if n["bridge"] == bridge), None)
+    net = next((n for n in inventory["networks"].values()
+                if bridge in (n["bridge"], (n.get("dmz") or {}).get("bridge"))), None)
     via = net["router"] if net and net["type"] == "isolated" else ""
     return {"ip": ip, "bridge": bridge, "via_router": via, "delay": delay, "timeout": timeout}
 
@@ -990,6 +1203,38 @@ def blocked_targets(vm, inventory, proxmox_ip=""):
     for other in inventory["networks"].values():
         if other["name"] not in (net["name"], net["upstream"]):
             targets.append({"name": f"{other['name']}'s gateway", "host": other["gateway"], "port": 53})
+            if other.get("dmz"):
+                targets.append({"name": f"{other['name']}'s DMZ gateway", "host": other["dmz"]["gateway"],
+                                "port": 53})
+    # From the DMZ, SSH on each LAN host: every VM listens on 22, so a
+    # timeout shows the router dropped it, not that nothing was there.
+    if vm.get("zone") == "dmz":
+        allowed = {(r["dst_host"], r["port"]) for r in net.get("dmz_rules") or []
+                   if r["src_host"] == vm["name"] and r["proto"] == "tcp"}
+        for h in inventory["hosts"].values():
+            if (h["network"]["name"] == net["name"] and h["zone"] == "lan" and h["type"] != "router"
+                    and (h["name"], 22) not in allowed):
+                targets.append({"name": f"LAN host {h['name']}", "host": h["ip"], "port": 22})
+    return targets
+
+
+def reachable_targets(vm, inventory):
+    """Places a host must reach through its router, on a network with a DMZ:
+    from the LAN, SSH on each DMZ host; from the DMZ, each TCP rule from this
+    host to the LAN. A refusal counts as reached: the packet got through,
+    the service just isn't up."""
+    net = vm["network"]
+    if net["type"] != "isolated" or vm["type"] == "router" or not net.get("dmz"):
+        return []
+    targets = []
+    if vm["zone"] == "lan":
+        for h in inventory["hosts"].values():
+            if h["network"]["name"] == net["name"] and h["zone"] == "dmz":
+                targets.append({"name": f"DMZ host {h['name']}", "host": h["ip"], "port": 22})
+    else:
+        for r in net.get("dmz_rules") or []:
+            if r["src_host"] == vm["name"] and r["proto"] == "tcp":
+                targets.append({"name": f"{r['dst_host']} ({r['name']})", "host": r["dst_ip"], "port": r["port"]})
     return targets
 
 
@@ -1042,6 +1287,7 @@ class FilterModule:
     def filters(self):
         return {
             "network_config_errors": network_config_errors,
+            "network_config_warnings": network_config_warnings,
             "network_config_proxmox_errors": network_config_proxmox_errors,
             "network_config_summary": network_config_summary,
             "network_config_inventory": network_config_inventory,
@@ -1061,6 +1307,7 @@ class FilterModule:
             "nixlab_ssh_args": nixlab_ssh_args,
             "unexpected_listeners": unexpected_listeners,
             "blocked_targets": blocked_targets,
+            "reachable_targets": reachable_targets,
             "network_verify_proxmox": network_verify_proxmox,
             "unforwarded_ports": unforwarded_ports,
         }

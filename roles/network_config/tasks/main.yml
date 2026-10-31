@@ -40,6 +40,18 @@
     msg: "{{ ['The network files have problems:'] + network_config_errors }}"
   when: network_config_errors | length > 0
 
+# Things that work but are likely mistakes, such as a published host left
+# on the LAN of a network with a DMZ. Shown, not fatal.
+- name: Check the network files for likely mistakes
+  ansible.builtin.set_fact:
+    network_config_warnings: >-
+      {{ network_config_files | network_config_warnings(template_vm_id, template_ip) }}
+
+- name: Show likely mistakes in the network files
+  ansible.builtin.debug:
+    msg: "{{ ['Warnings (deploys still go ahead):'] + network_config_warnings }}"
+  when: network_config_warnings | length > 0
+
 - name: Note each network
   ansible.builtin.set_fact:
     network_configs: >-

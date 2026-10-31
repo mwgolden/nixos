@@ -123,6 +123,14 @@ Outbound internet access and inbound access are separate policy decisions. Inter
 
 Access to the network for administration may be provided through a VPN or another explicitly configured administrative path.
 
+An isolated network may also have a DMZ: a second bridge behind the same firewall VM, for hosts that are published outside the network. DMZ hosts can reach the internet. They can reach the LAN only on specific host and port pairs that are derived from the configuration. The LAN can reach the DMZ.
+
+```text
+                    +-- LAN bridge --- Gitea, PostgreSQL, LDAP, ...
+Firewall VM --------+
+                    +-- DMZ bridge --- Reverse proxy, other published hosts
+```
+
 ### 4.2 Home-network deployment
 
 A home-network deployment places VMs directly on the home network using an appropriate Proxmox bridge.
@@ -433,6 +441,7 @@ These decisions were approved on 2026-10-28. The implementation steps are in [PL
 10. **State tracking:** Managed VMs carry Proxmox tags: `nixlab`, `net-<name>` and `type-<type>`. VMs that existed before tagging are adopted once, only when both their ID and name match the configuration. Every deploy also records the VM's current address in Proxmox. That's how a VM is found after its entry moves to another network file, since the files only hold where it should be. Before changing a VM, the playbook checks that the guest's `ens18` MAC matches `net0` in Proxmox. All clones share the template's SSH host key, so without this check a reused address could lead to reconfiguring the wrong VM. Reading addresses through the QEMU guest agent is a possible later improvement.
 11. **Proxmox resource ownership:** The project creates and manages isolated bridges. It uses the home bridge (`vmbr0`) as it is. Nothing without the project's tags is ever deleted.
 12. **Secrets management:** Per-host files at `secrets/<network>/<host>.env`, kept out of git. Ansible Vault or sops can replace them later.
+13. **DMZ:** (approved 2026-10-30, see [plans/completed/DMZ.md](plans/completed/DMZ.md)) An optional `dmz:` block in an isolated network's file adds a second bridge behind the same router. Hosts join it with `zone: dmz`. DMZ → LAN access is derived from proxy routes (a DMZ proxy to its LAN backends) plus explicit `reach:` entries. Validation warns, but doesn't stop, when a published host stays on the LAN of a network with a DMZ. The DMZ has no DHCP unless asked for, and it shares the network's domain and DNS server.
 
 ## 12. Guidance for implementation
 

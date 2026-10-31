@@ -21,6 +21,7 @@ On each VM, over SSH (through the router on an isolated network):
 | Network DNS | On an isolated network, every host's and proxy route's name resolves to the right address |
 | Public DNS and internet | `cache.nixos.org` resolves and answers on TCP 443 |
 | Isolation | On an isolated network, the VM can't reach the home gateway, the Proxmox web interface or any other network's gateway. A dropped connection (timeout) passes; an answer or a refusal means the packet got through. |
+| DMZ | On a network with a DMZ: from the DMZ, SSH on each LAN host is dropped (unless a DMZ rule allows it), and each DMZ rule's port answers or refuses. From the LAN, SSH on each DMZ host answers. |
 | Listening services | Nothing listens on a non-loopback TCP port except 22 and the host type's own ports, from `roles/<type>/tasks/ports.yml` |
 | Proxy routes | On a proxy, each route answers over HTTPS. A 502 or 504 means its backend isn't answering. |
 
@@ -28,7 +29,7 @@ From this machine:
 
 | Check | Passes when |
 |---|---|
-| Proxmox | Each VM exists, is running, and has `net0` (and a router's `net1`) on the right bridge |
+| Proxmox | Each VM exists, is running, and has `net0` (and a router's `net1`, and `net2` with a DMZ) on the right bridge |
 | Router ports | On an isolated network, the router's WAN address doesn't answer on any port that the network's hosts listen on but that no `expose:` entry or external route forwards |
 | Routes from home | When a network has external routes: external ones answer through the router's 443, and internal ones refuse |
 
@@ -49,6 +50,6 @@ In [defaults/main.yml](defaults/main.yml), which you can override with `-e`:
 - [tasks/main.yml](tasks/main.yml): the checks on one VM. They're noted in `verify_problems`, and nothing stops on the first failure.
 - [tasks/summary.yml](tasks/summary.yml): the checks from this machine, and the report.
 - [files/probe.py](files/probe.py): TCP and HTTPS probes using only Python's standard library, run on the VMs and here.
-- The filters `unexpected_listeners`, `blocked_targets`, `network_verify_proxmox`, `unforwarded_ports` and `nixlab_ssh_args` in [plugins/filter/network_config.py](../../plugins/filter/network_config.py), tested in `tests/test_verify.py`.
+- The filters `unexpected_listeners`, `blocked_targets`, `reachable_targets`, `network_verify_proxmox`, `unforwarded_ports` and `nixlab_ssh_args` in [plugins/filter/network_config.py](../../plugins/filter/network_config.py), tested in `tests/test_verify.py` and `tests/test_dmz.py`.
 
 A new host type needs a `tasks/ports.yml` that sets `verify_expected_ports`.
