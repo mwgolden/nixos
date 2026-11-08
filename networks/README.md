@@ -6,7 +6,7 @@ Each `<name>.yaml` here describes one network and the VMs on it. The file's name
 - [lab.yaml](lab.yaml): an isolated network behind the router VM.
 - [examples/](examples/): files that validation and deploys don't read, such as [examples/test.yaml](examples/test.yaml), a throwaway isolated network for trying out changes. Copy one into this folder to use it.
 
-Deploy a whole network with `ansible-playbook playbooks/deploy-network.yaml -e network=<name>`, or one host with `playbooks/deploy-host.yaml -e network=<name> -e host=<host>`.
+Deploy a whole network with `ansible-playbook playbooks/deploy-network.yaml -e network=<name>`, or one host with `playbooks/deploy-host.yaml -e network=<name> -e host=<host>`. Either one then rewrites the network's diagram in [docs/network-diagrams/](../docs/network-diagrams/).
 
 Check every file before deploying:
 
@@ -111,6 +111,7 @@ Postgres's `settings.allowed_networks` takes network names as well as subnets. L
 | The proxy's sites | `proxy:` on the network's hosts |
 | Postgres password logins | `settings.allowed_networks`, or the networks that can reach the host, including DMZ hosts with a DMZ rule to it |
 | The router's DMZ rules | Proxy routes from a DMZ proxy to LAN hosts, and `reach:` entries |
+| The diagrams in [docs/network-diagrams/](../docs/network-diagrams/) | Everything above, plus which hosts exist in Proxmox. Written by deploys and destroys, or by `playbooks/diagram-network.yaml` |
 
 ## What validation checks
 

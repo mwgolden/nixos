@@ -88,9 +88,10 @@ To build your own network, start from [networks/README.md](networks/README.md), 
 | `playbooks/validate-network.yaml` | Checks the network files, and checks them against Proxmox |
 | `plugins/filter/`, `tests/`  | Network file checks and their tests: `.venv/bin/python -m unittest discover -s tests` |
 | `roles/`                     | One role per host type (its NixOS configuration and service setup), plus shared roles: creating and removing VMs, reading the network files, finding a VM and switching it to its network. See [roles/README.md](roles/README.md) |
-| `playbooks/`                 | `deploy-network.yaml`, `deploy-host.yaml`, `destroy-network.yaml`, `destroy-host.yaml`, `validate-network.yaml` and `postgres-users.yaml` |
+| `playbooks/`                 | `deploy-network.yaml`, `deploy-host.yaml`, `destroy-network.yaml`, `destroy-host.yaml`, `validate-network.yaml`, `verify-network.yaml`, `diagram-network.yaml` and `postgres-users.yaml` |
 | `secrets/`                   | Host passwords and keys, gitignored. See [secrets/README.md](secrets/README.md) |
 | `docs/`                      | [ARCHITECTURE.md](docs/ARCHITECTURE.md), the design and its decisions, and [plans/](docs/plans/) for changes to it |
+| `docs/network-diagrams/`     | One diagram per network, written by deploys. See [Network diagrams](#network-diagrams) |
 | `Dockerfile`, `start_container.sh` | Nix build container                                     |
 
 ## Prerequisites
@@ -330,58 +331,18 @@ Proxy routes are picked by name, so `https://192.168.1.13/` doesn't work. Home m
 
 Only names of external routes work this way. Internal routes, like `www`, refuse connections from home addresses, and from DMZ hosts; use the VPN for those. VPN clients use the lab router's DNS, so they need no overrides. Either way, trust the proxy's certificate, `secrets/lab/proxy-ca.crt`, to avoid browser warnings (see [roles/proxy](roles/proxy/README.md#https)).
 
-### Example: the lab network
+### Network diagrams
 
-```mermaid
-flowchart TB
-    internet(("Internet"))
+Every deploy writes a diagram of its network to [docs/network-diagrams/](docs/network-diagrams/), such as [lab.md](docs/network-diagrams/lab.md). Each one shows the bridges, the router's addresses, the hosts by zone, and the port forwards, proxy routes, DMZ rules and VPN, with tables of the same data. They are made from the network files, so don't edit them; `destroy-host.yaml` and `destroy-network.yaml` update them too. To redraw them without deploying:
 
-    subgraph home["Home LAN 192.168.1.0/24"]
-        gateway["Home gateway and DNS<br/>192.168.1.1"]
-        workstation["Workstation<br/>Ansible, browser, DB clients"]
-    end
-
-    subgraph proxmox["Proxmox host (node com)"]
-        vmbr0["vmbr0<br/>bridged to the physical NIC"]
-
-        router["router, VM 113<br/>ens18 WAN 192.168.1.13<br/>ens19 LAN 10.1.0.1<br/>ens20 DMZ 10.1.1.1<br/>NAT, firewall, DHCP, DNS"]
-
-        vmbr1["vmbr1, isolated LAN bridge<br/>10.1.0.0/24, DHCP .100 to .199"]
-        vmbr4["vmbr4, isolated DMZ bridge<br/>10.1.1.0/24, no DHCP"]
-
-        subgraph lan["LAN"]
-            webserver["webserver-lab, VM 111<br/>10.1.0.11, HTTP 80"]
-            postgres["postgres, VM 112<br/>10.1.0.12, TCP 5432"]
-            gitea["gitea, VM 114<br/>10.1.0.14, HTTP 3000"]
-        end
-
-        subgraph dmz["DMZ"]
-            proxy["proxy, VM 116<br/>10.1.1.10, HTTPS 443"]
-        end
-    end
-
-    internet <--> gateway
-    gateway <--> vmbr0
-    workstation <--> vmbr0
-    vmbr0 <-->|"ens18"| router
-    router <-->|"ens19"| vmbr1
-    router <-->|"ens20"| vmbr4
-    vmbr1 <--> webserver
-    vmbr1 <--> postgres
-    vmbr1 <--> gitea
-    vmbr4 <--> proxy
-
-    workstation -.->|"external route: 192.168.1.13:443<br/>git.lab.home.arpa"| proxy
-    workstation -.->|"port forward: 192.168.1.13:5432"| postgres
-    proxy -.->|"DMZ rules: gitea 3000,<br/>webserver-lab 80"| lan
-    lan -.->|"LAN may reach the DMZ"| dmz
-    lan -.->|"outbound, NAT through 192.168.1.13"| internet
-    dmz -.->|"outbound, NAT through 192.168.1.13"| internet
-    lan -.-x|"blocked: home and other<br/>private networks"| home
-    dmz -.-x|"blocked: the LAN (except DMZ rules),<br/>home and other private networks"| home
+```bash
+ansible-playbook playbooks/diagram-network.yaml               # every network
+ansible-playbook playbooks/diagram-network.yaml -e network=lab
 ```
 
-Solid lines are the physical and virtual links. Dashed lines are what the router's firewall allows or blocks, all of it enforced on the router. The router's own SSH is reachable only from the home side and the VPN. The LAN and the DMZ can only use DHCP, DNS and ping on the router.
+The playbooks write the files but never commit them: commit them with the network file change they come from.
+
+In the diagrams, solid lines are the physical and virtual links. Dashed lines are what the router's firewall allows or blocks, all of it enforced on the router. The router's own SSH is reachable only from the home side and the VPN. The LAN and the DMZ can only use DHCP, DNS and ping on the router.
 
 ## Moving a VM between networks
 

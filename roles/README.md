@@ -169,7 +169,7 @@ On an isolated network only the router can reach the VM, so run checks in `verif
 | `secrets/README.md` | A row for its secrets file, if it has one |
 | `README.md` | A line in the list of host types, and in **Services** at the top |
 
-A web interface needs nothing extra to be served by the proxy: hosts list it under `proxy:` in the network file.
+A web interface needs nothing extra to be served by the proxy: hosts list it under `proxy:` in the network file. The network diagrams need nothing extra either: a host's ports there come from its `expose:` and `proxy:` entries.
 
 ### Trying it out
 

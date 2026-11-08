@@ -1,0 +1,39 @@
+# Writes the network diagrams in docs/network-diagrams/ without deploying
+# anything: one file per network and README.md listing them. Deploys and
+# destroys do this too; run this after changing the diagram code, or to
+# draw a network that isn't deployed yet.
+#
+# Without -e network, networks with no VMs in Proxmox are left out, so a
+# network removed with destroy-network.yaml stays without a diagram. Name
+# one with -e network to draw it anyway.
+#
+#   source proxmox/.env
+#   ansible-playbook playbooks/diagram-network.yaml               # every network
+#   ansible-playbook playbooks/diagram-network.yaml -e network=lab
+#
+# Without Proxmox access, every declared host is drawn as deployed:
+#   ansible-playbook playbooks/diagram-network.yaml -e network_config_check_proxmox=false
+#
+# The files are written, never committed.
+
+- name: Draw the networks
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Load and check the network files
+      ansible.builtin.include_role:
+        name: network_config
+      vars:
+        network_config_name: "{{ network | default('') }}"
+
+    - name: Write the diagrams
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: diagram
+      vars:
+        network_diagram_networks: >-
+          {{ [network] if network | default('') | length > 0 else network_configs.keys() | list }}
+        network_diagram_skip_empty: "{{ network | default('') | length == 0 }}"

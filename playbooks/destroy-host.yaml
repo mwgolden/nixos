@@ -10,7 +10,8 @@
 # next deploy creates it again. A router can't be deleted while other VMs
 # of its network still exist, since they would lose their only way out.
 # Only VMs tagged as the project's for this network (nixlab, net-<network>)
-# are deleted; deploying a VM tags it.
+# are deleted; deploying a VM tags it. Afterwards the network's diagram in
+# docs/network-diagrams/ shows the host as not deployed.
 
 - name: Destroy a host
   hosts: localhost
@@ -100,3 +101,10 @@
         # A future VM on this address gets a new host key.
         vm_remove_known_hosts:
           - "{{ destroy_vm.attach.ip }}"
+
+    - name: Rewrite the network's diagram
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: diagram
+      vars:
+        network_diagram_networks: ["{{ network }}"]

@@ -14,7 +14,8 @@
 # an isolated network's bridge (and its DMZ bridge) is removed too, once no
 # VM uses it.
 #
-# The network file stays; deploying it again recreates everything.
+# The network file stays; deploying it again recreates everything. Its
+# diagram in docs/network-diagrams/ is deleted.
 
 - name: Destroy a network
   hosts: localhost
@@ -112,6 +113,16 @@
       when:
         - remove_bridge | default(false) | bool
         - network_config.network.type == 'isolated'
+
+    # The upstream network's diagram shows this network's router.
+    - name: Delete the network's diagram
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: diagram
+      vars:
+        network_diagram_remove: ["{{ network }}"]
+        network_diagram_networks: >-
+          {{ [network_config.network.upstream] if network_config.network.type == 'isolated' else [] }}
 
     - name: Report
       ansible.builtin.debug:

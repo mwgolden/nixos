@@ -10,7 +10,8 @@
 # already done are only checked. Once all are deployed, checks the whole
 # network (see roles/network_verify) and fails if anything is wrong;
 # playbooks/verify-network.yaml runs only those checks. To deploy a single host, use
-# playbooks/deploy-host.yaml.
+# playbooks/deploy-host.yaml. Then rewrites the network's diagram in
+# docs/network-diagrams/ (see playbooks/diagram-network.yaml).
 #
 # Hosts removed from the file are reported, not deleted. To delete them
 # (only VMs tagged as this network's), add -e prune=true; it asks you to
@@ -86,6 +87,23 @@
     - name: Deploy the host
       ansible.builtin.include_role:
         name: host_deploy
+
+# Only after every host deployed: a failed deploy stops the run above, and
+# leaves the diagrams as they were. Before the checks, so a failed check
+# still leaves an accurate diagram.
+- name: Draw network {{ network }}
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Write the network's diagram
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: diagram
+      vars:
+        network_diagram_networks: ["{{ network }}"]
 
 # Once every host is deployed, so checks that involve several hosts (DNS
 # records, proxy routes, the router's forwards) see the finished network.

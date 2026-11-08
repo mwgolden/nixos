@@ -11,6 +11,9 @@
 # last deployed, from the address recorded in its Proxmox notes.
 #
 # Secrets are read from secrets/<network>/<host>.env; see secrets/README.md.
+#
+# Afterwards the network's diagram in docs/network-diagrams/ is rewritten,
+# and the diagram of the network the host moved from, if it moved.
 
 - name: Load the network files
   hosts: localhost
@@ -60,3 +63,22 @@
     - name: Deploy the host
       ansible.builtin.include_role:
         name: host_deploy
+
+- name: Draw the network of {{ host }}
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    # The VM's tags, read before the deploy, still name the network it
+    # was on.
+    - name: Write the diagrams
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: diagram
+      vars:
+        network_diagram_networks: >-
+          {{ ([network] + ((network_config_vms.proxmox_vms | default([]))
+                           | vm_tagged_networks(nixlab.hosts[network ~ '.' ~ host].vm_id)))
+             | unique | list }}

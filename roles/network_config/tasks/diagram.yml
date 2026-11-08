@@ -1,0 +1,91 @@
+# Writes the diagrams in docs/network-diagrams/ (see plugins/filter/
+# network_diagram.py): one file per network, and README.md listing them.
+# A file is only written when its text changes, so a redeploy with no
+# changes leaves git clean. Nothing is committed.
+#
+# Runs on localhost after main.yml. Reads the VM list from Proxmox again,
+# so the diagrams show what exists now, after the deploy or destroy, unless
+# network_config_check_proxmox is false; then every declared host counts
+# as deployed. Set:
+#   network_diagram_networks  networks whose diagrams to write; their
+#                             upstream networks' are rewritten too
+#   network_diagram_remove    networks whose diagrams to delete (default [])
+#   network_diagram_skip_empty  true to leave out networks none of whose
+#                             hosts exist (default false)
+
+- name: Read the VMs for the diagrams
+  when: network_config_check_proxmox | bool
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+      validate_certs: "{{ proxmox_validate_certs }}"
+  community.proxmox.proxmox_vm_info:
+    node: "{{ proxmox_node }}"
+    type: qemu
+  register: network_diagram_vms
+
+- name: Work out what to draw
+  ansible.builtin.set_fact:
+    network_diagram_inventory: "{{ network_configs | network_config_inventory }}"
+    network_diagram_deployed: >-
+      {{ network_configs | network_config_inventory
+         | network_diagram_deployed(network_diagram_vms.proxmox_vms
+                                    if network_config_check_proxmox | bool else none) }}
+
+- name: Leave out networks with nothing deployed
+  ansible.builtin.set_fact:
+    network_diagram_drawn: >-
+      {{ network_diagram_inventory | networks_with_deployed_hosts(network_diagram_networks, network_diagram_deployed)
+         if network_diagram_skip_empty | bool else network_diagram_networks }}
+
+- name: Make the diagrams folder
+  ansible.builtin.file:
+    path: "{{ network_diagram_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Write the diagram of each network
+  ansible.builtin.copy:
+    dest: "{{ network_diagram_dir }}/{{ item }}.md"
+    content: "{{ network_diagram_inventory | network_diagram(item, network_diagram_deployed) }}"
+    mode: "0644"
+  # With their upstream networks: a home network's diagram shows the
+  # routers on it.
+  loop: "{{ network_diagram_inventory | network_diagram_targets(network_diagram_drawn) }}"
+
+- name: Delete the diagrams of removed networks
+  ansible.builtin.file:
+    path: "{{ network_diagram_dir }}/{{ item }}.md"
+    state: absent
+  loop: "{{ network_diagram_remove }}"
+
+# Lists every network with a diagram, including ones this run didn't touch.
+- name: Find the diagrams
+  ansible.builtin.find:
+    paths: "{{ network_diagram_dir }}"
+    patterns: "*.md"
+    excludes: README.md
+  register: network_diagram_found
+
+- name: Write the index
+  ansible.builtin.copy:
+    dest: "{{ network_diagram_dir }}/README.md"
+    content: >-
+      {{ network_diagram_inventory | network_diagram_index(
+           network_diagram_found.files | map(attribute='path') | map('basename')
+           | map('regex_replace', '\.md$', '') | list,
+           network_diagram_deployed) }}
+    mode: "0644"
+
+- name: Show where the diagrams are
+  ansible.builtin.debug:
+    msg: >-
+      Diagrams in {{ network_diagram_dir | realpath }}:
+      {{ (network_diagram_inventory | network_diagram_targets(network_diagram_drawn)
+          | map('regex_replace', '$', '.md') | list
+          + ['README.md']) | join(', ') }}{{
+         (', removed ' ~ (network_diagram_remove | join(', '))) if network_diagram_remove else '' }}.
+      Review and commit them with your network file changes.
