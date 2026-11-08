@@ -47,7 +47,7 @@
         name: network_config
         tasks_from: inventory
       vars:
-        network_config_deploy: ["{{ host }}"]
+        network_config_deploy: ["{{ network }}.{{ host }}"]
 
 - name: Deploy {{ host }}
   hosts: nixlab_deploy

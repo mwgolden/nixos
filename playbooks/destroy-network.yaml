@@ -90,9 +90,10 @@
         vm_remove_name: "{{ item.name }}"
         vm_remove_confirm: "{{ item.name }}"
         vm_remove_required_tags: [nixlab, "net-{{ network }}"]
+        # By VM ID: host names repeat across networks.
         vm_remove_known_hosts: >-
-          {{ [destroy_inventory.hosts[item.name].attach.ip]
-             if item.name in destroy_inventory.hosts else [] }}
+          {{ destroy_inventory.hosts.values() | selectattr('vm_id', 'equalto', item.vmid)
+             | map(attribute='attach.ip') | list }}
       loop: "{{ destroy_list }}"
       loop_control:
         label: "{{ item.name }} (VM {{ item.vmid }})"

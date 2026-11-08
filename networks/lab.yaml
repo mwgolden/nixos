@@ -140,4 +140,5 @@ hosts:
     proxy:
       - name: www
         port: 80
+        external: true
 

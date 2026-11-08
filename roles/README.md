@@ -146,14 +146,15 @@ A type that keeps data on its own disk gets one when its host has `data_disk:`. 
 
 | Variable | Meaning |
 |---|---|
-| `vm.name`, `vm.type`, `vm.vm_id` | From the network file |
+| `vm.name`, `vm.type`, `vm.vm_id` | From the network file. `vm.name` is the short host name, which other networks may also use |
+| `vm.id` | Its host ID, `<network>.<host>`, unique across networks. Also its Ansible inventory name, so use it with `hostvars` |
 | `vm.settings` | The host's `settings:` block, or `{}` |
 | `vm.network.name`, `vm.network.domain`, `vm.network.type` | Its network |
 | `vm.expose` | Its port forwards, each with `port` and `wan_port` |
 | `vm.dns_name` | `<name>.<domain>` on an isolated network, otherwise empty |
 | `vm.data_disk.size_gb` | Size of its data disk, if it has one |
 | `final.ip` | Its address after the switch |
-| `final.via_router` | The router to go through to reach it, or empty on a home network |
+| `final.via_router` | The host ID of the router to go through to reach it (such as `lab.router`), or empty on a home network |
 | `nixlab.networks[vm.network.name].router_wan_ip` | Where its port forwards are, on an isolated network |
 
 On an isolated network only the router can reach the VM, so run checks in `verify.yml` with `delegate_to: "{{ final.via_router or 'localhost' }}"`.

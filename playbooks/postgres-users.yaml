@@ -50,9 +50,8 @@
     - name: Require a postgres host in that network
       ansible.builtin.assert:
         that:
-          - host in nixlab.hosts
-          - nixlab.hosts[host].type == 'postgres'
-          - nixlab.hosts[host].network.name == network
+          - (network ~ '.' ~ host) in nixlab.hosts
+          - nixlab.hosts[network ~ '.' ~ host].type == 'postgres'
         fail_msg: "networks/{{ network }}.yaml has no postgres host named '{{ host }}'."
         quiet: true
       tags: [always]
@@ -67,7 +66,7 @@
 
     - name: Note the host
       ansible.builtin.set_fact:
-        vm: "{{ nixlab.hosts[host] }}"
+        vm: "{{ nixlab.hosts[network ~ '.' ~ host] }}"
       tags: [always]
 
     - name: Require users_database
@@ -91,7 +90,7 @@
     # On an isolated network the VM is reached over SSH through the router.
     - name: Add the postgres VM to inventory
       ansible.builtin.add_host:
-        name: "{{ host }}"
+        name: "{{ vm.id }}"
         ansible_host: "{{ vm.ip }}"
         ansible_user: admin
         ansible_ssh_private_key_file: "{{ key }}"
@@ -104,7 +103,7 @@
       tags: [always]
 
 - name: Apply database users
-  hosts: "{{ host }}"
+  hosts: "{{ network }}.{{ host }}"
   gather_facts: false
   become: true
 

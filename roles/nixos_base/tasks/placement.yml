@@ -25,9 +25,9 @@
       {{ vm | placement_candidates(nixlab, proxmox_vm_config.net0 | default(''),
                                    proxmox_vm_config.description | default(''),
                                    proxmox_vm_new_clone, template_ip, network_bridge) }}
-    # Router name -> its WAN address, the way into its isolated network.
+    # Router host ID -> its WAN address, the way into its isolated network.
     place_router_wan: >-
-      {{ dict(nixlab.networks.values() | selectattr('router') | map(attribute='router')
+      {{ dict(nixlab.networks.values() | selectattr('router') | map(attribute='router_id')
               | zip(nixlab.networks.values() | selectattr('router') | map(attribute='router_wan_ip'))) }}
     place_key: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
 
@@ -55,7 +55,7 @@
       {{ vm.name }} goes on the isolated network {{ vm.attach.network }}, but its
       router ({{ vm.attach.via_router }}) isn't answering. Deploy it first:
       ansible-playbook playbooks/deploy-host.yaml -e network={{ vm.attach.network }}
-      -e host={{ vm.attach.via_router }}
+      -e host={{ nixlab.networks[vm.attach.network].router }}
     quiet: true
   when: vm.attach.via_router | length > 0
 

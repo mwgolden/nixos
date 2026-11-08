@@ -444,6 +444,7 @@ These decisions were approved on 2026-10-28. The implementation steps are in [PL
 11. **Proxmox resource ownership:** The project creates and manages isolated bridges. It uses the home bridge (`vmbr0`) as it is. Nothing without the project's tags is ever deleted.
 12. **Secrets management:** Per-host files at `secrets/<network>/<host>.env`, kept out of git. Ansible Vault or sops can replace them later.
 13. **DMZ:** (approved 2026-10-30, see [plans/completed/DMZ.md](plans/completed/DMZ.md)) An optional `dmz:` block in an isolated network's file adds a second bridge behind the same router. Hosts join it with `zone: dmz`. DMZ → LAN access is derived from proxy routes (a DMZ proxy to its LAN backends) plus explicit `reach:` entries. Validation warns, but doesn't stop, when a published host stays on the LAN of a network with a DMZ. The DMZ has no DHCP unless asked for, and it shares the network's domain and DNS server.
+14. **Host names per network:** (approved 2026-11-08, see [plans/completed/HOST-NAMES.md](plans/completed/HOST-NAMES.md)) A host name is unique only within its network file. Across networks a host is identified as `<network>.<host>`, which is also its Ansible inventory name. VM IDs, addresses, bridges, subnets and domains stay unique across all networks. Proxmox VM names stay the short host name, so they may repeat; VMs are told apart by VM ID and the `net-<network>` tag.
 
 ## 12. Guidance for implementation
 

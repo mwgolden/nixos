@@ -33,7 +33,7 @@ class Listeners(unittest.TestCase):
 class Blocked(unittest.TestCase):
     def test_isolated_host(self):
         inv = inventory()
-        self.assertEqual(nc.blocked_targets(inv["hosts"]["postgres"], inv, "192.168.1.5"), [
+        self.assertEqual(nc.blocked_targets(inv["hosts"]["lab.postgres"], inv, "192.168.1.5"), [
             {"name": "home's gateway", "host": "192.168.1.1", "port": 53},
             {"name": "the Proxmox web interface", "host": "192.168.1.5", "port": 8006}])
 
@@ -46,13 +46,13 @@ class Blocked(unittest.TestCase):
                 "hosts": [{"name": "router2", "type": "router", "vm_id": 300, "ip": "10.5.0.1",
                            "wan_ip": "192.168.1.30"}]}
         inv = inventory(mutate)
-        names = [t["name"] for t in nc.blocked_targets(inv["hosts"]["postgres"], inv)]
+        names = [t["name"] for t in nc.blocked_targets(inv["hosts"]["lab.postgres"], inv)]
         self.assertEqual(names, ["home's gateway", "lab2's gateway"])
 
     def test_router_and_home_hosts(self):
         inv = inventory()
-        self.assertEqual(nc.blocked_targets(inv["hosts"]["router"], inv, "x"), [])
-        self.assertEqual(nc.blocked_targets(inv["hosts"]["gitea"], inv, "x"), [])
+        self.assertEqual(nc.blocked_targets(inv["hosts"]["lab.router"], inv, "x"), [])
+        self.assertEqual(nc.blocked_targets(inv["hosts"]["home.gitea"], inv, "x"), [])
 
 
 class ProxmoxState(unittest.TestCase):
@@ -62,21 +62,21 @@ class ProxmoxState(unittest.TestCase):
 
     def test_problems(self):
         inv = inventory()
-        self.assertEqual(nc.network_verify_proxmox(inv, ["router", "postgres", "gitea"], self.VMS), {
-            "postgres": ["VM 112 is stopped, not running.", "net0 is on vmbr0, not vmbr1."],
-            "gitea": ["VM 114 doesn't exist in Proxmox."]})
+        self.assertEqual(nc.network_verify_proxmox(inv, ["lab.router", "lab.postgres", "home.gitea"], self.VMS), {
+            "lab.postgres": ["VM 112 is stopped, not running.", "net0 is on vmbr0, not vmbr1."],
+            "home.gitea": ["VM 114 doesn't exist in Proxmox."]})
 
     def test_router_lan_card(self):
         inv = inventory()
         vms = [{"vmid": 113, "status": "running", "config": {"net0": "virtio=A,bridge=vmbr0"}}]
-        self.assertEqual(nc.network_verify_proxmox(inv, ["router"], vms),
-                         {"router": ["net1 is on no bridge, not vmbr1."]})
+        self.assertEqual(nc.network_verify_proxmox(inv, ["lab.router"], vms),
+                         {"lab.router": ["net1 is on no bridge, not vmbr1."]})
 
 
 class Unforwarded(unittest.TestCase):
     def test_lab(self):
         inv = inventory()
-        listening = {"router": [22, 53], "postgres": [22, 5432, 9100], "gitea": [3000]}
+        listening = {"lab.router": [22, 53], "lab.postgres": [22, 5432, 9100], "home.gitea": [3000]}
         # 5432 is forwarded, 22 is the router's own, and gitea is on home.
         self.assertEqual(nc.unforwarded_ports(inv, "lab", listening), [53, 9100])
 
@@ -85,10 +85,10 @@ class Unforwarded(unittest.TestCase):
             add_proxy(configs)
             host(configs, "lab", "postgres")["proxy"][0]["external"] = True
         inv = inventory(mutate)
-        self.assertEqual(nc.unforwarded_ports(inv, "lab", {"proxy": [22, 80, 443, 2019]}), [2019])
+        self.assertEqual(nc.unforwarded_ports(inv, "lab", {"lab.proxy": [22, 80, 443, 2019]}), [2019])
 
     def test_home(self):
-        self.assertEqual(nc.unforwarded_ports(inventory(), "home", {"gitea": [3000]}), [])
+        self.assertEqual(nc.unforwarded_ports(inventory(), "home", {"home.gitea": [3000]}), [])
 
 
 class SshArgs(unittest.TestCase):

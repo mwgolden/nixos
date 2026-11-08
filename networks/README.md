@@ -38,7 +38,7 @@ ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox
 
 | Setting | Required | Meaning |
 |---|---|---|
-| `name` | yes | VM name in Proxmox, and the host name. Unique across all networks. |
+| `name` | yes | VM name in Proxmox, and the host name. Unique within this network; other networks may use the same name. Across networks a host is identified as `<network>.<host>`, such as `lab.router`, which is also its name in the Ansible inventory. |
 | `type` | yes | Which kind of VM: `webserver`, `postgres`, `gitea`, `garage`, `router`, `proxy`, `ldap`, `nats` or `workstation`. |
 | `vm_id` | yes | Proxmox VM ID. Unique across all networks, and not the template's. An existing VM with this ID must have this name. |
 | `ip` | yes | Fixed address inside `cidr` (or `dmz.cidr` for a DMZ host), outside the DHCP range, and unique across all networks. A router's `ip` is its LAN address and must equal `gateway`. |
@@ -119,14 +119,15 @@ Checked in the files, by [plugins/filter/network_config.py](../plugins/filter/ne
 - Every setting above, including `expose:`, `proxy:`, `domain`, `dmz`, `zone` and `reach:`.
 - A DMZ's bridge and subnet are unique like a network's, and each host's `ip` is in its zone's subnet.
 - A network with `proxy:` routes has exactly one `proxy` host, and no route has a host's name.
-- Names, VM IDs, addresses (including routers' `wan_ip`) and bridges are unique across all networks.
+- Host names are unique within each network.
+- VM IDs, addresses (including routers' `wan_ip`) and bridges are unique across all networks.
 - Subnets don't overlap.
 
 Checked against Proxmox:
 
 - The template exists.
 - No declared VM ID belongs to a VM with another name.
-- No declared name already exists under another ID. Otherwise deploying would clone a second copy.
+- No declared name already exists under another ID, on a VM tagged for the same network or not tagged at all. Otherwise deploying would clone a second copy. A VM with the same name tagged for another network is that network's host.
 - Home bridges exist, and an existing isolated bridge (including a DMZ bridge) really is isolated.
 
 It also reports, per network, VMs tagged for it that no file lists any more, VMs moved to another file, and VMs not yet tagged. It fails if a removed VM still holds an address a file gives another host. See "Which VMs are the project's" in the main README.

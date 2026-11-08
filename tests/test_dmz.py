@@ -141,12 +141,12 @@ class Inventory(unittest.TestCase):
         self.assertEqual((lab["dmz"], lab["dmz_rules"]), ({}, []))
 
     def test_dmz_host_attaches_to_the_dmz_bridge(self):
-        self.assertEqual(self.inv["hosts"]["proxy"]["attach"], {
+        self.assertEqual(self.inv["hosts"]["lab.proxy"]["attach"], {
             "network": "lab", "zone": "dmz", "bridge": "vmbr7", "ip": "10.1.1.10", "prefix_length": 24,
-            "gateway": "10.1.1.1", "nameserver": "10.1.1.1", "via_router": "router"})
+            "gateway": "10.1.1.1", "nameserver": "10.1.1.1", "via_router": "lab.router"})
 
     def test_router_gets_a_dmz_card(self):
-        self.assertEqual(self.inv["hosts"]["router"]["nics"], [
+        self.assertEqual(self.inv["hosts"]["lab.router"]["nics"], [
             {"interface": "net1", "bridge": "vmbr1"}, {"interface": "net2", "bridge": "vmbr7"}])
 
     def test_rule_derived_from_proxy_route(self):
@@ -201,23 +201,23 @@ class Inventory(unittest.TestCase):
             host(configs, "lab", "proxy")["reach"] = [{"host": "postgres", "port": 5432}]
         inv = inventory(mutate)
         # postgres also has expose:, so home is in there too.
-        self.assertEqual(nc.host_client_networks(inv["hosts"]["postgres"], inv),
+        self.assertEqual(nc.host_client_networks(inv["hosts"]["lab.postgres"], inv),
                          ["10.1.0.0/24", "10.1.1.10/32", "192.168.1.0/24"])
 
     def test_client_networks_of_a_dmz_host(self):
-        self.assertEqual(nc.host_client_networks(self.inv["hosts"]["proxy"], self.inv),
+        self.assertEqual(nc.host_client_networks(self.inv["hosts"]["lab.proxy"], self.inv),
                          ["10.1.1.0/24", "10.1.0.0/24"])
 
 
 class Placement(unittest.TestCase):
     def test_moving_to_the_dmz_goes_through_the_router(self):
         inv = inventory(add_dmz)
-        vm = inv["hosts"]["proxy"]
+        vm = inv["hosts"]["lab.proxy"]
         notes = "nixlab-address: 10.1.0.10 on vmbr1"
         found = nc.placement_candidates(vm, inv, "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr1", notes,
                                         False, "192.168.1.10", "vmbr0")
         self.assertEqual([(c["ip"], c["bridge"], c["via_router"]) for c in found], [
-            ("10.1.0.10", "vmbr1", "router"), ("10.1.1.10", "vmbr7", "router")])
+            ("10.1.0.10", "vmbr1", "lab.router"), ("10.1.1.10", "vmbr7", "lab.router")])
 
 
 class Checks(unittest.TestCase):
@@ -225,12 +225,12 @@ class Checks(unittest.TestCase):
         self.inv = inventory(add_dmz)
 
     def test_dmz_host_must_not_reach_lan_ssh(self):
-        targets = nc.blocked_targets(self.inv["hosts"]["proxy"], self.inv, "")
+        targets = nc.blocked_targets(self.inv["hosts"]["lab.proxy"], self.inv, "")
         self.assertEqual([t["name"] for t in targets if t["port"] == 22],
                          ["LAN host postgres", "LAN host forge"])
 
     def test_lan_host_has_no_extra_blocked_targets(self):
-        targets = nc.blocked_targets(self.inv["hosts"]["forge"], self.inv, "")
+        targets = nc.blocked_targets(self.inv["hosts"]["lab.forge"], self.inv, "")
         self.assertEqual([t["name"] for t in targets], ["home's gateway"])
 
     def test_other_networks_dmz_gateway_is_blocked(self):
@@ -241,26 +241,26 @@ class Checks(unittest.TestCase):
                             "gateway": "10.5.0.1", "nameserver": "10.5.0.1", "upstream": "home"},
                 "hosts": [{"name": "other-web", "type": "webserver", "vm_id": 501, "ip": "10.5.0.11"}]}
         inv = inventory(mutate)
-        names = [t["name"] for t in nc.blocked_targets(inv["hosts"]["other-web"], inv, "")]
+        names = [t["name"] for t in nc.blocked_targets(inv["hosts"]["other.other-web"], inv, "")]
         self.assertIn("lab's DMZ gateway", names)
 
     def test_reachable_from_lan(self):
-        self.assertEqual(nc.reachable_targets(self.inv["hosts"]["forge"], self.inv), [
+        self.assertEqual(nc.reachable_targets(self.inv["hosts"]["lab.forge"], self.inv), [
             {"name": "DMZ host proxy", "host": "10.1.1.10", "port": 22}])
 
     def test_reachable_from_dmz(self):
-        self.assertEqual(nc.reachable_targets(self.inv["hosts"]["proxy"], self.inv), [
+        self.assertEqual(nc.reachable_targets(self.inv["hosts"]["lab.proxy"], self.inv), [
             {"name": "forge (proxy to forge tcp/3000 (proxy route git))", "host": "10.1.0.14", "port": 3000}])
 
     def test_nothing_reachable_without_dmz(self):
         inv = inventory()
-        self.assertEqual(nc.reachable_targets(inv["hosts"]["postgres"], inv), [])
+        self.assertEqual(nc.reachable_targets(inv["hosts"]["lab.postgres"], inv), [])
 
     def test_proxmox_checks_the_dmz_card(self):
         vms = [{"vmid": 113, "status": "running",
                 "config": {"net0": "virtio=A,bridge=vmbr0", "net1": "virtio=B,bridge=vmbr1"}}]
-        self.assertEqual(nc.network_verify_proxmox(self.inv, ["router"], vms),
-                         {"router": ["net2 is on no bridge, not vmbr7."]})
+        self.assertEqual(nc.network_verify_proxmox(self.inv, ["lab.router"], vms),
+                         {"lab.router": ["net2 is on no bridge, not vmbr7."]})
 
 
 if __name__ == "__main__":

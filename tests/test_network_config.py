@@ -39,6 +39,16 @@ class RepoNetworks(unittest.TestCase):
         self.assertEqual(errors(load_repo_networks()), [])
 
 
+def second_lab(lab):
+    """A copy of the lab fixture as network lab2, with its own bridge,
+    subnet, VM IDs and addresses but the same host names."""
+    text = yaml.safe_dump(lab)
+    for a, b in (("name: lab", "name: lab2"), ("vmbr1", "vmbr6"), ("10.1.0.", "10.6.0."),
+                 ("192.168.1.13", "192.168.1.63"), ("vm_id: 11", "vm_id: 61")):
+        text = text.replace(a, b)
+    return yaml.safe_load(text)
+
+
 class Examples(unittest.TestCase):
     def test_examples_are_valid_next_to_the_repo_networks(self):
         for path in sorted((ROOT / "networks" / "examples").glob("*.yaml")):
@@ -68,9 +78,30 @@ class Mutations(unittest.TestCase):
         self.host("home", "webserver")["vm_id"] = 110
         self.assertError("is the template's ID")
 
-    def test_duplicate_name_across_networks(self):
+    def test_same_name_in_two_networks_is_valid(self):
+        # Host names are scoped to their network: this is home.gitea and lab.gitea.
         self.host("lab", "postgres")["name"] = "gitea"
-        self.assertError("host name gitea is already used")
+        self.assertEqual(errors(self.files), [])
+
+    def test_duplicate_name_in_one_network(self):
+        self.host("lab", "postgres")["name"] = "router"
+        self.assertError("host name router is already used by host router (network lab)")
+
+    def test_two_networks_each_with_a_router(self):
+        self.files.append({"file": "lab2", "config": second_lab(self.by_name["lab"])})
+        self.assertEqual(errors(self.files), [])
+
+    def test_vm_id_still_unique_with_same_names(self):
+        lab2 = second_lab(self.by_name["lab"])
+        lab2["hosts"][0]["vm_id"] = 113
+        self.files.append({"file": "lab2", "config": lab2})
+        self.assertError("vm_id 113 is already used by host router (network lab)")
+
+    def test_address_still_unique_with_same_names(self):
+        lab2 = second_lab(self.by_name["lab"])
+        lab2["hosts"][0]["wan_ip"] = "192.168.1.13"
+        self.files.append({"file": "lab2", "config": lab2})
+        self.assertError("address 192.168.1.13 is already used")
 
     def test_duplicate_address_router_wan(self):
         self.host("home", "webserver")["ip"] = "192.168.1.13"
@@ -250,6 +281,15 @@ class Proxmox(unittest.TestCase):
     def test_name_under_other_id(self):
         vms = VMS + [{"vmid": 214, "name": "gitea"}]
         self.assertIn("already exists as VM 214", self.check(vms=vms)[0])
+
+    def test_same_name_tagged_for_another_network(self):
+        # lab2's gitea, say: same name, other network, other VM ID.
+        vms = VMS + [{"vmid": 214, "name": "gitea", "tags": "nixlab;net-lab2;type-gitea"}]
+        self.assertEqual(self.check(vms=vms), [])
+
+    def test_same_name_tagged_for_this_network(self):
+        vms = VMS + [{"vmid": 214, "name": "gitea", "tags": "nixlab;net-home;type-gitea"}]
+        self.assertIn("host home.gitea: a VM with this name already exists as VM 214", self.check(vms=vms)[0])
 
     def test_missing_home_bridge(self):
         self.assertIn("bridge vmbr0 does not exist", self.check(ifaces=IFACES[1:])[0])

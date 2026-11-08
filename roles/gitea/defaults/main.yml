@@ -60,7 +60,7 @@ gitea_ssh_host: >-
 gitea_url_ssh_port: >-
   {{ gitea_public_ssh_port or gitea_ssh_forward.wan_port | default(22) }}
 gitea_proxy_ip: >-
-  {{ (nixlab.hosts[vm.network.proxy].ip) if vm.network.proxy else '' }}
+  {{ (nixlab.hosts[vm.network.proxy_id].ip) if vm.network.proxy else '' }}
 # Runs the gitea command as the gitea user against the live settings.
 gitea_cli: >-
   runuser -u gitea -- env GITEA_WORK_DIR=/var/lib/gitea

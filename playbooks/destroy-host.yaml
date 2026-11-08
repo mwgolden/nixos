@@ -48,14 +48,13 @@
     - name: Require the host in that network
       ansible.builtin.assert:
         that:
-          - host in destroy_inventory.hosts
-          - destroy_inventory.hosts[host].network.name == network
+          - (network ~ '.' ~ host) in destroy_inventory.hosts
         fail_msg: "networks/{{ network }}.yaml has no host named '{{ host }}'."
         quiet: true
 
     - name: Note the host
       ansible.builtin.set_fact:
-        destroy_vm: "{{ destroy_inventory.hosts[host] }}"
+        destroy_vm: "{{ destroy_inventory.hosts[network ~ '.' ~ host] }}"
 
     - name: Check no VMs still depend on the router
       when: destroy_vm.type == 'router'

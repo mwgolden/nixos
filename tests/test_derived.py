@@ -36,7 +36,7 @@ class PortForwards(unittest.TestCase):
         self.assertEqual(
             [(f["name"], f["proto"], f["wan_port"], f["lan_port"]) for f in inv["networks"]["lab"]["port_forwards"]],
             [("postgres-pg", "tcp", 15432, 5432), ("postgres-dns", "udp", 5353, 53)])
-        self.assertEqual(inv["hosts"]["postgres"]["expose"][0],
+        self.assertEqual(inv["hosts"]["lab.postgres"]["expose"][0],
                          {"name": "postgres-pg", "proto": "tcp", "port": 5432, "wan_port": 15432})
 
     def test_home_has_no_forwards(self):
@@ -61,19 +61,19 @@ class Dns(unittest.TestCase):
 class ClientNetworks(unittest.TestCase):
     def test_exposed_isolated_host_includes_upstream(self):
         inv = inventory()
-        self.assertEqual(network_config.host_client_networks(inv["hosts"]["postgres"], inv),
+        self.assertEqual(network_config.host_client_networks(inv["hosts"]["lab.postgres"], inv),
                          ["10.1.0.0/24", "192.168.1.0/24"])
 
     def test_unexposed_isolated_host_is_own_network_only(self):
         def mutate(configs):
             del host(configs, "lab", "postgres")["expose"]
         inv = inventory(mutate)
-        self.assertEqual(network_config.host_client_networks(inv["hosts"]["postgres"], inv),
+        self.assertEqual(network_config.host_client_networks(inv["hosts"]["lab.postgres"], inv),
                          ["10.1.0.0/24"])
 
     def test_home_host(self):
         inv = inventory()
-        self.assertEqual(network_config.host_client_networks(inv["hosts"]["gitea"], inv),
+        self.assertEqual(network_config.host_client_networks(inv["hosts"]["home.gitea"], inv),
                          ["192.168.1.0/24"])
 
     def test_names_resolve_to_subnets(self):
@@ -217,7 +217,7 @@ class Vpn(unittest.TestCase):
 
     def test_postgres_allows_vpn_clients(self):
         inv = inventory(add_vpn)
-        self.assertEqual(network_config.host_client_networks(inv["hosts"]["postgres"], inv),
+        self.assertEqual(network_config.host_client_networks(inv["hosts"]["lab.postgres"], inv),
                          ["10.1.0.0/24", "10.201.0.0/24", "192.168.1.0/24"])
 
 

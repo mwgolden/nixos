@@ -6,8 +6,9 @@ Used from roles/network_config:
 
 network_files is a list of {"file": <name without .yaml>, "config": <parsed
 YAML>}. The result is a list of error messages, empty when every file is
-valid. All files are checked together, because names, VM IDs, addresses,
-bridges and subnets must be unique across networks.
+valid. All files are checked together, because VM IDs, addresses, bridges
+and subnets must be unique across networks. Host names only need to be
+unique within their network: a host is identified as <network>.<host>.
 """
 
 import ipaddress
@@ -22,6 +23,12 @@ DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-
 # Used when a network sets no domain. home.arpa is reserved for local
 # networks (RFC 8375), so these names never clash with real ones.
 DEFAULT_DOMAIN_SUFFIX = "home.arpa"
+
+
+def host_id(network, name):
+    """A host's identity across all networks, such as lab.router. Network
+    and host names can't contain '.', so it is never ambiguous."""
+    return f"{network}.{name}"
 
 NETWORK_KEYS = {"name", "type", "bridge", "cidr", "gateway", "nameserver",
                 "upstream", "dhcp", "reserved", "domain", "dmz"}
@@ -88,9 +95,10 @@ class _Checker:
         self.errors = []
         self.template_vm_id = _int(template_vm_id)
         self.template_ip = _addr(template_ip)
+        # Per network: host name -> "where it was first seen".
+        self.names = {}
         # Values that must be unique across every network:
         # value -> "where it was first seen".
-        self.names = {}
         self.vm_ids = {}
         self.addresses = {}
         self.bridges = {}
@@ -301,7 +309,7 @@ class _Checker:
         if not isinstance(name, str) or not NAME_RE.match(name):
             self.error(net["where"], f"host name '{name}' must be lowercase letters, digits and '-', starting with a letter.")
             return
-        self.unique(self.names, name, where, "host name")
+        self.unique(self.names.setdefault(net["name"], {}), name, where, "host name")
         for key in sorted(set(host) - HOST_KEYS):
             self.error(where, f"unknown setting {key}. Type-specific settings go under settings:.")
 
@@ -663,6 +671,7 @@ def network_config_proxmox_errors(network_configs, vms, ifaces, template_vm_id, 
     """
     errors = []
     by_id = {int(vm["vmid"]): vm.get("name") for vm in vms}
+    nets_by_id = {s["vmid"]: s["networks"] for s in map(_vm_summary, vms)}
     by_iface = {i.get("iface"): i for i in ifaces}
     if int(template_vm_id) not in by_id:
         errors.append(f"The template, VM {template_vm_id}, does not exist. Run ./bootstrap.sh first.")
@@ -689,11 +698,15 @@ def network_config_proxmox_errors(network_configs, vms, ifaces, template_vm_id, 
             vm_id = int(host["vm_id"])
             found = by_id.get(vm_id)
             if found is not None and found != host["name"]:
-                errors.append(f"host {host['name']}: VM {vm_id} exists but is named '{found}'.")
+                errors.append(f"host {host_id(name, host['name'])}: VM {vm_id} exists but is named '{found}'.")
+            # Host names repeat across networks, so only a VM tagged for this
+            # network, or not tagged for any, can be this host's.
             for other_id, other_name in by_id.items():
-                if other_name == host["name"] and other_id != vm_id:
+                other_nets = nets_by_id[other_id]
+                if (other_name == host["name"] and other_id != vm_id
+                        and (not other_nets or name in other_nets)):
                     errors.append(
-                        f"host {host['name']}: a VM with this name already exists as VM {other_id}, "
+                        f"host {host_id(name, host['name'])}: a VM with this name already exists as VM {other_id}, "
                         f"not {vm_id}. Fix vm_id, or deploying would create a second VM.")
     return errors
 
@@ -715,13 +728,17 @@ def network_config_summary(network_configs, vms):
 def network_config_inventory(network_configs):
     """Turns valid network files into what the deploy playbooks use.
 
-    Returns {"networks": {name: network}, "hosts": {name: vm}} where each vm
-    has its declared settings plus:
+    Returns {"networks": {name: network}, "hosts": {id: vm}}, keyed by host
+    ID (<network>.<host>, see host_id), where each vm has its declared
+    settings (name is the short host name, also its Proxmox VM name) plus:
+      id       its host ID, also its name in the Ansible inventory
       network  the network it belongs to
       zone     "lan" or "dmz": which of its network's bridges it is on.
                Routers are "lan".
       attach   where its first network card (net0, ens18) sits: the bridge,
                its address there, and the gateway and DNS server it uses.
+               via_router is the host ID of the router it is reached
+               through, or "".
                For a router that is the upstream network at wan_ip; for
                everything else its own network's bridge for its zone, at ip.
       nics     extra network cards: a router's LAN card (net1) on its own
@@ -731,6 +748,7 @@ def network_config_inventory(network_configs):
                on a home network, which has no DNS server here
     and each network has:
       router         the name of its router host, or ""
+      router_id      that router's host ID, or ""
       router_wan_ip  that router's upstream address, or ""
       domain         its DNS domain
       dns_records    {name, fqdn, ip} for every host on it, which its
@@ -749,6 +767,7 @@ def network_config_inventory(network_configs):
                      makes a key pair) and allowed_ips (what clients route
                      through it)
       proxy          the name of its proxy host, or ""
+      proxy_id       that proxy's host ID, or ""
       proxy_routes   {name, fqdn, host, backend_ip, port, external} built
                      from its hosts' proxy: entries, for its proxy. Their
                      names are also in dns_records, at the proxy's address.
@@ -763,6 +782,7 @@ def network_config_inventory(network_configs):
         net = config["network"]
         cidr = ipaddress.IPv4Network(str(net["cidr"]))
         router = next((h["name"] for h in config.get("hosts") or [] if h["type"] == "router"), "")
+        proxy = next((h["name"] for h in config.get("hosts") or [] if h["type"] == "proxy"), "")
         networks[name] = {
             "name": name,
             "type": net["type"],
@@ -774,11 +794,13 @@ def network_config_inventory(network_configs):
             "upstream": net.get("upstream", ""),
             "dhcp": net.get("dhcp") or {},
             "router": router,
+            "router_id": host_id(name, router) if router else "",
             "router_wan_ip": "",
             "domain": network_domain(net),
             "dns_records": [],
             "port_forwards": [],
-            "proxy": next((h["name"] for h in config.get("hosts") or [] if h["type"] == "proxy"), ""),
+            "proxy": proxy,
+            "proxy_id": host_id(name, proxy) if proxy else "",
             "proxy_routes": [],
             "proxy_internal_sources": [],
             "vpn": {},
@@ -832,7 +854,8 @@ def network_config_inventory(network_configs):
             # Where net0 sits: the bridge's settings, for the host's zone.
             segment = net["dmz"] if zone == "dmz" else attach_net
             disk = h.get("data_disk")
-            hosts[h["name"]] = {
+            hosts[host_id(name, h["name"])] = {
+                "id": host_id(name, h["name"]),
                 "name": h["name"],
                 "type": h["type"],
                 "vm_id": int(h["vm_id"]),
@@ -854,7 +877,7 @@ def network_config_inventory(network_configs):
                     "prefix_length": segment["prefix_length"],
                     "gateway": segment["gateway"],
                     "nameserver": segment["nameserver"],
-                    "via_router": attach_net["router"] if attach_net["type"] == "isolated" else "",
+                    "via_router": attach_net["router_id"] if attach_net["type"] == "isolated" else "",
                 },
                 "nics": (([{"interface": "net1", "bridge": net["bridge"]}]
                           + ([{"interface": "net2", "bridge": net["dmz"]["bridge"]}] if net["dmz"] else []))
@@ -1039,17 +1062,17 @@ def placement_candidates(vm, inventory, net0, description, new_clone, template_i
 def _candidate(inventory, ip, bridge, delay, timeout):
     net = next((n for n in inventory["networks"].values()
                 if bridge in (n["bridge"], (n.get("dmz") or {}).get("bridge"))), None)
-    via = net["router"] if net and net["type"] == "isolated" else ""
+    via = net["router_id"] if net and net["type"] == "isolated" else ""
     return {"ip": ip, "bridge": bridge, "via_router": via, "delay": delay, "timeout": timeout}
 
 
 def network_config_deploy_order(inventory, network):
-    """Names of a network's hosts in the order to deploy them: its router
+    """IDs of a network's hosts in the order to deploy them: its router
     first (everything else reaches the network through it), then the rest
     in the order the network file lists them."""
     hosts = [h for h in inventory["hosts"].values() if h["network"]["name"] == network]
-    return ([h["name"] for h in hosts if h["type"] == "router"]
-            + [h["name"] for h in hosts if h["type"] != "router"])
+    return ([h["id"] for h in hosts if h["type"] == "router"]
+            + [h["id"] for h in hosts if h["type"] != "router"])
 
 
 # Ownership: tags the project puts on the VMs it deploys. Only these kinds
@@ -1103,7 +1126,7 @@ def network_config_ownership(inventory, network, vms):
     Each entry is {vmid, name, type, address, ...}.
     """
     declared = {(h["vm_id"], h["name"]): h for h in inventory["hosts"].values()}
-    attach_ips = {h["attach"]["ip"]: h["name"] for h in inventory["hosts"].values()}
+    attach_ips = {h["attach"]["ip"]: h["id"] for h in inventory["hosts"].values()}
     result = {"orphans": [], "moved": [], "untagged": [], "conflicts": []}
     for raw in vms:
         vm = _vm_summary(raw)
@@ -1241,7 +1264,8 @@ def reachable_targets(vm, inventory):
 def network_verify_proxmox(inventory, names, vms):
     """Problems with the VMs of the deployed hosts in Proxmox: missing, not
     running, or a network card on the wrong bridge. vms: proxmox_vm_info's
-    proxmox_vms, with config. Returns {host name: [problem, ...]}."""
+    proxmox_vms, with config. names are host IDs. Returns
+    {host ID: [problem, ...]}."""
     by_id = {int(v["vmid"]): v for v in vms}
     problems = {}
     for name in names:
@@ -1270,7 +1294,7 @@ def network_verify_proxmox(inventory, names, vms):
 def unforwarded_ports(inventory, network, listening):
     """Ports that hosts on an isolated network listen on but that its router
     doesn't forward: from the upstream network, the router's WAN address
-    must not answer on them. listening: {host name: [port, ...]}. Port 22
+    must not answer on them. listening: {host ID: [port, ...]}. Port 22
     is left out; it is the router's own SSH."""
     net = inventory["networks"][network]
     if net["type"] != "isolated":

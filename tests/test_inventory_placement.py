@@ -36,15 +36,15 @@ class Inventory(unittest.TestCase):
         self.assertEqual(self.inv["networks"]["home"]["router"], "")
 
     def test_isolated_host_attaches_to_its_network(self):
-        pg = self.inv["hosts"]["postgres"]
+        pg = self.inv["hosts"]["lab.postgres"]
         self.assertEqual(pg["attach"], {
             "network": "lab", "zone": "lan", "bridge": "vmbr1", "ip": "10.1.0.12", "prefix_length": 24,
-            "gateway": "10.1.0.1", "nameserver": "10.1.0.1", "via_router": "router"})
+            "gateway": "10.1.0.1", "nameserver": "10.1.0.1", "via_router": "lab.router"})
         self.assertEqual(pg["data_disk"], {"serial": "postgres-data", "size_gb": 20, "storage": "local-lvm"})
         self.assertEqual(pg["nics"], [])
 
     def test_router_attaches_upstream(self):
-        r = self.inv["hosts"]["router"]
+        r = self.inv["hosts"]["lab.router"]
         self.assertEqual(r["attach"]["bridge"], "vmbr0")
         self.assertEqual(r["attach"]["ip"], "192.168.1.13")
         self.assertEqual(r["attach"]["gateway"], "192.168.1.1")
@@ -53,9 +53,41 @@ class Inventory(unittest.TestCase):
         self.assertEqual(r["nics"], [{"interface": "net1", "bridge": "vmbr1"}])
 
     def test_home_host(self):
-        w = self.inv["hosts"]["webserver"]
+        w = self.inv["hosts"]["home.webserver"]
         self.assertEqual((w["attach"]["ip"], w["attach"]["via_router"], w["data_disk"]),
                          ("192.168.1.11", "", {}))
+
+
+class SameNames(unittest.TestCase):
+    """Two isolated networks whose hosts have the same names."""
+
+    def setUp(self):
+        configs = {p.stem: yaml.safe_load(p.read_text()) for p in FIXTURES.glob("*.yaml")}
+        text = yaml.safe_dump(configs["lab"])
+        for a, b in (("name: lab", "name: lab2"), ("vmbr1", "vmbr6"), ("10.1.0.", "10.6.0."),
+                     ("192.168.1.13", "192.168.1.63"), ("vm_id: 11", "vm_id: 61")):
+            text = text.replace(a, b)
+        configs["lab2"] = yaml.safe_load(text)
+        self.inv = nc.network_config_inventory(configs)
+
+    def test_each_host_has_its_own_entry(self):
+        for hid in ("lab.router", "lab2.router", "lab.postgres", "lab2.postgres"):
+            self.assertEqual(self.inv["hosts"][hid]["id"], hid)
+        self.assertEqual(self.inv["hosts"]["lab.router"]["vm_id"], 113)
+        self.assertEqual(self.inv["hosts"]["lab2.router"]["vm_id"], 613)
+        self.assertEqual(self.inv["hosts"]["lab2.router"]["name"], "router")
+
+    def test_each_network_goes_through_its_own_router(self):
+        self.assertEqual(self.inv["hosts"]["lab.postgres"]["attach"]["via_router"], "lab.router")
+        self.assertEqual(self.inv["hosts"]["lab2.postgres"]["attach"]["via_router"], "lab2.router")
+        self.assertEqual((self.inv["networks"]["lab2"]["router"], self.inv["networks"]["lab2"]["router_id"]),
+                         ("router", "lab2.router"))
+
+    def test_deploy_order_per_network(self):
+        self.assertEqual(nc.network_config_deploy_order(self.inv, "lab2"), ["lab2.router", "lab2.postgres"])
+
+    def test_dns_names_use_each_domain(self):
+        self.assertEqual(self.inv["hosts"]["lab2.postgres"]["dns_name"], "postgres.lab2.home.arpa")
 
 
 class DeployOrder(unittest.TestCase):
@@ -63,12 +95,12 @@ class DeployOrder(unittest.TestCase):
         inv = inventory()
         # lab.yaml lists the router first already; put it last to check.
         lab = [h for h in inv["hosts"].values() if h["network"]["name"] == "lab"]
-        inv["hosts"] = {h["name"]: h for h in reversed(lab)}
-        self.assertEqual(nc.network_config_deploy_order(inv, "lab"), ["router", "postgres"])
+        inv["hosts"] = {h["id"]: h for h in reversed(lab)}
+        self.assertEqual(nc.network_config_deploy_order(inv, "lab"), ["lab.router", "lab.postgres"])
 
     def test_file_order(self):
         self.assertEqual(nc.network_config_deploy_order(inventory(), "home"),
-                         ["webserver", "gitea", "garage"])
+                         ["home.webserver", "home.gitea", "home.garage"])
 
 
 class RecordedAddress(unittest.TestCase):
@@ -100,9 +132,9 @@ class RecordedAddress(unittest.TestCase):
 
     def test_inventory_dns_names(self):
         hosts = inventory()["hosts"]
-        self.assertEqual(hosts["postgres"]["dns_name"], "postgres.lab.home.arpa")
-        self.assertEqual(hosts["router"]["dns_name"], "router.lab.home.arpa")
-        self.assertEqual(hosts["gitea"]["dns_name"], "")
+        self.assertEqual(hosts["lab.postgres"]["dns_name"], "postgres.lab.home.arpa")
+        self.assertEqual(hosts["lab.router"]["dns_name"], "router.lab.home.arpa")
+        self.assertEqual(hosts["home.gitea"]["dns_name"], "")
 
 
 class Placement(unittest.TestCase):
@@ -110,7 +142,7 @@ class Placement(unittest.TestCase):
         self.inv = inventory()
 
     def places(self, name, net0, description="", new_clone=False):
-        vm = self.inv["hosts"][name]
+        vm = next(h for h in self.inv["hosts"].values() if h["name"] == name)
         return [(c["ip"], c["bridge"], c["via_router"]) for c in nc.placement_candidates(
             vm, self.inv, net0, description, new_clone, TEMPLATE_IP, TEMPLATE_BRIDGE)]
 
@@ -121,7 +153,7 @@ class Placement(unittest.TestCase):
     def test_settled_isolated_vm_without_record(self):
         # A VM deployed before addresses were recorded.
         self.assertEqual(self.places("postgres", "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr1"),
-                         [("10.1.0.12", "vmbr1", "router")])
+                         [("10.1.0.12", "vmbr1", "lab.router")])
 
     def test_settled_home_vm(self):
         self.assertEqual(self.places("gitea", "virtio=AA,bridge=vmbr0"),
@@ -131,12 +163,12 @@ class Placement(unittest.TestCase):
         # postgres was at 192.168.1.12 on home; its entry is now in lab.
         self.assertEqual(
             self.places("postgres", "virtio=AA,bridge=vmbr0", "nixlab-address: 192.168.1.12 on vmbr0"),
-            [("192.168.1.12", "vmbr0", ""), ("192.168.1.10", "vmbr0", ""), ("10.1.0.12", "vmbr1", "router")])
+            [("192.168.1.12", "vmbr0", ""), ("192.168.1.10", "vmbr0", ""), ("10.1.0.12", "vmbr1", "lab.router")])
 
     def test_card_moved_but_address_did_not(self):
         self.assertEqual(
             self.places("postgres", "virtio=AA,bridge=vmbr1", "nixlab-address: 192.168.1.12 on vmbr0"),
-            [("10.1.0.12", "vmbr1", "router"), ("192.168.1.12", "vmbr0", "")])
+            [("10.1.0.12", "vmbr1", "lab.router"), ("192.168.1.12", "vmbr0", "")])
 
     def test_router_found_on_wan(self):
         self.assertEqual(self.places("router", "virtio=AA,bridge=vmbr0", "nixlab-address: 192.168.1.13 on vmbr0"),

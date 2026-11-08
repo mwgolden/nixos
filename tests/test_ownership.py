@@ -29,7 +29,7 @@ def vm(vmid, name, tags="", description="", **config):
 
 class Tags(unittest.TestCase):
     def test_tags_for_a_host(self):
-        self.assertEqual(nc.nixlab_tags(inventory()["hosts"]["postgres"]),
+        self.assertEqual(nc.nixlab_tags(inventory()["hosts"]["lab.postgres"]),
                          ["nixlab", "net-lab", "type-postgres"])
 
     def test_merge_keeps_other_tags_and_replaces_ours(self):
@@ -64,7 +64,7 @@ class Ownership(unittest.TestCase):
     def test_orphan_holding_a_declared_address(self):
         r = self.check("lab", [vm(120, "oldpg", "nixlab;net-lab;type-postgres",
                                   "nixlab-address: 10.1.0.12 on vmbr1")])
-        self.assertEqual([(c["name"], c["used_by"]) for c in r["conflicts"]], [("oldpg", "postgres")])
+        self.assertEqual([(c["name"], c["used_by"]) for c in r["conflicts"]], [("oldpg", "lab.postgres")])
 
     def test_moved_to_another_file_is_not_an_orphan(self):
         # gitea is declared in home.yaml but still tagged for lab.
