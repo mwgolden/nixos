@@ -14,7 +14,7 @@ import ipaddress
 import re
 
 NETWORK_TYPES = ("home", "isolated")
-HOST_TYPES = ("webserver", "postgres", "gitea", "garage", "router", "proxy", "ldap", "nats")
+HOST_TYPES = ("webserver", "postgres", "gitea", "garage", "router", "proxy", "ldap", "nats", "workstation")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 PORT_FORWARD_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")

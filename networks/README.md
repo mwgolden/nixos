@@ -39,7 +39,7 @@ ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox
 | Setting | Required | Meaning |
 |---|---|---|
 | `name` | yes | VM name in Proxmox, and the host name. Unique across all networks. |
-| `type` | yes | Which kind of VM: `webserver`, `postgres`, `gitea`, `garage`, `router`, `proxy`, `ldap` or `nats`. |
+| `type` | yes | Which kind of VM: `webserver`, `postgres`, `gitea`, `garage`, `router`, `proxy`, `ldap`, `nats` or `workstation`. |
 | `vm_id` | yes | Proxmox VM ID. Unique across all networks, and not the template's. An existing VM with this ID must have this name. |
 | `ip` | yes | Fixed address inside `cidr` (or `dmz.cidr` for a DMZ host), outside the DHCP range, and unique across all networks. A router's `ip` is its LAN address and must equal `gateway`. |
 | `zone` | no | `lan` (the default) or `dmz`, which puts the host on the network's [DMZ](#dmz) bridge. Not for routers. |

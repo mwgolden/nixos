@@ -342,7 +342,9 @@ The target layout, reached in stages (see [PLAN.md](PLAN.md)):
 │   ├── gitea/
 │   ├── garage/
 │   ├── proxy/                   # Caddy reverse proxy (type: proxy)
-│   └── ldap/                    # lldap (type: ldap)
+│   ├── ldap/                    # lldap (type: ldap)
+│   ├── nats/                    # NATS with JetStream (type: nats)
+│   └── workstation/             # SSH machine with a non-root user
 ├── modules/                     # NixOS modules shared by every VM
 └── proxmox/                     # template bootstrap
 ```

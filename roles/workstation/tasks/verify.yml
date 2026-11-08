@@ -1,0 +1,34 @@
+# Checks SSH answers and says how to log in. Runs on localhost from
+# roles/host_deploy. On an isolated network only the router can reach the
+# workstation, so the check runs there.
+
+- name: Check SSH answers
+  ansible.builtin.wait_for:
+    host: "{{ final.ip }}"
+    port: 22
+    search_regex: "^SSH-"
+    timeout: 60
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+
+- name: Show how to log in
+  ansible.builtin.debug:
+    msg: >-
+      {% if final.via_router -%}
+      The workstation is on the isolated network at {{ vm.name }}.{{ vm.network.domain }}
+      ({{ final.ip }}): ssh {{ workstation_user }}@{{ vm.name }}.{{ vm.network.domain }}
+      from its VMs and VPN clients.
+      {% set forward = vm.expose | selectattr('port', 'equalto', 22) | first | default(none) -%}
+      {% if forward -%}
+      From home: ssh -p {{ forward.wan_port }} {{ workstation_user }}@{{ router_ip }}.
+      Redeploy the router if you just added this expose: entry.
+      {%- else -%}
+      To reach it from home, connect to the network's VPN, or add
+      expose: [{port: 22, wan_port: 2222}] to {{ vm.name }} in
+      networks/{{ vm.network.name }}.yaml and redeploy the router.
+      {%- endif %}
+      {%- else -%}
+      The workstation is up: ssh {{ workstation_user }}@{{ final.ip }}.
+      {%- endif %}
+      {% if workstation_ssh_keys | length == 0 -%}
+      It has no SSH keys, so log in on the Proxmox console with the password.
+      {%- endif %}

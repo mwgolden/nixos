@@ -1,0 +1,128 @@
+# Checks the workstation host's secrets and settings before anything
+# changes. Runs on localhost from roles/host_deploy. Facts it sets land on
+# the VM's inventory entry, where configure.yml and verify.yml use them.
+
+# The secrets file is optional: without it the user has no password.
+- name: Look for the secrets file
+  ansible.builtin.stat:
+    path: "{{ workstation_secrets_file }}"
+  register: workstation_secrets
+
+- name: Read the password from the secrets file
+  ansible.builtin.include_role:
+    name: dotenv
+  vars:
+    dotenv_path: "{{ workstation_secrets_file }}"
+    dotenv_missing_hint: "Copy roles/workstation/env.example there and set the password hash."
+  when: workstation_secrets.stat.exists
+
+- name: Note the password hash
+  ansible.builtin.set_fact:
+    workstation_password_hash: >-
+      {{ (dotenv_values | default({})).WORKSTATION_PASSWORD_HASH | default('')
+         if workstation_secrets.stat.exists else '' }}
+  no_log: true
+
+# A crypt(3) hash: yescrypt ($y$), SHA-512 ($6$), SHA-256 ($5$) or bcrypt.
+- name: Check the password hash
+  ansible.builtin.assert:
+    that:
+      - workstation_password_hash == '' or workstation_password_hash is match('^\$(y|6|5|2b)\$[./A-Za-z0-9$]+$')
+      - "'change-me' not in workstation_password_hash"
+    fail_msg: >-
+      In secrets/{{ vm.network.name }}/{{ vm.name }}.env, WORKSTATION_PASSWORD_HASH
+      must be a password hash from `openssl passwd -6` or `mkpasswd -m yescrypt`,
+      in single quotes. Delete the file for no password.
+    quiet: true
+  no_log: true
+
+- name: Check the settings
+  ansible.builtin.assert:
+    that:
+      - workstation_user is string
+      - workstation_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - workstation_user not in workstation_reserved_users
+      - workstation_sudo is boolean
+      - workstation_ssh_key_files is sequence and workstation_ssh_key_files is not string
+      - workstation_packages is sequence and workstation_packages is not string
+    fail_msg: >-
+      Check settings of {{ vm.name }} in networks/{{ vm.network.name }}.yaml:
+      user must be lowercase letters, digits, '_' and '-' (up to 32, not
+      {{ workstation_reserved_users | join(', ') }}), sudo true or false,
+      and ssh_key_files and packages lists.
+    quiet: true
+
+# The key files are read here, on the machine running Ansible, like
+# NIXOS_DEPLOYMENT_PUBLIC_KEY for admin.
+- name: Check the SSH key files exist
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - (item | expanduser) is abs
+      - (item | expanduser) is file
+      - "'PRIVATE KEY' not in lookup('file', item | expanduser)"
+    fail_msg: >-
+      settings.ssh_key_files of {{ vm.name }} in networks/{{ vm.network.name }}.yaml:
+      '{{ item }}' must be a public key file, given as a full path or one
+      starting with ~, such as ~/.ssh/id_ed25519.pub. Not the private key.
+    quiet: true
+  loop: "{{ workstation_ssh_key_files }}"
+
+- name: Read the SSH keys
+  ansible.builtin.set_fact:
+    workstation_ssh_keys: "{{ workstation_ssh_keys_read }}"
+  vars:
+    workstation_ssh_keys_read: >-
+      {%- set keys = [] -%}
+      {%- for path in workstation_ssh_key_files -%}
+      {%- for line in lookup('file', path | expanduser).splitlines() -%}
+      {%- if line | trim and not (line | trim).startswith('#') -%}
+      {%- set _ = keys.append({'file': path, 'key': line | trim}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ keys }}
+
+# The keys and package names are written into a .nix file, so they are
+# limited to what can't break out of it.
+- name: Check the SSH keys
+  ansible.builtin.assert:
+    that:
+      - item.key is match('^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [A-Za-z0-9@._+=:,/ -]*)?$')
+    fail_msg: >-
+      {{ item.file }}, from settings.ssh_key_files of {{ vm.name }} in
+      networks/{{ vm.network.name }}.yaml, has a line that isn't an SSH public
+      key, like 'ssh-ed25519 AAAA... you@laptop'. Lines starting with # are
+      skipped. The comment at the end of a key may only have letters, digits,
+      spaces and @ . _ + = : , / -.
+    quiet: true
+  loop: "{{ workstation_ssh_keys }}"
+  loop_control:
+    label: "{{ item.file }}"
+
+- name: Keep only the key lines
+  ansible.builtin.set_fact:
+    workstation_ssh_keys: "{{ workstation_ssh_keys | map(attribute='key') | list }}"
+
+- name: Check the package names
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is match('^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z_][A-Za-z0-9_-]*)*$')
+    fail_msg: >-
+      settings.packages of {{ vm.name }} in networks/{{ vm.network.name }}.yaml:
+      '{{ item }}' isn't a nixpkgs attribute name, like ripgrep or
+      python3Packages.ipython. Search https://search.nixos.org/packages.
+    quiet: true
+  loop: "{{ workstation_packages }}"
+
+- name: Require a way to log in
+  ansible.builtin.assert:
+    that:
+      - workstation_ssh_keys | length > 0 or workstation_password_hash != ''
+    fail_msg: >-
+      {{ vm.name }}'s user {{ workstation_user }} would have no way to log in.
+      Add settings.ssh_key_files in networks/{{ vm.network.name }}.yaml, or a password
+      hash in secrets/{{ vm.network.name }}/{{ vm.name }}.env (see
+      roles/workstation/env.example).
+    quiet: true

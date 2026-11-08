@@ -151,6 +151,11 @@ class Mutations(unittest.TestCase):
             {"name": "nats", "type": "nats", "vm_id": 118, "ip": "192.168.1.18"})
         self.assertError("a nats host needs a data_disk")
 
+    def test_workstation_type(self):
+        self.by_name["home"]["hosts"].append(
+            {"name": "ws", "type": "workstation", "vm_id": 119, "ip": "192.168.1.19"})
+        self.assertEqual(errors(self.files), [])
+
     def test_router_port_forwards_replaced(self):
         self.host("lab", "router")["settings"]["port_forwards"] = []
         self.assertError("settings.port_forwards has been replaced by expose:")

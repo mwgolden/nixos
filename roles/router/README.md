@@ -182,7 +182,57 @@ Then redeploy the router. The deploy:
 1. Makes a key pair for the router, and for each peer without a `public_key`, in `secrets/<network>/vpn/` on your machine. Existing keys are kept, so a rebuilt router keeps working with existing clients.
 2. Copies the router's private key to `/var/lib/wireguard/wg0.key` on the router, outside the Nix store.
 3. Checks that `wg0` has the router's key, the port and exactly the listed peers.
-4. Writes a client file for each peer, `secrets/<network>/vpn/<peer>.conf`. Import it into the WireGuard app, or run `wg-quick up ./laptop.conf`. A peer with its own `public_key` gets a file with a placeholder where its private key goes.
+4. Writes a client file for each peer, `secrets/<network>/vpn/<peer>.conf`. See [Connecting a client](#connecting-a-client). A peer with its own `public_key` gets a file with a placeholder where its private key goes.
+
+Only the devices you connect from are peers. The network's VMs are reached through the router, so they are never listed.
+
+### Connecting a client
+
+Use the peer's file from `secrets/<network>/vpn/`, such as `secrets/lab/vpn/laptop.conf`. Use the method that matches the device:
+
+**Linux with NetworkManager** (most desktops). Import the file once:
+
+```bash
+sudo nmcli connection import type wireguard file secrets/lab/vpn/laptop.conf
+nmcli connection modify laptop connection.autoconnect no   # connect only when asked
+```
+
+Then connect and disconnect with `nmcli connection up laptop` and `nmcli connection down laptop`, or from the desktop's network menu. NetworkManager keeps its own copy, so after the client file changes (a new `endpoint`, a new router key), run `nmcli connection delete laptop` and import it again.
+
+**Linux without NetworkManager:**
+
+```bash
+sudo wg-quick up ./laptop.conf     # the interface is named after the file
+sudo wg-quick down ./laptop.conf
+```
+
+`wg-quick` needs `resolvconf` for the file's `DNS =` line. If it stops with `resolvconf: command not found`, install `openresolv` or use NetworkManager. Don't use `wg setconf` with this file: it fails with `Line unrecognized: Address=...`, because `Address` and `DNS` are only read by `wg-quick` and NetworkManager.
+
+**Phone, Windows, macOS:** import the file into the WireGuard app. To get it onto a phone, `qrencode -t ansiutf8 < laptop.conf` shows a QR code the app can scan.
+
+**Checking it works:**
+
+```bash
+sudo wg show                                # "latest handshake" means the router answered
+getent hosts postgres.lab.home.arpa         # names resolve through the router's DNS server
+```
+
+No handshake usually means the endpoint can't be reached: the default endpoint only works from the home LAN (see [From outside the home](#vpn)).
+
+### Reaching a resource
+
+Once connected, use the names the router's DNS server answers for, as from a VM on the network:
+
+| What | How |
+|---|---|
+| A host over SSH | `ssh dev@ws.lab.home.arpa`. Add `-i ~/.ssh/<key>` if the host's key isn't your default one. |
+| A database or other port | Its host's name and port, such as `psql -h postgres.lab.home.arpa -U pgadmin -d postgres` |
+| A web service | Its [proxy](../proxy/README.md) route name, not its host's name: `https://git.lab.home.arpa/` for a route named `git`. Trust the proxy's certificate once (see [HTTPS](../proxy/README.md#https)). |
+| The router | `ssh admin@10.201.0.1` (its VPN address) |
+
+A host's name points to the VM itself. A proxy route's name points to the proxy. Opening `https://<host>.<domain>/` reaches the proxy only if it's pointed there by hand, and then it fails (in Firefox, `SSL_ERROR_INTERNAL_ERROR_ALERT`), because the proxy only has certificates for route names.
+
+In Firefox, DNS over HTTPS can skip the router's DNS server, so `home.arpa` names don't resolve. Add `home.arpa` as an exception under Settings > Privacy & Security > DNS over HTTPS.
 
 **What clients get:** an address in the VPN subnet, and a tunnel for only the network's subnet (and its DMZ's) and the VPN's. Other traffic, including to the internet, doesn't go through it. They use the router's DNS server, so names like `postgres.lab.home.arpa` and the [proxy's](../proxy/README.md) routes work. They can also SSH to the router at its VPN address. Lab hosts can't start connections to VPN clients, because the VPN subnet is inside the blocked private ranges.
 

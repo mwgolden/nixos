@@ -2,7 +2,7 @@
 
 Two kinds of role live here:
 
-- **Host type roles**, one per value of `type:` in a network file: `webserver`, `postgres`, `gitea`, `garage`, `router`, `proxy`, `ldap` and `nats`. Each holds the NixOS configuration for that kind of VM and the steps that set up its service. Each has its own README describing its settings.
+- **Host type roles**, one per value of `type:` in a network file: `webserver`, `postgres`, `gitea`, `garage`, `router`, `proxy`, `ldap`, `nats` and `workstation`. Each holds the NixOS configuration for that kind of VM and the steps that set up its service. Each has its own README describing its settings.
 - **Shared roles**, used by every deploy:
 
 | Role | What it does |

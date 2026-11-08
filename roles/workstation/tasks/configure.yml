@@ -1,0 +1,67 @@
+# Installs and switches to the workstation VM's NixOS configuration, then
+# checks the user account. Runs on the VM with become: true, from
+# roles/host_deploy.
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+
+- name: Create the folder for the password hash
+  ansible.builtin.file:
+    path: "{{ workstation_password_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Before the switch, so NixOS finds it when it sets up the account. Kept
+# out of the Nix store, which every user on the VM can read.
+- name: Install the password hash
+  ansible.builtin.copy:
+    dest: "{{ workstation_password_file }}"
+    content: "{{ workstation_password_hash }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  when: workstation_password_hash != ''
+  no_log: true
+
+- name: Remove the password hash
+  ansible.builtin.file:
+    path: "{{ workstation_password_file }}"
+    state: absent
+  when: workstation_password_hash == ''
+
+- name: Install the user account
+  ansible.builtin.template:
+    src: workstation.nix.j2
+    dest: /etc/nixos/workstation.nix
+    mode: "0644"
+
+- name: Install workstation NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Switch to the configuration and move to the workstation address
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch
+
+- name: Read the user's groups
+  ansible.builtin.command:
+    cmd: id -nG {{ workstation_user }}
+  register: workstation_groups
+  changed_when: false
+
+- name: Check the user's sudo access
+  ansible.builtin.assert:
+    that:
+      - ('wheel' in workstation_groups.stdout.split()) == workstation_sudo
+    fail_msg: >-
+      {{ workstation_user }} is {{ 'not ' if workstation_sudo else '' }}in the
+      wheel group, but settings.sudo is {{ workstation_sudo }}.
+    quiet: true
