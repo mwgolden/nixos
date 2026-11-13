@@ -19,7 +19,7 @@ Everything here except this README is gitignored. Each file holds `KEY=value` li
 | garage | `<host>.env`: the S3 access key | [roles/garage/env.example](../roles/garage/env.example) |
 | ldap | `<host>.env`: the admin password and JWT secret | [roles/ldap/env.example](../roles/ldap/env.example) |
 | nats | `<host>.env`: the client login | [roles/nats/env.example](../roles/nats/env.example) |
-| workstation | `<host>.env`, optional: the user's password hash | [roles/workstation/env.example](../roles/workstation/env.example) |
+| workstation | `<host>.env`, optional: the user's password hash, and secret environment variables (`WORKSTATION_ENV_<NAME>`) | [roles/workstation/env.example](../roles/workstation/env.example) |
 
 Two kinds of file here are written by deploys, not by you:
 

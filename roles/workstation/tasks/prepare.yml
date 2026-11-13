@@ -116,6 +116,44 @@
     quiet: true
   loop: "{{ workstation_packages }}"
 
+# WORKSTATION_ENV_<NAME> lines in the secrets file become <NAME> in the
+# user's environment. The names are read separately from the values, so a
+# line the .env reader skips, such as WORKSTATION_ENV_MY-KEY, is reported.
+- name: Read the secret environment variables
+  ansible.builtin.set_fact:
+    workstation_secret_env: "{{ (dotenv_values | default({})) | workstation_secret_env if workstation_secrets.stat.exists else {} }}"
+    workstation_secret_env_names: >-
+      {{ (lookup('file', workstation_secrets_file)
+          | regex_findall('(?m)^\s*(?:export\s+)?(WORKSTATION_ENV_[^=\s]*)\s*=')) | unique
+         if workstation_secrets.stat.exists else [] }}
+  no_log: true
+
+- name: Check the environment variables
+  ansible.builtin.assert:
+    that:
+      - workstation_env_problems | length == 0
+    fail_msg: "{{ workstation_env_problems }}"
+    quiet: true
+  vars:
+    workstation_env_problems: >-
+      {{ workstation_environment | workstation_env_errors(
+           workstation_secret_env, workstation_secret_env_names,
+           'settings.environment of ' ~ vm.name ~ ' in networks/' ~ vm.network.name ~ '.yaml',
+           'secrets/' ~ vm.network.name ~ '/' ~ vm.name ~ '.env') }}
+
+- name: Check the tools
+  ansible.builtin.assert:
+    that:
+      - workstation_tool_problems | length == 0
+    fail_msg: "{{ workstation_tool_problems }}"
+    quiet: true
+  vars:
+    workstation_tool_problems: >-
+      {{ (workstation_tools | workstation_tools_errors(
+            'settings.tools of ' ~ vm.name ~ ' in networks/' ~ vm.network.name ~ '.yaml'))
+         + (workstation_tools | workstation_package_manager_errors(workstation_packages,
+            'settings of ' ~ vm.name ~ ' in networks/' ~ vm.network.name ~ '.yaml')) }}
+
 - name: Require a way to log in
   ansible.builtin.assert:
     that:

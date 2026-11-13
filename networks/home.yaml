@@ -26,3 +26,23 @@ hosts:
       jetstream:
         max_memory: 256M
         max_file: ""
+
+  - name: ws
+    type: workstation
+    vm_id: 109
+    ip: 192.168.1.19
+    settings: 
+      user: dev
+      ssh_key_files: 
+        - ~/.ssh/ws_lab.pub
+      sudo: false
+      packages: 
+        - python3Packages.ipython
+        - uv
+        - nodejs_22
+      environment: 
+        EDITOR: nano
+      tools: 
+        - npm: "@anthropic-ai/claude-code"
+        - uv: ruff
+          version: "0.8.4"

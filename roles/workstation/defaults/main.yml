@@ -14,6 +14,13 @@ workstation_settings_defaults:
   # Extra packages from nixpkgs, by attribute name, such as nodejs_22 or
   # python3Packages.ipython.
   packages: []
+  # Environment variables for the user's shells, SSH commands and VS Code
+  # Remote-SSH, as NAME: value. Not secret: secret ones go in the secrets
+  # file as WORKSTATION_ENV_<NAME>.
+  environment: {}
+  # Tools installed in the user's home after the switch, with npm, uv or an
+  # install script fetched with curl. See README.md.
+  tools: []
 
 workstation_settings: "{{ workstation_settings_defaults | combine(vm.settings, recursive=true) }}"
 
@@ -22,13 +29,41 @@ workstation_user: "{{ workstation_settings.user }}"
 workstation_ssh_key_files: "{{ workstation_settings.ssh_key_files }}"
 workstation_sudo: "{{ workstation_settings.sudo }}"
 workstation_packages: "{{ workstation_settings.packages }}"
+workstation_environment: "{{ workstation_settings.environment }}"
+workstation_tools: "{{ workstation_settings.tools }}"
+
+# -e workstation_upgrade=true also upgrades unpinned npm and uv tools, and
+# runs the curl install scripts again.
+workstation_upgrade: false
 
 # Names the user can't take: accounts NixOS or the deploys already use.
 workstation_reserved_users: [root, admin, nobody, sshd, nixbld, messagebus, systemd-network, systemd-resolve, systemd-timesync]
 
 # The router's WAN address, where port forwards to an isolated host are.
 router_ip: "{{ nixlab.networks[vm.network.name].router_wan_ip }}"
-# Optional secrets for this host: the user's password. See README.md.
+# Optional secrets for this host: the user's password hash and secret
+# environment variables (WORKSTATION_ENV_<NAME>). See README.md.
 workstation_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}.env"
 # Where the password hash is kept on the VM, readable only by root.
 workstation_password_file: /etc/workstation/password.hash
+
+# The user's home, and the deploy's files in it.
+workstation_home: "/home/{{ workstation_user }}"
+# Variables for every shell, loaded by environment.extraInit.
+workstation_env_file: "{{ workstation_home }}/.config/nixlab/env"
+# The tools the deploy installed, so removing one from the list
+# uninstalls it without touching tools the user installed by hand.
+workstation_tool_record_file: "{{ workstation_home }}/.local/state/nixlab/tools.json"
+# The user's own packages and the system's, for tasks run as the user.
+workstation_user_path: "/etc/profiles/per-user/{{ workstation_user }}/bin:/run/current-system/sw/bin:/run/wrappers/bin"
+# Runs a command as the user with the env file loaded, the way their
+# shells see it: [*workstation_as_user, 'npm', 'ls', ...].
+workstation_as_user:
+  - /run/current-system/sw/bin/bash
+  - -c
+  - 'set -a; . "$HOME/.config/nixlab/env"; set +a; exec "$@"'
+  - nixlab
+# The environment for tasks run as the user.
+workstation_task_env:
+  HOME: "{{ workstation_home }}"
+  PATH: "{{ workstation_user_path }}"

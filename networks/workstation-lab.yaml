@@ -1,0 +1,81 @@
+
+
+network:
+  name: workstation-lab
+  type: isolated
+  bridge: vmbr3
+  cidr: 10.2.0.0/24
+  gateway: 10.2.0.1
+  nameserver: 10.2.0.1
+
+  upstream: home
+
+  dhcp: 
+    start: 10.2.0.100
+    end: 10.2.0.199
+    lease_time: 12h
+
+  reserved: []
+
+  dmz: 
+    bridge: vmbr5
+    cidr: 10.2.1.0/24
+    gateway: 10.2.1.1
+
+hosts:
+  - name: router
+    type: router
+    vm_id: 223
+    ip: 10.2.0.1
+    wan_ip: 192.168.1.3
+    settings:
+      dns_servers:
+        - 1.1.1.1
+        - 9.9.9.9
+      blocked_networks: 
+        - 192.168.0.0/16
+        - 172.16.0.0/12
+        - 10.0.0.0/8
+      vpn:
+        cidr: 10.201.0.0/24
+        peers: 
+          - name: desktop
+            ip: 10.201.0.2
+
+  - name: reverse-proxy
+    type: proxy
+    vm_id: 215
+    zone: dmz
+    ip: 10.2.1.10
+
+  - name: gitea
+    type: gitea
+    vm_id: 214
+    ip: 10.2.0.14
+    data_disk:
+      size_gb: 40
+      storage: local-lvm
+    settings:
+      http_port: 3000
+      public_host: ""
+      public_http_port: ""
+      public_ssh_port: ""
+      allow_registration: false
+    proxy:
+      - name: git
+        port: 3000
+        external: true
+
+  - name: ws
+    type: workstation
+    vm_id: 213
+    ip: 10.2.0.11
+    settings: 
+      user: dev
+      ssh_key_files:
+        - ~/.ssh/ws_lab.pub
+      sudo: false
+      packages: 
+        - python3Packages.ipython
+
+

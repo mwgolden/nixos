@@ -1,0 +1,188 @@
+# Writes the user's environment variables and installs their tools
+# (settings.environment, WORKSTATION_ENV_* secrets and settings.tools),
+# after the switch. See README.md.
+#
+# Runs on the VM with become: true, from configure.yml. Files are written
+# as root and handed to the user. Commands run as the user (become_user,
+# which needs acl from configuration.nix), with the env file loaded, so
+# the user needs no sudo of their own.
+
+- name: Create the user's folders
+  ansible.builtin.file:
+    path: "{{ workstation_home }}/{{ item.path }}"
+    state: directory
+    owner: "{{ workstation_user }}"
+    group: users
+    mode: "{{ item.mode | default(omit) }}"
+  loop:
+    - path: .config
+    - path: .config/nixlab
+      mode: "0700"
+    - path: .local
+    - path: .local/bin
+    - path: .local/share
+    - path: .local/state
+    - path: .local/state/nixlab
+      mode: "0700"
+    - path: .cache
+    - path: .cache/nixlab
+      mode: "0700"
+    - path: .npm-global
+  loop_control:
+    label: "~/{{ item.path }}"
+
+# Holds secrets, so it is readable by the user alone and never shown.
+- name: Write the user's environment variables
+  ansible.builtin.copy:
+    dest: "{{ workstation_env_file }}"
+    content: "{{ workstation_environment | workstation_env_file(workstation_secret_env) }}"
+    owner: "{{ workstation_user }}"
+    group: users
+    mode: "0600"
+  no_log: true
+
+- name: Read the tools the deploy installed before
+  ansible.builtin.slurp:
+    src: "{{ workstation_tool_record_file }}"
+  register: workstation_record_raw
+  failed_when: false
+
+- name: Note the tools the deploy installed before
+  ansible.builtin.set_fact:
+    workstation_tool_record: >-
+      {{ (workstation_record_raw.content | b64decode | from_json)
+         if workstation_record_raw.content is defined else [] }}
+
+- name: Find what is installed
+  ansible.builtin.include_tasks: tools-installed.yml
+
+- name: Work out what to install, upgrade or remove
+  ansible.builtin.set_fact:
+    workstation_tool_plan: >-
+      {{ workstation_tools | workstation_tool_actions(
+           workstation_tool_record, workstation_installed,
+           workstation_upgrade | bool, workstation_home) }}
+
+# A fresh copy each time, so a changed script is picked up.
+- name: Download the install scripts
+  ansible.builtin.get_url:
+    url: "{{ item.entry.name }}"
+    dest: "{{ item.script }}"
+    owner: "{{ workstation_user }}"
+    group: users
+    mode: "0700"
+    force: true
+  loop: "{{ workstation_tool_plan | selectattr('script') | selectattr('argv') | list }}"
+  loop_control:
+    label: "{{ item.entry.name }}"
+
+- name: Install, upgrade or remove the tools
+  ansible.builtin.command:
+    # Pass $VARS through to bash as written. Ansible expands them by
+    # default, with the deploy's own values (its PATH, for one).
+    expand_argument_vars: false
+    argv: "{{ workstation_as_user + item.argv }}"
+  become: true
+  become_user: "{{ workstation_user }}"
+  environment: "{{ workstation_task_env }}"
+  changed_when: true
+  loop: "{{ workstation_tool_plan | selectattr('argv') | list }}"
+  loop_control:
+    label: "{{ item.action }} {{ item.entry.kind }}: {{ item.entry.name }} ({{ item.reason }})"
+
+- name: Look for what the install scripts made
+  ansible.builtin.stat:
+    path: "{{ item.creates }}"
+  loop: "{{ workstation_tool_plan | selectattr('script') | selectattr('argv') | list }}"
+  loop_control:
+    label: "{{ item.creates }}"
+  register: workstation_created
+
+- name: Check the install scripts made their files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    fail_msg: >-
+      {{ item.item.entry.name }} ran, but {{ item.item.entry.creates }} still doesn't
+      exist. Fix creates: in settings.tools, so the deploy doesn't run the
+      script every time.
+    quiet: true
+  loop: "{{ workstation_created.results }}"
+  loop_control:
+    label: "{{ item.item.entry.creates }}"
+
+- name: Report tools the deploy left in place
+  ansible.builtin.debug:
+    msg: >-
+      {{ workstation_tool_plan | selectattr('action', 'equalto', 'leave')
+         | map(attribute='entry') | map(attribute='name')
+         | zip(workstation_tool_plan | selectattr('action', 'equalto', 'leave') | map(attribute='reason'))
+         | map('join', ': ') | list }}
+  when: workstation_tool_plan | selectattr('action', 'equalto', 'leave') | list | length > 0
+
+- name: Record the tools the deploy installed
+  ansible.builtin.copy:
+    dest: "{{ workstation_tool_record_file }}"
+    content: "{{ workstation_tools | workstation_tool_record | to_nice_json }}\n"
+    owner: "{{ workstation_user }}"
+    group: users
+    mode: "0600"
+
+- name: Find what is installed now
+  ansible.builtin.include_tasks: tools-installed.yml
+  when: workstation_tool_plan | selectattr('argv') | list | length > 0
+
+- name: Check the pinned tools
+  ansible.builtin.assert:
+    that:
+      - workstation_pin_problems | length == 0
+    fail_msg: "{{ workstation_pin_problems }}"
+    quiet: true
+  vars:
+    workstation_pin_problems: "{{ workstation_tools | workstation_pin_errors(workstation_installed) }}"
+
+- name: Show the tools' versions
+  ansible.builtin.debug:
+    msg: "{{ workstation_tools | workstation_tool_versions(workstation_installed) }}"
+  when: workstation_tools | length > 0
+
+# A login shell started from an empty environment, as a new SSH session
+# is, so this checks environment.extraInit as well as the file. (Without
+# env -i, the shell inherits markers from the deploy's own session, such as
+# __NIXOS_SET_ENVIRONMENT_DONE, and skips NixOS's setup.) Each variable is
+# compared with its value in the file, since NixOS sets some, like EDITOR,
+# itself. Prints the names that differ, never values.
+- name: Check a login shell sees the variables and PATH
+  ansible.builtin.command:
+    # Pass $VARS through to bash as written. Ansible expands them by
+    # default, with the deploy's own values (its PATH, for one).
+    expand_argument_vars: false
+    argv: >-
+      {{ ['/run/current-system/sw/bin/env', '-i',
+          'HOME=' ~ workstation_home, 'USER=' ~ workstation_user, 'LOGNAME=' ~ workstation_user,
+          '/run/current-system/sw/bin/bash', '-lc', workstation_env_check_script, 'check']
+         + (workstation_environment.keys() | list) + (workstation_secret_env.keys() | list) }}
+  vars:
+    workstation_env_check_script: |
+      file="$HOME/.config/nixlab/env"
+      if [ ! -r "$file" ]; then echo "unreadable: $file"; exit 0; fi
+      want() { ( set -a; . "$file" >/dev/null 2>&1; printenv "$1" ); }
+      for n in "$@"; do
+        printenv "$n" >/dev/null && [ "$(printenv "$n")" = "$(want "$n")" ] || echo "$n"
+      done
+      case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo PATH;; esac
+  become: true
+  become_user: "{{ workstation_user }}"
+  register: workstation_env_check
+  changed_when: false
+
+- name: Require the variables in a login shell
+  ansible.builtin.assert:
+    that:
+      - workstation_env_check.stdout | trim == ''
+    fail_msg: >-
+      A new login shell for {{ workstation_user }} doesn't see these as written in
+      {{ workstation_env_file }}: {{ workstation_env_check.stdout_lines | join(', ') }}.
+      Check environment.extraInit in /etc/nixos/configuration.nix and that
+      /etc/set-environment loads the file.
+    quiet: true

@@ -1,0 +1,67 @@
+# Reads which npm and uv tools are installed for the user, at which
+# versions, and which curl tools' creates paths exist. Sets
+# workstation_installed for the workstation_tool_actions filter.
+# Included from tools.yml, before and after installing.
+
+- name: Find npm and uv for {{ workstation_user }}
+  ansible.builtin.command:
+    # Pass $VARS through to bash as written. Ansible expands them by
+    # default, with the deploy's own values (its PATH, for one).
+    expand_argument_vars: false
+    argv: >-
+      {{ workstation_as_user + ['bash', '-c',
+         'for c in npm uv; do command -v "$c" >/dev/null && echo "$c"; done; true'] }}
+  become: true
+  become_user: "{{ workstation_user }}"
+  environment: "{{ workstation_task_env }}"
+  register: workstation_found
+  changed_when: false
+
+# npm ls exits 1 for problems such as a missing peer dependency, but still
+# prints the list.
+- name: List the npm tools
+  ansible.builtin.command:
+    # Pass $VARS through to bash as written. Ansible expands them by
+    # default, with the deploy's own values (its PATH, for one).
+    expand_argument_vars: false
+    argv: "{{ workstation_as_user + ['npm', 'ls', '--global', '--depth=0', '--json'] }}"
+  become: true
+  become_user: "{{ workstation_user }}"
+  environment: "{{ workstation_task_env }}"
+  register: workstation_npm_ls
+  changed_when: false
+  failed_when: workstation_npm_ls.stdout | default('') | trim == ''
+  when: "'npm' in workstation_found.stdout_lines"
+
+- name: List the uv tools
+  ansible.builtin.command:
+    # Pass $VARS through to bash as written. Ansible expands them by
+    # default, with the deploy's own values (its PATH, for one).
+    expand_argument_vars: false
+    argv: "{{ workstation_as_user + ['uv', 'tool', 'list'] }}"
+  become: true
+  become_user: "{{ workstation_user }}"
+  environment: "{{ workstation_task_env }}"
+  register: workstation_uv_list
+  changed_when: false
+  when: "'uv' in workstation_found.stdout_lines"
+
+- name: Look for the curl tools
+  ansible.builtin.stat:
+    path: "{{ workstation_home }}{{ item.creates[1:] }}"
+  loop: "{{ workstation_tools | selectattr('curl', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.creates }}"
+  register: workstation_curl_stats
+
+- name: Note what is installed
+  ansible.builtin.set_fact:
+    workstation_installed:
+      npm: "{{ workstation_npm_ls.stdout | default('') | workstation_npm_installed }}"
+      uv: "{{ workstation_uv_list.stdout | default('') | workstation_uv_installed }}"
+      curl: >-
+        {{ dict(workstation_curl_stats.results | map(attribute='item') | map(attribute='curl')
+                | zip(workstation_curl_stats.results | map(attribute='stat') | map(attribute='exists'))) }}
+      available:
+        npm: "{{ 'npm' in workstation_found.stdout_lines }}"
+        uv: "{{ 'uv' in workstation_found.stdout_lines }}"

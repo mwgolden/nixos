@@ -1,5 +1,6 @@
-# Installs and switches to the workstation VM's NixOS configuration, then
-# checks the user account. Runs on the VM with become: true, from
+# Installs and switches to the workstation VM's NixOS configuration,
+# checks the user account, then writes the user's environment variables and
+# installs their tools (tools.yml). Runs on the VM with become: true, from
 # roles/host_deploy.
 
 - name: Install the shared NixOS configuration
@@ -65,3 +66,7 @@
       {{ workstation_user }} is {{ 'not ' if workstation_sudo else '' }}in the
       wheel group, but settings.sudo is {{ workstation_sudo }}.
     quiet: true
+
+# After the switch: the user, their packages, acl and nix-ld exist now.
+- name: Write the user's environment and install their tools
+  ansible.builtin.include_tasks: tools.yml
