@@ -11,6 +11,7 @@ iso_storage: "local"
 
 template_vm_id: 110
 template_vm_name: "nixos-template"
+# A new VM starts with these, unless its host sets memory_mb or cores.
 template_memory_mb: 4096
 template_cores: 2
 
@@ -19,7 +20,7 @@ template_cores: 2
 # Proxmox's default, kvm64, lacks SSE4.2, which software such as Claude Code
 # needs; this node has no AVX2, so x86-64-v3 and v4 won't start. A change
 # reaches an existing VM on its next deploy, and takes effect once it is
-# stopped and started (-e proxmox_vm_restart=true). See networks/README.md.
+# stopped and started (-e proxmox_vm_restart=true). See networks/README.md#cpu-type-cores-and-memory.
 vm_cpu_type: x86-64-v2-AES
 template_disk_size_gb: 20
 template_disk_storage: "local-lvm"

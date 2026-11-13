@@ -12,9 +12,9 @@
 #
 # Secrets are read from secrets/<network>/<host>.env; see secrets/README.md.
 #
-# A changed CPU type (cpu: in the network file, or vm_cpu_type) waits for
-# the VM to be stopped and started. -e proxmox_vm_restart=true does that
-# during the deploy; see networks/README.md#cpu-type.
+# A changed CPU type, cores or memory (cpu:, cores:, memory_mb: in the
+# network file, or vm_cpu_type) waits for the VM to be stopped and started. -e proxmox_vm_restart=true does that
+# during the deploy; see networks/README.md#cpu-type-cores-and-memory.
 #
 # Afterwards the network's diagram in docs/network-diagrams/ is rewritten,
 # and the diagram of the network the host moved from, if it moved.

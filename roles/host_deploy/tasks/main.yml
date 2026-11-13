@@ -38,15 +38,18 @@
     proxmox_vm_tags: "{{ vm | nixlab_tags }}"
     # The host's cpu: in its network file, or the project default.
     proxmox_vm_cpu_type: "{{ vm.cpu or vm_cpu_type }}"
+    # 0 (not set) leaves the VM's own.
+    proxmox_vm_cores: "{{ vm.cores }}"
+    proxmox_vm_memory_mb: "{{ vm.memory_mb }}"
 
-# -e proxmox_vm_restart=true applies it now; see roles/proxmox_vm.
-- name: Report the CPU type change waiting for {{ vm.name }}
+# -e proxmox_vm_restart=true applies them now; see roles/proxmox_vm.
+- name: Report the hardware changes waiting for {{ vm.name }}
   ansible.builtin.debug:
     msg: >-
-      {{ vm.name }} (VM {{ vm.vm_id }}): CPU type changes from {{ proxmox_vm_cpu.current }}
-      to {{ proxmox_vm_cpu.next }} on the next stop and start. Run again with
-      -e proxmox_vm_restart=true to do that now.
-  when: proxmox_vm_cpu.pending | default(false)
+      {{ vm.name }} (VM {{ vm.vm_id }}): {{ proxmox_vm_hardware.changes | join(', ') }}
+      on the next stop and start. Run again with -e proxmox_vm_restart=true to do
+      that now.
+  when: proxmox_vm_hardware.pending | default(false)
 
 - name: Find the {{ vm.name }} VM
   ansible.builtin.include_role:

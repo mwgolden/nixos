@@ -33,21 +33,52 @@
         node: "{{ proxmox_node }}"
       register: network_config_ifaces
 
+    # Its CPU count and memory, for hosts' cores and memory_mb. Optional:
+    # if the token can't read it, those checks are skipped.
+    - name: Look up the node's size
+      community.proxmox.proxmox_node_info:
+      register: network_config_nodes
+      failed_when: false
+
 # A VM whose ID matches but whose name doesn't is someone else's VM. A VM
 # whose name matches under another ID means the file has the wrong ID, and
 # deploying would clone a second copy.
+- name: Note the node's size
+  ansible.builtin.set_fact:
+    network_config_node: >-
+      {{ (network_config_nodes.proxmox_nodes | default([])
+          | selectattr('node', 'equalto', proxmox_node) | list + [{}]) | first }}
+
 - name: Compare declared hosts with existing VMs
   ansible.builtin.set_fact:
     network_config_proxmox_errors: >-
       {{ network_configs | network_config_proxmox_errors(
            network_config_vms.proxmox_vms,
            network_config_ifaces.proxmox_node_networks,
-           template_vm_id, proxmox_node) }}
+           template_vm_id, proxmox_node)
+         + (network_configs | network_config_capacity_errors(network_config_node.maxcpu | default(0))) }}
 
 - name: Report problems found in Proxmox
   ansible.builtin.fail:
     msg: "{{ ['The network files do not match Proxmox:'] + network_config_proxmox_errors }}"
   when: network_config_proxmox_errors | length > 0
+
+- name: Check the hosts' memory against the node
+  ansible.builtin.set_fact:
+    network_config_capacity_warnings: >-
+      {{ network_configs | network_config_capacity_warnings(
+           network_config_vms.proxmox_vms, network_config_node.maxmem | default(0),
+           template_memory_mb) }}
+
+- name: Show the memory warning
+  ansible.builtin.debug:
+    msg: "{{ ['Warning (deploys still go ahead):'] + network_config_capacity_warnings }}"
+  when: network_config_capacity_warnings | length > 0
+
+- name: Show the node's size
+  ansible.builtin.debug:
+    msg: "Could not read the size of node {{ proxmox_node }}, so cores and memory_mb weren't checked against it."
+  when: network_config_node.maxcpu is not defined
 
 - name: Show what exists
   ansible.builtin.debug:

@@ -60,7 +60,13 @@ def network_config_cpu_type_errors(value, where="vm_cpu_type in proxmox/vars.yam
     return [f"{where}: {problem}"] if problem else []
 
 
-HOST_KEYS = {"name", "type", "vm_id", "ip", "wan_ip", "full_clone", "cpu",
+# Optional cores and memory per host. Not set leaves the VM as it is (a new
+# clone keeps the template's). The upper limits catch typos; the node's own
+# core count is checked against Proxmox.
+CORES_RANGE = (1, 64)
+MEMORY_MB_RANGE = (512, 262144)
+
+HOST_KEYS = {"name", "type", "vm_id", "ip", "wan_ip", "full_clone", "cpu", "cores", "memory_mb",
              "data_disk", "settings", "expose", "proxy", "zone", "reach"}
 ZONES = ("lan", "dmz")
 REACH_KEYS = {"host", "port", "proto"}
@@ -401,6 +407,14 @@ class _Checker:
             problem = cpu_type_error(host["cpu"])
             if problem:
                 self.error(where, f"cpu: {problem}")
+
+        for key, (low, high), example in (("cores", CORES_RANGE, "4"),
+                                          ("memory_mb", MEMORY_MB_RANGE, "8192")):
+            if key in host:
+                value = host[key]
+                if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                    self.error(where, f"{key} must be a whole number from {low} to {high}, "
+                                      f"without quotes, such as {key}: {example}; not {value!r}.")
 
         disk = host.get("data_disk")
         if disk is not None:
@@ -764,20 +778,100 @@ def _cpu_type(value):
     return first[len("cputype="):] if first.startswith("cputype=") else first or "kvm64"
 
 
-def proxmox_cpu_state(pending):
-    """A VM's CPU type from GET /nodes/<node>/qemu/<vmid>/pending: a list of
-    {key, value, pending, delete}. Returns {current, next, pending}:
-    current is what the VM runs with, next what it gets on its next stop
-    and start, and pending whether they differ. A missing cpu is kvm64."""
-    entry = next((e for e in pending or [] if e.get("key") == "cpu"), {})
-    current = _cpu_type(entry.get("value"))
-    if entry.get("delete"):
-        upcoming = "kvm64"
-    elif "pending" in entry:
-        upcoming = _cpu_type(entry["pending"])
-    else:
-        upcoming = current
-    return {"current": current, "next": upcoming, "pending": upcoming != current}
+# Proxmox's value for an option a VM doesn't set, and how to compare one.
+HARDWARE_OPTIONS = {
+    "cpu": ("kvm64", _cpu_type),
+    "cores": ("1", lambda v: str(int(v))),
+    "memory": ("512", lambda v: str(int(v))),
+}
+
+
+def proxmox_hardware_state(pending, keys=("cpu", "cores", "memory")):
+    """A VM's hardware options from GET /nodes/<node>/qemu/<vmid>/pending: a
+    list of {key, value, pending, delete}. Returns
+      options  {key: {current, next, pending}}: what the VM runs with, what
+               it gets on its next stop and start, and whether they differ
+      pending  whether any of them differs
+      changes  text for each that differs, such as "cores 2 -> 4"
+    Values are text, normalized: a cpu like "cputype=host,flags=+aes" is
+    "host", and a missing option is Proxmox's default (kvm64, 1 core,
+    512 MB)."""
+    entries = {e.get("key"): e for e in pending or [] if isinstance(e, dict)}
+    options, changes = {}, []
+    for key in keys:
+        default, norm = HARDWARE_OPTIONS[key]
+        entry = entries.get(key, {})
+        current = norm(entry["value"]) if entry.get("value") not in (None, "") else default
+        if entry.get("delete"):
+            upcoming = default
+        elif "pending" in entry:
+            upcoming = norm(entry["pending"])
+        else:
+            upcoming = current
+        options[key] = {"current": current, "next": upcoming, "pending": upcoming != current}
+        if upcoming != current:
+            unit = " MB" if key == "memory" else ""
+            changes.append(f"{key} {current} -> {upcoming}{unit}")
+    return {"options": options, "pending": bool(changes), "changes": changes}
+
+
+def proxmox_hardware_changes(state, wanted):
+    """The options to send to Proxmox: those in wanted ({key: value}) that
+    differ from what the VM gets next. Compared with next, so a change
+    already waiting for a restart isn't sent again."""
+    changes = {}
+    for key, value in wanted.items():
+        norm = HARDWARE_OPTIONS[key][1]
+        if state["options"][key]["next"] != norm(value):
+            changes[key] = str(value)
+    return changes
+
+
+def proxmox_hardware_wanted(cpu_type, cores, memory_mb):
+    """The hardware options a deploy sets: only those given (an empty type
+    or 0 leaves that option alone)."""
+    wanted = {}
+    if cpu_type:
+        wanted["cpu"] = str(cpu_type)
+    if int(cores or 0) > 0:
+        wanted["cores"] = str(int(cores))
+    if int(memory_mb or 0) > 0:
+        wanted["memory"] = str(int(memory_mb))
+    return wanted
+
+
+def network_config_capacity_errors(network_configs, node_cpus):
+    """Hosts asking for more cores than the Proxmox node has: their VM
+    wouldn't start."""
+    errors = []
+    for name, config in network_configs.items():
+        for h in config.get("hosts") or []:
+            cores = h.get("cores")
+            if isinstance(cores, int) and not isinstance(cores, bool) and node_cpus and cores > int(node_cpus):
+                errors.append(f"host {host_id(name, h['name'])}: cores {cores} is more than the "
+                              f"{node_cpus} CPUs the Proxmox node has, so the VM wouldn't start.")
+    return errors
+
+
+def network_config_capacity_warnings(network_configs, vms, node_memory_bytes, template_memory_mb):
+    """A warning when every declared host's memory together is more than the
+    node has. Proxmox allows that (VMs rarely use all of it), so it's not an
+    error. A host without memory_mb counts with its VM's current memory, or
+    the template's for a VM still to be made."""
+    by_id = {int(vm["vmid"]): (vm.get("config") or {}).get("memory") for vm in vms or []}
+    total = 0
+    for config in network_configs.values():
+        for h in config.get("hosts") or []:
+            asked = h.get("memory_mb")
+            if not isinstance(asked, int) or isinstance(asked, bool):
+                asked = by_id.get(int(h["vm_id"])) or template_memory_mb
+            total += int(asked)
+    node_mb = int(node_memory_bytes or 0) // (1024 * 1024)
+    if node_mb and total > node_mb:
+        return [f"The hosts in networks/ together have {total} MB of memory, more than the "
+                f"{node_mb} MB the Proxmox node has. Proxmox allows this, but under load the "
+                "node may swap or stop VMs."]
+    return []
 
 
 def network_config_inventory(network_configs):
@@ -786,7 +880,8 @@ def network_config_inventory(network_configs):
     Returns {"networks": {name: network}, "hosts": {id: vm}}, keyed by host
     ID (<network>.<host>, see host_id), where each vm has its declared
     settings (name is the short host name, also its Proxmox VM name; cpu is
-    "" when not set, for the project default vm_cpu_type) plus:
+    "" when not set, for the project default vm_cpu_type; cores and
+    memory_mb are 0 when not set, which leaves the VM's own) plus:
       id       its host ID, also its name in the Ansible inventory
       network  the network it belongs to
       zone     "lan" or "dmz": which of its network's bridges it is on.
@@ -919,6 +1014,9 @@ def network_config_inventory(network_configs):
                 "full_clone": bool(h.get("full_clone", False)),
                 # "" means the project default, vm_cpu_type.
                 "cpu": h.get("cpu", ""),
+                # 0 means not set: the VM keeps what it has.
+                "cores": int(h.get("cores", 0)),
+                "memory_mb": int(h.get("memory_mb", 0)),
                 "settings": h.get("settings") or {},
                 # The serial is per type: each type's configuration.nix
                 # mounts /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_<type>-data.
@@ -1374,7 +1472,11 @@ class FilterModule:
             "network_config_summary": network_config_summary,
             "network_config_inventory": network_config_inventory,
             "network_config_cpu_type_errors": network_config_cpu_type_errors,
-            "proxmox_cpu_state": proxmox_cpu_state,
+            "proxmox_hardware_state": proxmox_hardware_state,
+            "proxmox_hardware_changes": proxmox_hardware_changes,
+            "proxmox_hardware_wanted": proxmox_hardware_wanted,
+            "network_config_capacity_errors": network_config_capacity_errors,
+            "network_config_capacity_warnings": network_config_capacity_warnings,
             "host_client_networks": host_client_networks,
             "network_cidrs": network_cidrs,
             "placement_candidates": placement_candidates,

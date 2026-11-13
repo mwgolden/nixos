@@ -30,6 +30,8 @@ hosts:
   - name: ws
     type: workstation
     cpu: x86-64-v2-AES
+    cores: 4
+    memory_mb: 8192
     vm_id: 109
     ip: 192.168.1.19
     settings: 

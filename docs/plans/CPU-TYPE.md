@@ -15,6 +15,13 @@ This plan sets a CPU type on every VM: a project default, with a per-host overri
 
 **Phases 1–3 are done (2026-11-13). Phase 4, the live check, isn't.** The decisions in section 3 were taken as recommended.
 
+[Section 7](#7-extension-cores-and-memory-per-host), setting cores and memory per host, was added afterwards. **Its phases 5–7 are done too (2026-11-13); its live check, phase 8, isn't.** Decisions 7–11 were taken as recommended.
+
+- 26 unit tests in [tests/test_cpu_type.py](../../tests/test_cpu_type.py) now pass, covering cores, memory, the capacity checks and the general pending filter. `test_unknown_host_key` used `cores` as its example of an unknown setting; it uses `sockets` now.
+- The per-host report, the end-of-run list and the "permission refused" message were rendered with fake data. That found and fixed a precedence bug in the 403 message.
+- `cpu.yml` became [hardware.yml](../../roles/proxmox_vm/tasks/hardware.yml), `proxmox_cpu_state` became `proxmox_hardware_state`, and the fact `proxmox_vm_cpu` became `proxmox_vm_hardware`, as section 7 planned. New filters: `proxmox_hardware_wanted` (what to set; empty or 0 leaves an option alone) and `proxmox_hardware_changes` (what differs from the VM's next values).
+- The node's size comes from `proxmox_node_info` in [network_config's proxmox.yml](../../roles/network_config/tasks/proxmox.yml). If the token can't read it, the deploy says so and skips the core-count error and memory warning, rather than failing.
+
 Checked without Proxmox:
 
 - 14 new unit tests in [tests/test_cpu_type.py](../../tests/test_cpu_type.py) pass: allowed and rejected `cpu:` values, `vm_cpu_type`, the inventory, and reading `/pending` responses. The full suite has the one failure it had before (`Examples`).
@@ -162,3 +169,66 @@ Each phase leaves the repo working, and the unit tests pass after each one.
 - **A guest that ignores ACPI shutdown** hits the 120 s timeout, and the deploy fails without a hard stop (decision 5). Stop it in Proxmox and run again.
 - **`host` ties a VM to this CPU model.** Moving it to a different node later means stopping it first, or changing its type.
 - **Nothing breaks on its own today.** VMs stay on `kvm64` until a deploy sets the new type and they're restarted, so this can be rolled out one VM at a time.
+
+## 7. Extension: cores and memory per host
+
+Not started; added 2026-11-13. Today every VM inherits the template's 2 cores and 4096 MB (`template_cores` and `template_memory_mb` in `proxmox/vars.yaml`), and nothing changes them afterwards. A workstation or postgres host may want more, and a small webserver less.
+
+### Target
+
+```yaml
+# networks/lab.yaml
+hosts:
+  - name: postgres
+    type: postgres
+    vm_id: 112
+    ip: 10.1.0.12
+    cores: 4          # optional
+    memory_mb: 8192   # optional
+```
+
+- **Not set:** the VM is left as it is. A new clone keeps the template's values, and an existing VM keeps whatever it has, including changes made by hand in Proxmox (decision 7).
+- **Set:** a new clone gets them before its first start. An existing VM gets them on its next deploy. Like the CPU type, Proxmox holds the change until the VM is stopped and started, unless hotplug is on (decision 10). It goes through the same report and the same `-e proxmox_vm_restart=true`.
+- **Lowering memory** works the same way. The guest simply boots with less.
+
+### How it works
+
+The CPU type work already does most of this; it generalizes from one option to three.
+
+- **Validation** in [network_config.py](../../plugins/filter/network_config.py): `cores` and `memory_mb` are added to `HOST_KEYS`. `cores` must be a whole number from 1 to 64, and `memory_mb` a whole number from 512 to 262144 (decision 9). YAML numbers only: `"4"` in quotes is rejected, like `full_clone`.
+- **Against Proxmox** in [network_config's proxmox.yml](../../roles/network_config/tasks/proxmox.yml), which already reads the node: a host asking for more cores than the node has is an error, since the VM wouldn't start. The node's total memory isn't a hard limit, because Proxmox allows overcommitting. When the network's hosts together ask for more than the node has, that is a warning, not an error (decision 11).
+- **Inventory:** each host gets `cores` and `memory_mb`, as given or `0` for not set.
+- **[proxmox_vm](../../roles/proxmox_vm/tasks/main.yml):** new inputs `proxmox_vm_cores` and `proxmox_vm_memory_mb` (0 = leave alone). [cpu.yml](../../roles/proxmox_vm/tasks/cpu.yml) becomes `hardware.yml`. It reads `/pending` once, sends every option that differs (`cpu`, `cores`, `memory`) in one request, and reads `/pending` again.
+- **The pending filter** generalizes: `proxmox_cpu_state` becomes `proxmox_hardware_state(pending, keys)`, which returns `{key: {current, next, pending}}` and an overall `pending`. `cores` and `memory` have no "missing means kvm64" rule. A missing value means Proxmox's default (1 core, 512 MB); in practice clones always have them from the template.
+- **Reports** list every waiting change, such as `postgres: cores 2 -> 4, memory 4096 -> 8192 MB`. The fact `proxmox_vm_cpu` becomes `proxmox_vm_hardware`, and `deploy-network.yaml`'s end-of-run list uses it.
+- **Permissions:** `cores` falls under `VM.Config.CPU`, already needed. `memory` needs `VM.Config.Memory`, which `PVEVMAdmin` also includes. The 403 message names whichever was refused.
+
+### Decisions needing approval
+
+| # | Decision | Recommended | Alternative |
+|---|---|---|---|
+| 7 | A host without `cores`/`memory_mb` | Leave the VM as it is | Set the template's values, so the files fully describe every VM. That would undo hand-made changes in Proxmox on the next deploy. |
+| 8 | Setting names | `cores` and `memory_mb`, next to `cpu` at the host level | Under a `resources:` block (`resources: {cores: 4, memory_mb: 8192}`). Tidier if more are added, such as sockets or balloon, but deeper. |
+| 9 | Limits | `cores` 1–64 and `memory_mb` 512–262144, plus the node's core count as checked against Proxmox | Only the Proxmox check. Then a typo like `memory_mb: 81920` is caught only by the overcommit warning. |
+| 10 | Hotplug | Off, as today: changes wait for a stop and start, the same as the CPU type | Turn on CPU and memory hotplug, so increases apply at once. That needs NUMA on and guest support, and Proxmox still can't hot-remove memory reliably. More moving parts for a small gain. |
+| 11 | More memory asked for than the node has | A warning when validating against Proxmox | An error. Proxmox allows overcommit, and VMs rarely use all their memory, so an error would block valid setups. |
+
+### Phases
+
+Each phase leaves the repo working, and the unit tests pass after each one.
+
+- **Phase 5: settings and validation.** The keys, limits, the inventory, and the node core-count check and memory warning. Tests: limits, quoted numbers, the inventory's `0`, and that the repo networks stay valid.
+- **Phase 6: applying them.** `hardware.yml`, the generalized filter, and the reports. Tests for `proxmox_hardware_state` with sample `/pending` responses: nothing pending, one key pending, several, and a deleted key.
+- **Phase 7: docs.** The `cores` and `memory_mb` rows in [networks/README.md](../../networks/README.md), with a note on the restart, and `VM.Config.Memory` in [README.md](../../README.md)'s token permissions.
+- **Phase 8: live check.**
+  1. Give a throwaway host `cores: 1` and `memory_mb: 2048`, and deploy it new: Proxmox shows them before the first start, and `nproc` and `free -m` in the guest agree.
+  2. Raise both on an existing VM: the change is reported as waiting, and nothing restarts.
+  3. With `-e proxmox_vm_restart=true`: the VM restarts with the new values.
+  4. Remove both settings and redeploy: nothing changes (decision 7).
+  5. Set `cores` above the node's count: validation stops the deploy before anything changes.
+
+### Risks
+
+- **Too little memory** can make a service fail to start, or the guest kill processes under load: postgres, gitea, and NixOS's own `nixos-rebuild` on a small VM. The 512 MB floor allows very small VMs. Keep services at 2048 MB or more unless you've checked.
+- **Overcommitting memory** across many VMs can make the node swap or kill VMs under load. The warning (decision 11) is the only guard.
+- **The same restart downtime** as the CPU type, only with `-e proxmox_vm_restart=true`. A deploy that changes the CPU type, cores and memory together restarts the VM once.

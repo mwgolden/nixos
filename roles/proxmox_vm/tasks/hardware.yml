@@ -1,0 +1,83 @@
+# Sets the VM's CPU type, cores and memory where they differ from
+# proxmox_vm_hardware_wanted, in one request, and works out whether a change
+# is waiting for the VM to be stopped and started. Proxmox applies these to
+# a stopped VM at once, and to a running one only on its next start: a
+# reboot from inside the guest isn't enough.
+#
+# Included from main.yml, on localhost. Sets proxmox_vm_hardware from the
+# proxmox_hardware_state filter: {options, pending, changes}.
+
+- name: Read the hardware of VM {{ proxmox_vm_id }}
+  ansible.builtin.uri:
+    url: "https://{{ proxmox_api_host }}:8006/api2/json/nodes/{{ proxmox_node }}/qemu/{{ proxmox_vm_id }}/pending"
+    headers:
+      Authorization: >-
+        PVEAPIToken={{ proxmox_api_user }}!{{ proxmox_api_token_id }}={{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}
+    validate_certs: "{{ proxmox_validate_certs }}"
+  register: proxmox_vm_pending_before
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+# Compared with what the VM gets next, so a change already waiting isn't
+# sent again on every deploy.
+- name: Note the hardware of VM {{ proxmox_vm_id }}
+  ansible.builtin.set_fact:
+    proxmox_vm_hardware: "{{ proxmox_vm_pending_before.json.data | proxmox_hardware_state }}"
+    proxmox_vm_hardware_send: >-
+      {{ proxmox_vm_pending_before.json.data | proxmox_hardware_state
+         | proxmox_hardware_changes(proxmox_vm_hardware_wanted) }}
+
+# Like api-set.yml, but a refusal is reported: the request carries the
+# token, so its own output stays hidden.
+- name: Set {{ proxmox_vm_hardware_send.keys() | join(', ') }} on VM {{ proxmox_vm_id }}
+  ansible.builtin.uri:
+    url: "https://{{ proxmox_api_host }}:8006/api2/json/nodes/{{ proxmox_node }}/qemu/{{ proxmox_vm_id }}/config"
+    method: PUT
+    headers:
+      Authorization: >-
+        PVEAPIToken={{ proxmox_api_user }}!{{ proxmox_api_token_id }}={{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}
+    body_format: form-urlencoded
+    body: "{{ proxmox_vm_hardware_send }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+  register: proxmox_vm_hardware_set
+  failed_when: false
+  changed_when: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: proxmox_vm_hardware_send | length > 0
+
+- name: Require the change to be accepted
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_hardware_set.status == 200
+    fail_msg: >-
+      Proxmox refused to set {{ proxmox_vm_hardware_send.keys() | join(', ') }} on
+      VM {{ proxmox_vm_id }} (HTTP {{ proxmox_vm_hardware_set.status }}{{ ': ' ~ proxmox_vm_hardware_set.json.message
+      if (proxmox_vm_hardware_set.json.message | default('')) else '' }}).
+      {% if proxmox_vm_hardware_set.status == 403 %}The API token needs
+      {{ ((['VM.Config.CPU'] if ('cpu' in proxmox_vm_hardware_send or 'cores' in proxmox_vm_hardware_send) else [])
+          + (['VM.Config.Memory'] if 'memory' in proxmox_vm_hardware_send else [])) | join(' and ') }}
+      on /vms (both are in PVEVMAdmin). Check with: pveum user token permissions
+      {{ proxmox_api_user }} {{ proxmox_api_token_id }} --path /vms/{{ proxmox_vm_id }}{% endif %}
+    quiet: true
+  when: proxmox_vm_hardware_set is not skipped
+
+- name: Read the hardware of VM {{ proxmox_vm_id }} again
+  ansible.builtin.uri:
+    url: "https://{{ proxmox_api_host }}:8006/api2/json/nodes/{{ proxmox_node }}/qemu/{{ proxmox_vm_id }}/pending"
+    headers:
+      Authorization: >-
+        PVEAPIToken={{ proxmox_api_user }}!{{ proxmox_api_token_id }}={{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}
+    validate_certs: "{{ proxmox_validate_certs }}"
+  register: proxmox_vm_pending_after
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: proxmox_vm_hardware_set is not skipped
+
+- name: Note the hardware of VM {{ proxmox_vm_id }} after the change
+  ansible.builtin.set_fact:
+    proxmox_vm_hardware: "{{ proxmox_vm_pending_after.json.data | proxmox_hardware_state }}"
+  when: proxmox_vm_pending_after is not skipped

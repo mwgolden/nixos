@@ -166,8 +166,8 @@ class Mutations(unittest.TestCase):
         self.assertError("network.name must be 'lab'")
 
     def test_unknown_host_key(self):
-        self.host("lab", "postgres")["cores"] = 4
-        self.assertError("unknown setting cores")
+        self.host("lab", "postgres")["sockets"] = 2
+        self.assertError("unknown setting sockets")
 
     def test_unknown_type(self):
         self.host("home", "webserver")["type"] = "minio"

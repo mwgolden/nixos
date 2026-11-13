@@ -9,7 +9,7 @@ Two kinds of role live here:
 |---|---|
 | `network_config` | Reads and checks the network files, and adds hosts to the inventory |
 | `host_deploy` | Deploys one host: runs the steps below, calling into its host type role |
-| `proxmox_vm` | Clones the template, or updates an existing VM, and adds its data disk and network cards, and sets its CPU type (restarting it only with `-e proxmox_vm_restart=true`) |
+| `proxmox_vm` | Clones the template, or updates an existing VM, and adds its data disk and network cards, and sets its CPU type, cores and memory (restarting it only with `-e proxmox_vm_restart=true`) |
 | `proxmox_vm_remove` | Deletes a VM and its disks |
 | `nixos_base` | Finds the VM, checks it's the right one, installs `common.nix` and `network.nix`, formats the data disk, and switches to the new configuration |
 | `isolated_bridge` | Creates and removes the Proxmox bridges of isolated networks |
