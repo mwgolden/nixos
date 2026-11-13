@@ -17,6 +17,10 @@
 # (only VMs tagged as this network's), add -e prune=true; it asks you to
 # type the network name, or takes -e confirm_prune=<network>:
 #   ansible-playbook playbooks/deploy-network.yaml -e network=lab -e prune=true
+#
+# A VM whose CPU type changed gets it on its next stop and start. To do that
+# during the deploy (each VM is down for its boot time):
+#   ansible-playbook playbooks/deploy-network.yaml -e network=lab -e proxmox_vm_restart=true
 
 - name: Load the network files
   hosts: localhost
@@ -135,6 +139,22 @@
                                    ~ ((' (through ' ~ f.via_router ~ ')') if f.via_router else '')) -%}
           {%- endfor -%}
           {{ out }}
+
+    - name: List VMs waiting to be restarted for their CPU type
+      ansible.builtin.debug:
+        msg: >-
+          {%- set out = [] -%}
+          {%- for name in groups['nixlab_deploy'] -%}
+            {%- set cpu = hostvars[name].proxmox_vm_cpu | default({}) -%}
+            {%- if cpu.pending | default(false) -%}
+              {%- set _ = out.append(name ~ ': ' ~ cpu.current ~ ' -> ' ~ cpu.next) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out + ['Apply with: ansible-playbook playbooks/deploy-network.yaml -e network='
+                    ~ network ~ ' -e proxmox_vm_restart=true (or deploy-host.yaml for one host).'] }}
+      when: >-
+        groups['nixlab_deploy'] | map('extract', hostvars, 'proxmox_vm_cpu')
+        | select('defined') | selectattr('pending') | list | length > 0
 
     - name: Check the network from here and report
       ansible.builtin.include_role:

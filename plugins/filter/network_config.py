@@ -33,7 +33,34 @@ def host_id(network, name):
 NETWORK_KEYS = {"name", "type", "bridge", "cidr", "gateway", "nameserver",
                 "upstream", "dhcp", "reserved", "domain", "dmz"}
 DMZ_KEYS = {"bridge", "cidr", "gateway", "dhcp", "reserved"}
-HOST_KEYS = {"name", "type", "vm_id", "ip", "wan_ip", "full_clone",
+# Proxmox CPU types a VM may have (cpu: on a host, vm_cpu_type in
+# proxmox/vars.yaml). The node com has SSE4.2 and AES but no AVX2, so
+# x86-64-v3 and v4 would stop a VM from starting. kvm64, Proxmox's default,
+# lacks SSE4.2, which much current software needs. See
+# docs/plans/CPU-TYPE.md.
+CPU_TYPES = ("x86-64-v2-AES", "x86-64-v2", "host")
+CPU_TYPES_NEED_AVX2 = ("x86-64-v3", "x86-64-v4")
+
+
+def cpu_type_error(value):
+    """Why value can't be a VM's CPU type, or None if it can."""
+    if value in CPU_TYPES:
+        return None
+    allowed = ", ".join(CPU_TYPES)
+    if value in CPU_TYPES_NEED_AVX2:
+        return (f"{value} needs AVX2, which the Proxmox node doesn't have, so the VM "
+                f"wouldn't start. Use one of {allowed}.")
+    return f"'{value}' isn't an allowed CPU type. Use one of {allowed}."
+
+
+def network_config_cpu_type_errors(value, where="vm_cpu_type in proxmox/vars.yaml"):
+    """The project default CPU type checked like a host's cpu:, as a list
+    of messages."""
+    problem = cpu_type_error(value)
+    return [f"{where}: {problem}"] if problem else []
+
+
+HOST_KEYS = {"name", "type", "vm_id", "ip", "wan_ip", "full_clone", "cpu",
              "data_disk", "settings", "expose", "proxy", "zone", "reach"}
 ZONES = ("lan", "dmz")
 REACH_KEYS = {"host", "port", "proto"}
@@ -369,6 +396,11 @@ class _Checker:
 
         if "full_clone" in host and not isinstance(host["full_clone"], bool):
             self.error(where, "full_clone must be true or false.")
+
+        if "cpu" in host:
+            problem = cpu_type_error(host["cpu"])
+            if problem:
+                self.error(where, f"cpu: {problem}")
 
         disk = host.get("data_disk")
         if disk is not None:
@@ -725,12 +757,36 @@ def network_config_summary(network_configs, vms):
     return lines
 
 
+def _cpu_type(value):
+    """The CPU type in a Proxmox cpu option, such as
+    "cputype=host,flags=+aes" -> "host". Empty means Proxmox's default."""
+    first = str(value or "").split(",", 1)[0]
+    return first[len("cputype="):] if first.startswith("cputype=") else first or "kvm64"
+
+
+def proxmox_cpu_state(pending):
+    """A VM's CPU type from GET /nodes/<node>/qemu/<vmid>/pending: a list of
+    {key, value, pending, delete}. Returns {current, next, pending}:
+    current is what the VM runs with, next what it gets on its next stop
+    and start, and pending whether they differ. A missing cpu is kvm64."""
+    entry = next((e for e in pending or [] if e.get("key") == "cpu"), {})
+    current = _cpu_type(entry.get("value"))
+    if entry.get("delete"):
+        upcoming = "kvm64"
+    elif "pending" in entry:
+        upcoming = _cpu_type(entry["pending"])
+    else:
+        upcoming = current
+    return {"current": current, "next": upcoming, "pending": upcoming != current}
+
+
 def network_config_inventory(network_configs):
     """Turns valid network files into what the deploy playbooks use.
 
     Returns {"networks": {name: network}, "hosts": {id: vm}}, keyed by host
     ID (<network>.<host>, see host_id), where each vm has its declared
-    settings (name is the short host name, also its Proxmox VM name) plus:
+    settings (name is the short host name, also its Proxmox VM name; cpu is
+    "" when not set, for the project default vm_cpu_type) plus:
       id       its host ID, also its name in the Ansible inventory
       network  the network it belongs to
       zone     "lan" or "dmz": which of its network's bridges it is on.
@@ -861,6 +917,8 @@ def network_config_inventory(network_configs):
                 "vm_id": int(h["vm_id"]),
                 "ip": str(h["ip"]),
                 "full_clone": bool(h.get("full_clone", False)),
+                # "" means the project default, vm_cpu_type.
+                "cpu": h.get("cpu", ""),
                 "settings": h.get("settings") or {},
                 # The serial is per type: each type's configuration.nix
                 # mounts /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_<type>-data.
@@ -1315,6 +1373,8 @@ class FilterModule:
             "network_config_proxmox_errors": network_config_proxmox_errors,
             "network_config_summary": network_config_summary,
             "network_config_inventory": network_config_inventory,
+            "network_config_cpu_type_errors": network_config_cpu_type_errors,
+            "proxmox_cpu_state": proxmox_cpu_state,
             "host_client_networks": host_client_networks,
             "network_cidrs": network_cidrs,
             "placement_candidates": placement_candidates,

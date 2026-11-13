@@ -7,6 +7,9 @@
 #                         config), or none if it was just cloned
 #   proxmox_vm_new_clone  true if the VM was just cloned
 #   proxmox_vm_config     the VM's configuration once it is running
+#   proxmox_vm_cpu        {current, next, pending}: its CPU type now, after
+#                         its next stop and start, and whether they differ
+#                         (only when proxmox_vm_cpu_type is set)
 
 - name: Check required environment variables
   ansible.builtin.assert:
@@ -73,6 +76,38 @@
       loop_control:
         label: "{{ item.interface }} on {{ item.bridge }}"
 
+    # Before the first start of a new clone, so it boots with it.
+    - name: Set the CPU type of the {{ proxmox_vm_name }} VM
+      ansible.builtin.include_tasks: cpu.yml
+      when: proxmox_vm_cpu_type | length > 0
+
+    # Only when asked: a redeploy for another change shouldn't take a
+    # service down. A clean shutdown, never a forced stop.
+    - name: Shut down the {{ proxmox_vm_name }} VM to apply its CPU type
+      community.proxmox.proxmox_kvm:
+        node: "{{ proxmox_node }}"
+        vmid: "{{ proxmox_vm_id }}"
+        state: stopped
+        force: false
+        timeout: "{{ proxmox_vm_shutdown_timeout }}"
+      register: proxmox_vm_shutdown
+      failed_when: false
+      when:
+        - proxmox_vm_cpu_type | length > 0
+        - proxmox_vm_cpu.pending
+        - proxmox_vm_restart | bool
+
+    - name: Require the {{ proxmox_vm_name }} VM to shut down
+      ansible.builtin.assert:
+        that:
+          - not (proxmox_vm_shutdown.failed | default(false))
+        fail_msg: >-
+          VM {{ proxmox_vm_id }} ({{ proxmox_vm_name }}) didn't shut down within
+          {{ proxmox_vm_shutdown_timeout }} s: {{ proxmox_vm_shutdown.msg | default('') }}
+          It was not forced off. Stop it in Proxmox, then run the deploy again.
+        quiet: true
+      when: proxmox_vm_shutdown is not skipped
+
     - name: Start the {{ proxmox_vm_name }} VM
       community.proxmox.proxmox_kvm:
         node: "{{ proxmox_node }}"
@@ -91,6 +126,15 @@
     - name: Note the VM's configuration
       ansible.builtin.set_fact:
         proxmox_vm_config: "{{ (proxmox_vm_info_after.proxmox_vms | first).config }}"
+
+    # Read for the report: whether the VM still waits for a stop and start.
+    - name: Note whether the CPU type change is still waiting
+      ansible.builtin.set_fact:
+        proxmox_vm_cpu: >-
+          {{ proxmox_vm_cpu | combine({'current': proxmox_vm_cpu.next, 'pending': false}) }}
+      when:
+        - proxmox_vm_cpu_type | length > 0
+        - proxmox_vm_shutdown is not skipped
 
 # Marks the VM as the project's, for its network and type. Only VMs with
 # these tags are ever deleted by destroy-host, destroy-network or pruning.

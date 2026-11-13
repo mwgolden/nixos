@@ -33,7 +33,8 @@
 - name: Check the network files
   ansible.builtin.set_fact:
     network_config_errors: >-
-      {{ network_config_files | network_config_errors(template_vm_id, template_ip) }}
+      {{ network_config_files | network_config_errors(template_vm_id, template_ip)
+         + (vm_cpu_type | network_config_cpu_type_errors) }}
 
 - name: Report problems in the network files
   ansible.builtin.fail:

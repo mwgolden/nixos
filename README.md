@@ -118,7 +118,7 @@ On the workstation:
 
 On Proxmox:
 
-- An API token for `ansible@pve` with the ID `automation`, allowed to manage VMs and upload ISOs to the `local` storage. Setting VM tags and notes uses `VM.Config.Options`, which managing VMs normally includes. Creating or removing an isolated bridge also needs `Sys.Modify` on `/nodes/com`.
+- An API token for `ansible@pve` with the ID `automation`, allowed to manage VMs and upload ISOs to the `local` storage. Setting VM tags and notes uses `VM.Config.Options`, setting a VM's [CPU type](networks/README.md#cpu-type) uses `VM.Config.CPU`, and restarting a VM with `-e proxmox_vm_restart=true` uses `VM.PowerMgmt`. The `PVEVMAdmin` role includes all three; check the token with `pveum user token permissions ansible@pve automation --path /vms`. Creating or removing an isolated bridge also needs `Sys.Modify` on `/nodes/com`.
 
 ## Configuration
 

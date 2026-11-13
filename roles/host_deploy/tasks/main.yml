@@ -36,6 +36,17 @@
          if vm.data_disk else {} }}
     proxmox_vm_nics: "{{ vm.nics }}"
     proxmox_vm_tags: "{{ vm | nixlab_tags }}"
+    # The host's cpu: in its network file, or the project default.
+    proxmox_vm_cpu_type: "{{ vm.cpu or vm_cpu_type }}"
+
+# -e proxmox_vm_restart=true applies it now; see roles/proxmox_vm.
+- name: Report the CPU type change waiting for {{ vm.name }}
+  ansible.builtin.debug:
+    msg: >-
+      {{ vm.name }} (VM {{ vm.vm_id }}): CPU type changes from {{ proxmox_vm_cpu.current }}
+      to {{ proxmox_vm_cpu.next }} on the next stop and start. Run again with
+      -e proxmox_vm_restart=true to do that now.
+  when: proxmox_vm_cpu.pending | default(false)
 
 - name: Find the {{ vm.name }} VM
   ansible.builtin.include_role:

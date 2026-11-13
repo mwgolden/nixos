@@ -65,6 +65,7 @@
         vmid: "{{ template_vm_id }}"
         name: "{{ template_vm_name }}"
         cores: "{{ template_cores }}"
+        cpu: "{{ vm_cpu_type }}"
         memory: "{{ template_memory_mb }}"
         scsihw: "virtio-scsi-single"
         scsi:

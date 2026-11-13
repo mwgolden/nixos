@@ -29,3 +29,16 @@ proxmox_vm_tags: []
 #   - { interface: net1, bridge: vmbr1 }
 # net0 comes from the template.
 proxmox_vm_nics: []
+
+# CPU type, such as x86-64-v2-AES. Set on a new clone before its first
+# start, and on an existing VM when it differs. A running VM gets it on its
+# next stop and start. Empty leaves the CPU type alone.
+proxmox_vm_cpu_type: ""
+
+# true: stop (cleanly, through ACPI) and start the VM when a CPU type
+# change is waiting, so it takes effect now. Run with
+# -e proxmox_vm_restart=true. The VM is down for its boot time.
+proxmox_vm_restart: false
+# How long a clean shutdown may take before the deploy gives up. There is
+# no forced stop: that could lose data on a data disk.
+proxmox_vm_shutdown_timeout: 120

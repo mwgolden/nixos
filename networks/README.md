@@ -46,10 +46,31 @@ ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox
 | `reach` | no, DMZ hosts only | LAN hosts this DMZ host may connect to, beyond its proxy's backends. Each entry has `host` (a LAN host on the same network), `port`, and optionally `proto` (`tcp` or `udp`, defaults to `tcp`). |
 | `wan_ip` | routers only | The router's address on the upstream network |
 | `full_clone` | no | `true` for a full copy of the template instead of a linked clone. Defaults to `false`. |
+| `cpu` | no | The VM's [CPU type](#cpu-type): `x86-64-v2-AES`, `x86-64-v2` or `host`. Defaults to `vm_cpu_type` in `proxmox/vars.yaml`. |
 | `data_disk` | postgres, gitea, garage, nats | `size_gb` and `storage`. It can grow but never shrink. |
 | `expose` | no, isolated networks only | Ports forwarded to this host from its router's WAN address. Each entry has `port` (on the host), and optionally `wan_port` (on the router, defaults to `port`), `proto` (`tcp` or `udp`, defaults to `tcp`) and `name` (needed when a host has more than one). Redeploy the router after changing these. |
 | `proxy` | no | Web services on this host for the network's `proxy` host to serve over HTTPS. Each entry has `name`, one DNS label, served as `<name>.<domain>`, and `port`, the port on this host. `external: true` also publishes it through the router's TCP 443 and 80 (isolated networks only; off by default). Needs a host of type `proxy` on the same network. See [roles/proxy](../roles/proxy/README.md). |
 | `settings` | no | Settings for this host type. The defaults are in the host type's role. |
+
+## CPU type
+
+Each VM gets the CPU type in its host's `cpu:`, or else `vm_cpu_type` in [proxmox/vars.yaml](../proxmox/vars.yaml) (`x86-64-v2-AES`). Proxmox's own default, `kvm64`, lacks SSE4.2, which software such as Claude Code needs.
+
+| Type | What the VM gets | When to use it |
+|---|---|---|
+| `x86-64-v2-AES` | SSE4.2, POPCNT, AES-NI | The default. |
+| `x86-64-v2` | The same, without AES-NI | A Proxmox node without AES-NI. |
+| `host` | Everything the physical CPU has | Full speed, but the VM can only move to a node with the same CPU. On `com` it adds little. |
+
+`x86-64-v3` and `x86-64-v4` aren't allowed: they need AVX2, which the Proxmox node `com` doesn't have, so the VM wouldn't start. Software that requires AVX2 can't run on this node in any VM.
+
+A new VM gets its type before its first start. An existing VM gets a changed type on its next deploy, but Proxmox applies it only when the VM is stopped and started; a reboot inside the guest isn't enough. The deploy reports the waiting change and leaves the VM running. To restart it during the deploy:
+
+```bash
+ansible-playbook playbooks/deploy-host.yaml -e network=lab -e host=ws -e proxmox_vm_restart=true
+```
+
+The VM is shut down cleanly (ACPI) and started again, so it's down for its boot time. If it doesn't shut down within 120 seconds, the deploy fails rather than forcing it off. `deploy-network.yaml` lists every VM still waiting at the end of its run.
 
 ## DMZ
 
