@@ -14,7 +14,7 @@ None of this needs the user to have `sudo`.
 Found in the live deploy, and fixed:
 
 - **The login-shell check failed on a VM that was fine.** Ansible's `command` module replaces `$VARS` in its arguments with the deploy's own values by default, so the check's `$PATH` was the deploy's, not the user's. Every `command` task in the role now sets `expand_argument_vars: false`. The check also starts from `env -i`, like a new SSH session, and compares values, because NixOS sets `EDITOR` itself.
-- **Claude Code wouldn't start:** "this CPU is missing SSE4.2 support". The VMs use Proxmox's default CPU type, `kvm64`. That is outside this plan: see [CPU-TYPE.md](../CPU-TYPE.md).
+- **Claude Code wouldn't start:** "this CPU is missing SSE4.2 support". The VMs use Proxmox's default CPU type, `kvm64`. That is outside this plan: see [CPU-TYPE.md](CPU-TYPE.md).
 - **Decision 2 was reversed**, as described below.
 
 Known gap, left as it is: a tool removed in the same deploy as its package manager is reported as left in place, and then dropped from the install record. Later deploys don't uninstall it, even once the package manager is back. The README says to remove the tools first, deploy, then remove the package manager.

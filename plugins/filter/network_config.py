@@ -37,7 +37,7 @@ DMZ_KEYS = {"bridge", "cidr", "gateway", "dhcp", "reserved"}
 # proxmox/vars.yaml). The node com has SSE4.2 and AES but no AVX2, so
 # x86-64-v3 and v4 would stop a VM from starting. kvm64, Proxmox's default,
 # lacks SSE4.2, which much current software needs. See
-# docs/plans/CPU-TYPE.md.
+# docs/plans/completed/CPU-TYPE.md.
 CPU_TYPES = ("x86-64-v2-AES", "x86-64-v2", "host")
 CPU_TYPES_NEED_AVX2 = ("x86-64-v3", "x86-64-v4")
 

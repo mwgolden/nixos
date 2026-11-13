@@ -13,26 +13,26 @@ This plan sets a CPU type on every VM: a project default, with a per-host overri
 
 ## Progress
 
-**Phases 1–3 are done (2026-11-13). Phase 4, the live check, isn't.** The decisions in section 3 were taken as recommended.
+**Built (2026-11-13) and moved to completed.** Phases 1–3 are done. The live checks (phases 4 and 8) were not recorded here. The decisions in section 3 were taken as recommended.
 
-[Section 7](#7-extension-cores-and-memory-per-host), setting cores and memory per host, was added afterwards. **Its phases 5–7 are done too (2026-11-13); its live check, phase 8, isn't.** Decisions 7–11 were taken as recommended.
+[Section 7](#7-extension-cores-and-memory-per-host), setting cores and memory per host, was added afterwards. **Its phases 5–7 are done too (2026-11-13).** Decisions 7–11 were taken as recommended.
 
-- 26 unit tests in [tests/test_cpu_type.py](../../tests/test_cpu_type.py) now pass, covering cores, memory, the capacity checks and the general pending filter. `test_unknown_host_key` used `cores` as its example of an unknown setting; it uses `sockets` now.
+- 26 unit tests in [tests/test_cpu_type.py](../../../tests/test_cpu_type.py) now pass, covering cores, memory, the capacity checks and the general pending filter. `test_unknown_host_key` used `cores` as its example of an unknown setting; it uses `sockets` now.
 - The per-host report, the end-of-run list and the "permission refused" message were rendered with fake data. That found and fixed a precedence bug in the 403 message.
-- `cpu.yml` became [hardware.yml](../../roles/proxmox_vm/tasks/hardware.yml), `proxmox_cpu_state` became `proxmox_hardware_state`, and the fact `proxmox_vm_cpu` became `proxmox_vm_hardware`, as section 7 planned. New filters: `proxmox_hardware_wanted` (what to set; empty or 0 leaves an option alone) and `proxmox_hardware_changes` (what differs from the VM's next values).
-- The node's size comes from `proxmox_node_info` in [network_config's proxmox.yml](../../roles/network_config/tasks/proxmox.yml). If the token can't read it, the deploy says so and skips the core-count error and memory warning, rather than failing.
+- `cpu.yml` became [hardware.yml](../../../roles/proxmox_vm/tasks/hardware.yml), `proxmox_cpu_state` became `proxmox_hardware_state`, and the fact `proxmox_vm_cpu` became `proxmox_vm_hardware`, as section 7 planned. New filters: `proxmox_hardware_wanted` (what to set; empty or 0 leaves an option alone) and `proxmox_hardware_changes` (what differs from the VM's next values).
+- The node's size comes from `proxmox_node_info` in [network_config's proxmox.yml](../../../roles/network_config/tasks/proxmox.yml). If the token can't read it, the deploy says so and skips the core-count error and memory warning, rather than failing.
 
 Checked without Proxmox:
 
-- 14 new unit tests in [tests/test_cpu_type.py](../../tests/test_cpu_type.py) pass: allowed and rejected `cpu:` values, `vm_cpu_type`, the inventory, and reading `/pending` responses. The full suite has the one failure it had before (`Examples`).
+- 14 new unit tests in [tests/test_cpu_type.py](../../../tests/test_cpu_type.py) pass: allowed and rejected `cpu:` values, `vm_cpu_type`, the inventory, and reading `/pending` responses. The full suite has the one failure it had before (`Examples`).
 - `--syntax-check` passes on every playbook and on `create-template.yaml`.
 - The end-of-run list in `deploy-network.yaml` and the "permission refused" message were rendered with fake data.
 
 Differences from the plan below:
 
-- **The inventory keeps a host's own `cpu:`**, or `""` when it isn't set. [host_deploy](../../roles/host_deploy/tasks/main.yml) fills in `vm_cpu_type` when it calls `proxmox_vm`. Otherwise all seven places that build the inventory would need `vm_cpu_type` passed in. `vm_cpu_type` is still checked with the network files.
+- **The inventory keeps a host's own `cpu:`**, or `""` when it isn't set. [host_deploy](../../../roles/host_deploy/tasks/main.yml) fills in `vm_cpu_type` when it calls `proxmox_vm`. Otherwise all seven places that build the inventory would need `vm_cpu_type` passed in. `vm_cpu_type` is still checked with the network files.
 - **The pending state is read before the change too.** A change already waiting isn't sent again on every deploy, and one made by hand in Proxmox is reported. The filter is `proxmox_cpu_state`, which returns `{current, next, pending}`.
-- **The CPU change has its own request** in [cpu.yml](../../roles/proxmox_vm/tasks/cpu.yml), rather than `api-set.yml`, so a refusal is reported. A 403 says which privilege is missing and how to check the token. Other API calls still hide their output, because the token is in the request.
+- **The CPU change has its own request** in `cpu.yml` (now [hardware.yml](../../../roles/proxmox_vm/tasks/hardware.yml)), rather than `api-set.yml`, so a refusal is reported. A 403 says which privilege is missing and how to check the token. Other API calls still hide their output, because the token is in the request.
 - **The restart happens inside `proxmox_vm`**, before its existing "Start the VM" task, which then starts the VM again.
 
 **The Proxmox node `com` has SSE4.2 and AES, but no AVX2** (checked 2026-11-13 with `grep -o -w 'sse4_2\|avx2\|aes' /proc/cpuinfo`). So `x86-64-v2-AES` is the most a VM can get, short of `host`. `x86-64-v3` and `x86-64-v4` need AVX2, and VMs given them wouldn't start. Software that requires AVX2 can't run on this node in any VM.
@@ -93,9 +93,9 @@ A type the physical CPU doesn't support stops the VM from starting. Proxmox repo
 
 ### Setting the type
 
-In [roles/proxmox_vm](../../roles/proxmox_vm/tasks/main.yml), a new input `proxmox_vm_cpu_type` (from `vm.cpu`, which defaults to `vm_cpu_type`):
+In [roles/proxmox_vm](../../../roles/proxmox_vm/tasks/main.yml), a new input `proxmox_vm_cpu_type` (from `vm.cpu`, which defaults to `vm_cpu_type`):
 
-1. **New clone:** set `cpu` through the existing [api-set.yml](../../roles/proxmox_vm/tasks/api-set.yml) right after cloning, before "Start the VM". It takes effect on the first boot.
+1. **New clone:** set `cpu` through the existing [api-set.yml](../../../roles/proxmox_vm/tasks/api-set.yml) right after cloning, before "Start the VM". It takes effect on the first boot.
 2. **Existing VM:** read `cpu` from the config the role already reads (`proxmox_vm_existing.config.cpu`). If it differs from the wanted type, set it through `api-set.yml`. A running VM then shows it as pending.
 3. **Pending check:** read `/nodes/<node>/qemu/<vmid>/pending`. Any `cpu` entry with a `pending` value means the change hasn't been applied yet. This also catches a change made earlier, or by hand, that is still waiting for a restart.
 4. **Restart**, only with `-e proxmox_vm_restart=true` and a pending CPU change: `proxmox_kvm state: stopped` with `force: false` and `timeout: 120`, then `state: started`. This happens before placement, so the rest of the deploy finds the VM as usual. Placement already waits for SSH.
@@ -105,7 +105,7 @@ Proxmox stores an empty `cpu` as `kvm64`, so a missing `cpu` key counts as `kvm6
 
 ### Validation
 
-In [network_config.py](../../plugins/filter/network_config.py):
+In [network_config.py](../../../plugins/filter/network_config.py):
 
 - `cpu` is added to `HOST_KEYS`. `_Checker.check_host` checks it against the allowed list (decision 3).
 - `network_config_inventory` adds `cpu` to each host: the host's `cpu`, else `vm_cpu_type`. `vm_cpu_type` is passed in, as `template_vm_id` and `template_ip` are today.
@@ -113,17 +113,17 @@ In [network_config.py](../../plugins/filter/network_config.py):
 
 ### Template
 
-[create-template.yaml](../../proxmox/scripts/create-template.yaml) passes `cpu: "{{ vm_cpu_type }}"` to `proxmox_kvm`. The existing template, VM 110, can be updated with `qm set 110 --cpu x86-64-v2-AES`. It isn't required, because deploys set the type on every clone.
+[create-template.yaml](../../../proxmox/scripts/create-template.yaml) passes `cpu: "{{ vm_cpu_type }}"` to `proxmox_kvm`. The existing template, VM 110, can be updated with `qm set 110 --cpu x86-64-v2-AES`. It isn't required, because deploys set the type on every clone.
 
 ### Reporting
 
 - Per host, as in section 1, after `proxmox_vm` runs.
-- At the end of [deploy-network.yaml](../../playbooks/deploy-network.yaml), a list of the network's VMs whose CPU change is still pending, with the command that applies them (decision 6).
+- At the end of [deploy-network.yaml](../../../playbooks/deploy-network.yaml), a list of the network's VMs whose CPU change is still pending, with the command that applies them (decision 6).
 - The network diagrams don't show the CPU type. It isn't about the network.
 
 ### Permissions
 
-Changing `cpu` needs the Proxmox privilege `VM.Config.CPU`. Stopping and starting needs `VM.PowerMgmt`. Both are in the `PVEVMAdmin` role. If the API token's role is narrower, the first deploy fails with a 403 on the config change. [README.md](../../README.md)'s list of token permissions gets both privileges.
+Changing `cpu` needs the Proxmox privilege `VM.Config.CPU`. Stopping and starting needs `VM.PowerMgmt`. Both are in the `PVEVMAdmin` role. If the API token's role is narrower, the first deploy fails with a 403 on the config change. [README.md](../../../README.md)'s list of token permissions gets both privileges.
 
 ## 5. Phases
 
@@ -147,9 +147,9 @@ Each phase leaves the repo working, and the unit tests pass after each one.
 
 - The per-host message, and the pending list at the end of `deploy-network.yaml`.
 - Docs:
-  - [networks/README.md](../../networks/README.md): a `cpu` row in the host table, and the types table from section 2.
-  - [roles/proxmox_vm](../../roles/proxmox_vm/) and the token permissions in [README.md](../../README.md).
-  - A new entry in [ARCHITECTURE.md §11](../ARCHITECTURE.md#11-architectural-decisions).
+  - [networks/README.md](../../../networks/README.md): a `cpu` row in the host table, and the types table from section 2.
+  - [roles/proxmox_vm](../../../roles/proxmox_vm/) and the token permissions in [README.md](../../../README.md).
+  - A new entry in [ARCHITECTURE.md §11](../../ARCHITECTURE.md#11-architectural-decisions).
 
 ### Phase 4: Live check
 
@@ -195,10 +195,10 @@ hosts:
 
 The CPU type work already does most of this; it generalizes from one option to three.
 
-- **Validation** in [network_config.py](../../plugins/filter/network_config.py): `cores` and `memory_mb` are added to `HOST_KEYS`. `cores` must be a whole number from 1 to 64, and `memory_mb` a whole number from 512 to 262144 (decision 9). YAML numbers only: `"4"` in quotes is rejected, like `full_clone`.
-- **Against Proxmox** in [network_config's proxmox.yml](../../roles/network_config/tasks/proxmox.yml), which already reads the node: a host asking for more cores than the node has is an error, since the VM wouldn't start. The node's total memory isn't a hard limit, because Proxmox allows overcommitting. When the network's hosts together ask for more than the node has, that is a warning, not an error (decision 11).
+- **Validation** in [network_config.py](../../../plugins/filter/network_config.py): `cores` and `memory_mb` are added to `HOST_KEYS`. `cores` must be a whole number from 1 to 64, and `memory_mb` a whole number from 512 to 262144 (decision 9). YAML numbers only: `"4"` in quotes is rejected, like `full_clone`.
+- **Against Proxmox** in [network_config's proxmox.yml](../../../roles/network_config/tasks/proxmox.yml), which already reads the node: a host asking for more cores than the node has is an error, since the VM wouldn't start. The node's total memory isn't a hard limit, because Proxmox allows overcommitting. When the network's hosts together ask for more than the node has, that is a warning, not an error (decision 11).
 - **Inventory:** each host gets `cores` and `memory_mb`, as given or `0` for not set.
-- **[proxmox_vm](../../roles/proxmox_vm/tasks/main.yml):** new inputs `proxmox_vm_cores` and `proxmox_vm_memory_mb` (0 = leave alone). [cpu.yml](../../roles/proxmox_vm/tasks/cpu.yml) becomes `hardware.yml`. It reads `/pending` once, sends every option that differs (`cpu`, `cores`, `memory`) in one request, and reads `/pending` again.
+- **[proxmox_vm](../../../roles/proxmox_vm/tasks/main.yml):** new inputs `proxmox_vm_cores` and `proxmox_vm_memory_mb` (0 = leave alone). `cpu.yml` becomes `hardware.yml`. It reads `/pending` once, sends every option that differs (`cpu`, `cores`, `memory`) in one request, and reads `/pending` again.
 - **The pending filter** generalizes: `proxmox_cpu_state` becomes `proxmox_hardware_state(pending, keys)`, which returns `{key: {current, next, pending}}` and an overall `pending`. `cores` and `memory` have no "missing means kvm64" rule. A missing value means Proxmox's default (1 core, 512 MB); in practice clones always have them from the template.
 - **Reports** list every waiting change, such as `postgres: cores 2 -> 4, memory 4096 -> 8192 MB`. The fact `proxmox_vm_cpu` becomes `proxmox_vm_hardware`, and `deploy-network.yaml`'s end-of-run list uses it.
 - **Permissions:** `cores` falls under `VM.Config.CPU`, already needed. `memory` needs `VM.Config.Memory`, which `PVEVMAdmin` also includes. The 403 message names whichever was refused.
@@ -219,7 +219,7 @@ Each phase leaves the repo working, and the unit tests pass after each one.
 
 - **Phase 5: settings and validation.** The keys, limits, the inventory, and the node core-count check and memory warning. Tests: limits, quoted numbers, the inventory's `0`, and that the repo networks stay valid.
 - **Phase 6: applying them.** `hardware.yml`, the generalized filter, and the reports. Tests for `proxmox_hardware_state` with sample `/pending` responses: nothing pending, one key pending, several, and a deleted key.
-- **Phase 7: docs.** The `cores` and `memory_mb` rows in [networks/README.md](../../networks/README.md), with a note on the restart, and `VM.Config.Memory` in [README.md](../../README.md)'s token permissions.
+- **Phase 7: docs.** The `cores` and `memory_mb` rows in [networks/README.md](../../../networks/README.md), with a note on the restart, and `VM.Config.Memory` in [README.md](../../../README.md)'s token permissions.
 - **Phase 8: live check.**
   1. Give a throwaway host `cores: 1` and `memory_mb: 2048`, and deploy it new: Proxmox shows them before the first start, and `nproc` and `free -m` in the guest agree.
   2. Raise both on an existing VM: the change is reported as waiting, and nothing restarts.

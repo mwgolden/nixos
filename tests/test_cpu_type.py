@@ -1,4 +1,4 @@
-"""Tests for VM hardware settings (docs/plans/CPU-TYPE.md): cpu:, cores:
+"""Tests for VM hardware settings (docs/plans/completed/CPU-TYPE.md): cpu:, cores:
 and memory_mb: on hosts, vm_cpu_type, the inventory, the node capacity
 checks, and reading Proxmox's pending changes.
 
