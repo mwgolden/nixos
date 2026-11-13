@@ -210,7 +210,7 @@ class Installed(unittest.TestCase):
 
 
 class Actions(unittest.TestCase):
-    """The rows of the Versions table in docs/plans/WORKSTATION-TOOLS.md."""
+    """The rows of the Versions table in docs/plans/completed/WORKSTATION-TOOLS.md."""
 
     def test_missing_tools_are_installed(self):
         self.assertEqual(plan([{"npm": "typescript"}, {"uv": "ruff", "version": "0.8.4"}]),

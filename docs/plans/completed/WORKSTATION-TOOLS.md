@@ -9,11 +9,19 @@ None of this needs the user to have `sudo`.
 
 ## Progress
 
-**Phases 1–4 are done (2026-11-11). Phase 5, the live check, isn't.** The decisions in section 3 were taken as recommended.
+**Done (2026-11-13).** Phases 1–4 were built on 2026-11-11, and `home.ws` was deployed with tools and variables. The decisions in section 3 were taken as recommended, except decision 2, which was reversed (see below).
+
+Found in the live deploy, and fixed:
+
+- **The login-shell check failed on a VM that was fine.** Ansible's `command` module replaces `$VARS` in its arguments with the deploy's own values by default, so the check's `$PATH` was the deploy's, not the user's. Every `command` task in the role now sets `expand_argument_vars: false`. The check also starts from `env -i`, like a new SSH session, and compares values, because NixOS sets `EDITOR` itself.
+- **Claude Code wouldn't start:** "this CPU is missing SSE4.2 support". The VMs use Proxmox's default CPU type, `kvm64`. That is outside this plan: see [CPU-TYPE.md](../CPU-TYPE.md).
+- **Decision 2 was reversed**, as described below.
+
+Known gap, left as it is: a tool removed in the same deploy as its package manager is reported as left in place, and then dropped from the install record. Later deploys don't uninstall it, even once the package manager is back. The README says to remove the tools first, deploy, then remove the package manager.
 
 Checked without Proxmox:
 
-- 40 new unit tests in [tests/test_workstation.py](../../tests/test_workstation.py) pass. They cover the checks, env file quoting (sourced by a real bash), and every row of the "Versions" table. The full suite has the one failure it had before (`Examples`, `networks/examples/test.yaml` overlapping `workstation-lab`).
+- 40 new unit tests in [tests/test_workstation.py](../../../tests/test_workstation.py) pass. They cover the checks, env file quoting (sourced by a real bash), and every row of the "Versions" table. The full suite has the one failure it had before (`Examples`, `networks/examples/test.yaml` overlapping `workstation-lab`).
 - `--syntax-check` passes on every playbook.
 - `prepare.yml` and the planning filters ran on localhost with a fake host. Secret variables are read, the env file comes out as expected, and a bad tool, version or variable name stops with a readable message.
 - The workstation's `configuration.nix` was evaluated in the `nixos-lab` container against the pinned nixpkgs. `acl` and nix-ld are in, and the env-file snippet lands in `/etc/set-environment`. NixOS's bash is built with `SSH_SOURCE_BASHRC`, and its `/etc/bashrc` sources `/etc/profile`, so `ssh host command` should load the file. Phase 5 still has to confirm that live.
@@ -28,7 +36,7 @@ Differences from the plan below:
 - **A removed npm or uv tool whose package manager is gone** (removed from `packages` in the same edit) is reported and left in place, not uninstalled. The README says to remove the tools first, deploy, then remove the package manager.
 - **No new file in `networks/examples/`.** The role README has the examples instead, so `test.yaml` stays as it is.
 
-**To try live**, on a throwaway workstation, follow Phase 5 below.
+
 
 ## 1. Target
 
@@ -157,14 +165,14 @@ The file is rewritten on every deploy. Editing it by hand doesn't last; the user
 
 | Where | Change |
 |---|---|
-| [defaults/main.yml](../../roles/workstation/defaults/main.yml) | `environment: {}` and `tools: []` in the settings defaults. `workstation_tools`, `workstation_environment`, `workstation_env_file`, `workstation_upgrade: false`. |
+| [defaults/main.yml](../../../roles/workstation/defaults/main.yml) | `environment: {}` and `tools: []` in the settings defaults. `workstation_tools`, `workstation_environment`, `workstation_env_file`, `workstation_upgrade: false`. |
 | New filter, `plugins/filter/workstation.py` | `workstation_tools_errors(tools)` and `workstation_env_errors(env, secrets)`. Checks like these are easier to unit test in Python than in assert lists. They check: one kind per entry (`npm`, `uv` or `curl`); npm names like `@scope/name` and uv names as PEP 508 names with optional extras, with no version in the name; `version:` as one exact version (decision 8), only on npm and uv tools; `with:` as PEP 508 specs; `python:` like `3.12`; curl URLs `https://` only, with `creates` required and starting with `~/`; variable names `^[A-Za-z_][A-Za-z0-9_]*$`, not reserved (decision 7), and not both in `environment` and secrets. |
-| [tasks/prepare.yml](../../roles/workstation/tasks/prepare.yml) | Read `WORKSTATION_ENV_*` from the secrets file (`no_log`). Assert the filters return no errors, including the package managers the tools need (decision 2). |
-| [templates/workstation.nix.j2](../../roles/workstation/templates/workstation.nix.j2) | Toolchain packages added to `packages`. |
-| [files/configuration.nix](../../roles/workstation/files/configuration.nix) | `acl` in system packages, `programs.nix-ld`, and `environment.extraInit` loading the env file. |
-| New `tasks/tools.yml`, included at the end of [configure.yml](../../roles/workstation/tasks/configure.yml) after the switch | As the user: create `~/.config/nixlab` and `~/.local/state/nixlab`, write the env file, read the install record and the installed versions, then install, reinstall at its pin, upgrade or uninstall each tool. Then write the record and report each tool's version. `PATH` for these tasks is set explicitly: `/etc/profiles/per-user/<user>/bin`, `/run/current-system/sw/bin`, then the user's bin folders. |
-| [tasks/verify.yml](../../roles/workstation/tasks/verify.yml) | As the user over a non-interactive SSH command: each npm/uv tool's command is found, each pinned tool is at its version, and each `environment` name is set. Values aren't printed. |
-| [env.example](../../roles/workstation/env.example), [README.md](../../roles/workstation/README.md) | Document `tools`, `environment`, `WORKSTATION_ENV_*`, upgrades, and that no sudo is needed. |
+| [tasks/prepare.yml](../../../roles/workstation/tasks/prepare.yml) | Read `WORKSTATION_ENV_*` from the secrets file (`no_log`). Assert the filters return no errors, including the package managers the tools need (decision 2). |
+| [templates/workstation.nix.j2](../../../roles/workstation/templates/workstation.nix.j2) | Toolchain packages added to `packages`. |
+| [files/configuration.nix](../../../roles/workstation/files/configuration.nix) | `acl` in system packages, `programs.nix-ld`, and `environment.extraInit` loading the env file. |
+| New `tasks/tools.yml`, included at the end of [configure.yml](../../../roles/workstation/tasks/configure.yml) after the switch | As the user: create `~/.config/nixlab` and `~/.local/state/nixlab`, write the env file, read the install record and the installed versions, then install, reinstall at its pin, upgrade or uninstall each tool. Then write the record and report each tool's version. `PATH` for these tasks is set explicitly: `/etc/profiles/per-user/<user>/bin`, `/run/current-system/sw/bin`, then the user's bin folders. |
+| [tasks/verify.yml](../../../roles/workstation/tasks/verify.yml) | As the user over a non-interactive SSH command: each npm/uv tool's command is found, each pinned tool is at its version, and each `environment` name is set. Values aren't printed. |
+| [env.example](../../../roles/workstation/env.example), [README.md](../../../roles/workstation/README.md) | Document `tools`, `environment`, `WORKSTATION_ENV_*`, upgrades, and that no sudo is needed. |
 | New filter, `workstation_tool_actions(tools, record, installed, upgrade)` | Decides per tool: install, reinstall at its pin, upgrade, uninstall, or leave alone. Pure logic, so the cases in "Versions" are unit tested. `installed` is parsed from `npm ls` and `uv tool list`. |
 | `tests/test_workstation.py` | Unit tests for the filters. |
 

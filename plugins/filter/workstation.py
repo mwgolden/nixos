@@ -1,6 +1,6 @@
 """Checks and decisions for a workstation's user tools and environment
 variables (settings.tools and settings.environment). See
-roles/workstation/README.md and docs/plans/WORKSTATION-TOOLS.md.
+roles/workstation/README.md and docs/plans/completed/WORKSTATION-TOOLS.md.
 
 Used from roles/workstation:
 
