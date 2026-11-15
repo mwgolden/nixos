@@ -38,6 +38,8 @@ data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_garage-data"
 garage_capacity: "{{ garage_data_disk_gb | int * 1000000000 }}"
 # Calls Garage's admin API through the garage command, which talks to the
 # server over RPC. The JSON payload goes on stdin and the reply is JSON.
-garage_api: "garage json-api"
+# The garage on PATH is a wrapper script NixOS installs without a "#!" line,
+# so only a shell can run it; Ansible's command module can't directly.
+garage_api: "sh /run/current-system/sw/bin/garage json-api"
 
 garage_endpoint: "http://{{ final.ip }}:{{ garage_s3_port }}"
