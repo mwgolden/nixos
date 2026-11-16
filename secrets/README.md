@@ -3,10 +3,11 @@
 Credentials for each host, one folder per network:
 
 ```text
-secrets/<network>/<host>.env          # read by the host's deploy
-secrets/<network>/<host>-users.env    # postgres only: database user passwords
-secrets/<network>/<proxy>-ca.crt      # written by deploys: the proxy's root certificate
-secrets/<network>/vpn/                # written by deploys: WireGuard keys and client files
+secrets/<network>/<host>.env           # read by the host's deploy
+secrets/<network>/<host>-users.env     # postgres only: database user passwords
+secrets/<network>/<openbao>-init.json  # written by deploys: OpenBao's unseal keys and root token
+secrets/<network>/<proxy>-ca.crt       # written by deploys: the proxy's root certificate
+secrets/<network>/vpn/                 # written by deploys: WireGuard keys and client files
 ```
 
 Everything here except this README is gitignored. Each file holds `KEY=value` lines. `export ` and quotes around values are optional.
@@ -21,9 +22,10 @@ Everything here except this README is gitignored. Each file holds `KEY=value` li
 | nats | `<host>.env`: the client login | [roles/nats/env.example](../roles/nats/env.example) |
 | workstation | `<host>.env`, optional: the user's password hash, and secret environment variables (`WORKSTATION_ENV_<NAME>`) | [roles/workstation/env.example](../roles/workstation/env.example) |
 
-Two kinds of file here are written by deploys, not by you:
+Three kinds of file here are written by deploys, not by you:
 
 - `<proxy>-ca.crt`: the root certificate of a [proxy](../roles/proxy/README.md#https), for your machines to trust. Not secret.
+- `<openbao>-init.json`: an [OpenBao](../roles/openbao/README.md#unseal-keys-and-root-token) host's unseal keys and root token, made on its first deploy. Without it a sealed OpenBao can't be opened, so back it up elsewhere. Never overwritten.
 - `vpn/`: the router's [VPN](../roles/router/README.md#vpn) keys, made on the first deploy and kept after that. `<name>.key` files are private keys. `<peer>.conf` files are ready-to-use client configurations, and contain the peer's private key. Deleting `<router>.key` makes a new router key on the next deploy, and every client file has to be handed out again.
 
 Proxmox and SSH key settings are still in `proxmox/.env`.

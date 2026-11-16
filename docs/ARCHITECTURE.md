@@ -344,6 +344,7 @@ The target layout, reached in stages (see [PLAN.md](PLAN.md)):
 │   ├── proxy/                   # Caddy reverse proxy (type: proxy)
 │   ├── ldap/                    # lldap (type: ldap)
 │   ├── nats/                    # NATS with JetStream (type: nats)
+│   ├── openbao/                 # OpenBao secrets manager (type: openbao)
 │   └── workstation/             # SSH machine with a non-root user
 ├── modules/                     # NixOS modules shared by every VM
 └── proxmox/                     # template bootstrap

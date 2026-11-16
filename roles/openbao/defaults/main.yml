@@ -1,0 +1,45 @@
+# Defaults for openbao hosts. Set any of openbao_settings_defaults under the
+# host's settings: in its network file.
+
+openbao_settings_defaults:
+  # Port the API and web UI listen on.
+  port: 8200
+  # Serve the web UI at http://<host>:<port>/ui.
+  ui: true
+  # How many unseal keys the first deploy makes, and how many of them it
+  # takes to unseal. Only used when OpenBao is initialized; changing them
+  # later does nothing (use bao operator rekey).
+  key_shares: 1
+  key_threshold: 1
+  # KV version 2 secrets engines to mount, by path. Created if missing;
+  # removing a name doesn't delete the mount or its secrets.
+  kv_mounts:
+    - secret
+
+openbao_settings: "{{ openbao_settings_defaults | combine(vm.settings) }}"
+
+# The names the configuration templates and tasks use.
+openbao_port: "{{ openbao_settings.port }}"
+openbao_ui: "{{ openbao_settings.ui | bool }}"
+openbao_key_shares: "{{ openbao_settings.key_shares }}"
+openbao_key_threshold: "{{ openbao_settings.key_threshold }}"
+openbao_kv_mounts: "{{ openbao_settings.kv_mounts }}"
+# Raft's cluster port, on loopback only: with a single node nothing else
+# needs it.
+openbao_cluster_port: 8201
+
+openbao_vm_name: "{{ vm.name }}"
+# The router's WAN address, where port forwards to an isolated host are.
+router_ip: "{{ nixlab.networks[vm.network.name].router_wan_ip }}"
+# Written by the first deploy: the unseal keys and root token. See
+# secrets/README.md.
+openbao_init_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}-init.json"
+# Where the first deploy writes the same, root-only on the VM, until it is
+# copied to openbao_init_file. Then it is deleted.
+openbao_pending_init_file: /root/openbao-init.json
+
+data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_openbao-data"
+
+# The API as the deploy reaches it on the VM itself.
+openbao_local_url: "http://127.0.0.1:{{ openbao_port }}"
+openbao_url: "http://{{ final.ip }}:{{ openbao_port }}"

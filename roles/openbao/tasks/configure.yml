@@ -1,0 +1,228 @@
+# Installs and switches to the openbao VM's NixOS configuration, then
+# initializes OpenBao on the first deploy, unseals it and mounts its KV
+# secrets engines. Runs on the VM with become: true, from roles/host_deploy.
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+    nixos_base_data_disk_serial: openbao-data
+
+- name: Install OpenBao settings
+  ansible.builtin.template:
+    src: openbao.nix.j2
+    dest: /etc/nixos/openbao.nix
+    mode: "0644"
+
+- name: Install openbao NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Switch to the configuration and move to the openbao address
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch
+
+- name: Check the data disk is mounted
+  ansible.builtin.command:
+    cmd: findmnt --source {{ data_disk_device }} --target /var/lib/openbao
+  changed_when: false
+
+# ---- Running the new configuration ----
+# NixOS doesn't restart OpenBao on a switch, since that seals it. Compare
+# the command line it runs with the one its unit now has, which holds the
+# path of the package and of the configuration file.
+
+- name: Check OpenBao runs the current configuration
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      pid=$(systemctl show -p MainPID --value openbao.service)
+      if [ "$pid" = 0 ]; then echo stopped; exit 0; fi
+      running=$(tr '\0' ' ' < /proc/"$pid"/cmdline | sed 's/ $//')
+      wanted=$(systemctl show -p ExecStart --value openbao.service \
+        | sed -n 's/.*argv\[\]=\(.*\) ; ignore_errors=.*/\1/p')
+      if [ "$running" = "$wanted" ]; then echo current; else echo changed; fi
+  register: openbao_running
+  changed_when: false
+
+- name: Restart OpenBao with the new configuration
+  ansible.builtin.systemd_service:
+    name: openbao
+    state: restarted
+  when: openbao_running.stdout == 'changed'
+
+- name: Start OpenBao
+  ansible.builtin.systemd_service:
+    name: openbao
+    state: started
+  when: openbao_running.stdout == 'stopped'
+
+- name: Wait for OpenBao's API
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/seal-status"
+  register: openbao_seal
+  retries: 20
+  delay: 3
+  until: openbao_seal is succeeded
+
+# ---- First deploy: initialize ----
+
+- name: Refuse to initialize over unseal keys from an earlier deploy
+  ansible.builtin.assert:
+    that: openbao_init is not defined
+    fail_msg: >-
+      OpenBao on {{ vm.name }} isn't initialized, but
+      secrets/{{ vm.network.name }}/{{ vm.name }}-init.json has unseal keys
+      from an earlier deploy, so its data disk is new or was wiped. If that's
+      expected, move the file somewhere else and redeploy; the deploy then
+      starts a new, empty OpenBao.
+    quiet: true
+  when: not openbao_seal.json.initialized
+
+# The keys go to a root-only file on the VM first, and only leave it once
+# they are safely in secrets/. If anything fails in between, the next deploy
+# picks them up from there.
+- name: Initialize OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      umask 077 &&
+      /run/current-system/sw/bin/bao operator init
+      -address={{ openbao_local_url }}
+      -key-shares={{ openbao_key_shares }}
+      -key-threshold={{ openbao_key_threshold }}
+      -format=json > {{ openbao_pending_init_file }}.new &&
+      mv {{ openbao_pending_init_file }}.new {{ openbao_pending_init_file }}
+  when: not openbao_seal.json.initialized
+  no_log: true
+
+- name: Look for unseal keys not yet saved
+  ansible.builtin.stat:
+    path: "{{ openbao_pending_init_file }}"
+  register: openbao_pending
+
+- name: Save the unseal keys in secrets/
+  when: openbao_pending.stat.exists
+  block:
+    - name: Read the new unseal keys
+      ansible.builtin.slurp:
+        src: "{{ openbao_pending_init_file }}"
+      register: openbao_pending_content
+      no_log: true
+
+    - name: Note the new unseal keys
+      ansible.builtin.set_fact:
+        openbao_new_init: "{{ openbao_pending_content.content | b64decode | from_json }}"
+      no_log: true
+
+    # An earlier deploy may have saved them and stopped before deleting the
+    # copy on the VM. Never replace keys that differ.
+    - name: Check they are the keys already saved, if any
+      ansible.builtin.assert:
+        that: openbao_init.root_token == openbao_new_init.root_token
+        fail_msg: >-
+          {{ openbao_pending_init_file }} on {{ vm.name }} has different keys
+          than secrets/{{ vm.network.name }}/{{ vm.name }}-init.json. Work out
+          which one matches this OpenBao, keep it in secrets/, and delete the
+          other.
+        quiet: true
+      when: openbao_init is defined
+
+    - name: Write the unseal keys to secrets/
+      ansible.builtin.copy:
+        dest: "{{ openbao_init_file }}"
+        content: "{{ openbao_new_init | to_nice_json }}\n"
+        mode: "0600"
+        force: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Note the unseal keys
+      ansible.builtin.set_fact:
+        openbao_init: "{{ openbao_new_init }}"
+      no_log: true
+
+    - name: Delete the copy on the VM
+      ansible.builtin.file:
+        path: "{{ openbao_pending_init_file }}"
+        state: absent
+
+- name: Require the unseal keys
+  ansible.builtin.assert:
+    that: openbao_init is defined
+    fail_msg: >-
+      OpenBao on {{ vm.name }} is already initialized, but
+      secrets/{{ vm.network.name }}/{{ vm.name }}-init.json, with its unseal
+      keys and root token, is missing. Restore it from your backup.
+    quiet: true
+
+# ---- Unseal ----
+
+- name: Read the seal status
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/seal-status"
+  register: openbao_seal
+  changed_when: false
+
+- name: Unseal OpenBao
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/unseal"
+    method: POST
+    body_format: json
+    body:
+      key: "{{ item }}"
+  loop: "{{ openbao_init.unseal_keys_b64[: openbao_init.unseal_threshold | int] }}"
+  when: openbao_seal.json.sealed
+  changed_when: true
+  no_log: true
+
+# 200 once this node is unsealed and active.
+- name: Wait for OpenBao to be active
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/health"
+  register: openbao_health
+  retries: 20
+  delay: 3
+  until: openbao_health is succeeded
+
+# ---- KV secrets engines ----
+
+- name: List the secrets engines
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/mounts"
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    status_code: [200, 403]
+  register: openbao_mounts
+  no_log: true
+
+- name: Check the root token still works
+  ansible.builtin.assert:
+    that: openbao_mounts.status == 200
+    fail_msg: >-
+      The root token in secrets/{{ vm.network.name }}/{{ vm.name }}-init.json
+      was refused, so it has been revoked. Make a new one (bao operator
+      generate-root) and put it in root_token there, or set kv_mounts: [] for
+      {{ vm.name }} in networks/{{ vm.network.name }}.yaml.
+    quiet: true
+  when: openbao_kv_mounts | length > 0
+
+- name: Mount KV secrets engines
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/mounts/{{ item }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      type: kv
+      options:
+        version: "2"
+    status_code: [200, 204]
+  loop: "{{ openbao_kv_mounts }}"
+  when: (item ~ '/') not in openbao_mounts.json.data
+  changed_when: true

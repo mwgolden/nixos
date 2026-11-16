@@ -1,0 +1,60 @@
+# Checks the openbao host's settings, and reads its unseal keys if an
+# earlier deploy wrote them, before anything changes. Runs on localhost from
+# roles/host_deploy. Facts it sets land on the VM's inventory entry, where
+# configure.yml and verify.yml use them.
+
+- name: Check the settings
+  ansible.builtin.assert:
+    that:
+      - openbao_port | string is match('^[0-9]+$')
+      - openbao_port | int >= 1 and openbao_port | int <= 65535
+      - openbao_port | int != openbao_cluster_port
+      - openbao_key_shares | string is match('^[0-9]+$')
+      - openbao_key_threshold | string is match('^[0-9]+$')
+      - openbao_key_threshold | int >= 1
+      - openbao_key_shares | int >= openbao_key_threshold | int
+      - openbao_key_shares | int <= 10
+      - openbao_key_threshold | int > 1 or openbao_key_shares | int == 1
+      - openbao_kv_mounts is sequence and openbao_kv_mounts is not string
+    fail_msg: >-
+      Check settings of {{ vm.name }} in networks/{{ vm.network.name }}.yaml:
+      port must be 1 to 65535 (not {{ openbao_cluster_port }}, used by raft),
+      key_threshold at least 1 and at most key_shares, key_shares at most 10
+      (and 1 if key_threshold is 1), and kv_mounts a list.
+    quiet: true
+
+- name: Check the KV mount paths
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is match('^[a-z0-9][a-z0-9_-]{0,62}$')
+      - item not in ['sys', 'auth', 'identity', 'cubbyhole']
+    fail_msg: >-
+      '{{ item }}' in settings.kv_mounts isn't a usable mount path. Use up to
+      63 lowercase letters, digits, '_' and '-', starting with a letter or
+      digit, and not sys, auth, identity or cubbyhole.
+    quiet: true
+  loop: "{{ openbao_kv_mounts }}"
+
+- name: Look for the unseal keys from an earlier deploy
+  ansible.builtin.stat:
+    path: "{{ openbao_init_file }}"
+  register: openbao_init_stat
+
+- name: Read the unseal keys
+  ansible.builtin.set_fact:
+    openbao_init: "{{ lookup('ansible.builtin.file', openbao_init_file) | from_json }}"
+  when: openbao_init_stat.stat.exists
+  no_log: true
+
+- name: Check the unseal keys
+  ansible.builtin.assert:
+    that:
+      - openbao_init.root_token | default('') | length > 0
+      - openbao_init.unseal_keys_b64 | default([]) | length >= openbao_init.unseal_threshold | default(1)
+    fail_msg: >-
+      secrets/{{ vm.network.name }}/{{ vm.name }}-init.json doesn't have the
+      root_token, unseal_keys_b64 and unseal_threshold the first deploy wrote
+      there. Restore it from your backup.
+    quiet: true
+  when: openbao_init_stat.stat.exists

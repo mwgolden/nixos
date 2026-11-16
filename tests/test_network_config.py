@@ -182,9 +182,20 @@ class Mutations(unittest.TestCase):
             {"name": "nats", "type": "nats", "vm_id": 118, "ip": "192.168.1.18"})
         self.assertError("a nats host needs a data_disk")
 
+    def test_openbao_data_disk_required(self):
+        self.by_name["home"]["hosts"].append(
+            {"name": "openbao", "type": "openbao", "vm_id": 120, "ip": "192.168.1.20"})
+        self.assertError("a openbao host needs a data_disk")
+
+    def test_openbao_type(self):
+        self.by_name["home"]["hosts"].append(
+            {"name": "openbao", "type": "openbao", "vm_id": 120, "ip": "192.168.1.20",
+             "data_disk": {"size_gb": 10, "storage": "local-lvm"}})
+        self.assertEqual(errors(self.files), [])
+
     def test_workstation_type(self):
         self.by_name["home"]["hosts"].append(
-            {"name": "ws", "type": "workstation", "vm_id": 119, "ip": "192.168.1.19"})
+            {"name": "ws", "type": "workstation", "vm_id": 120, "ip": "192.168.1.20"})
         self.assertEqual(errors(self.files), [])
 
     def test_router_port_forwards_replaced(self):

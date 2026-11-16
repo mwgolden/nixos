@@ -1,0 +1,37 @@
+# Checks OpenBao answers, unsealed, on its final address and says how to
+# reach it. Runs on localhost from roles/host_deploy. On an isolated network
+# only the router can reach OpenBao, so the check runs there.
+
+# The health endpoint needs no token, and answers 200 only when OpenBao is
+# initialized, unsealed and active.
+- name: Check OpenBao answers
+  ansible.builtin.uri:
+    url: "{{ openbao_url }}/v1/sys/health"
+  register: openbao_check
+  retries: 10
+  delay: 3
+  until: openbao_check is succeeded
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+
+- name: Show where OpenBao is
+  ansible.builtin.debug:
+    msg: >-
+      {% if final.via_router -%}
+      OpenBao is up on the isolated network at
+      http://{{ vm.name }}.{{ vm.network.domain }}:{{ openbao_port }}
+      ({{ final.ip }}), for VMs on that network.
+      {% set forward = vm.expose | selectattr('port', 'equalto', openbao_port | int) | first | default(none) -%}
+      {% if forward -%}
+      From home: http://{{ router_ip }}:{{ forward.wan_port }}. Redeploy the
+      router if you just added this expose: entry.
+      {%- else -%}
+      To reach it from home, add a proxy: entry (HTTPS) or
+      expose: [{port: {{ openbao_port }}}] to {{ vm.name }} in
+      networks/{{ vm.network.name }}.yaml and redeploy.
+      {%- endif %}
+      {%- else -%}
+      OpenBao is up at {{ openbao_url }}.
+      {%- endif %}
+      The root token and unseal keys are in
+      secrets/{{ vm.network.name }}/{{ vm.name }}-init.json; keep a copy
+      somewhere safe.
