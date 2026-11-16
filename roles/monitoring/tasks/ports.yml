@@ -1,0 +1,7 @@
+# Ports a monitoring host may listen on, besides SSH (22). Used by
+# roles/network_verify to find unexpected services. Prometheus and
+# node_exporter are on loopback, which the check leaves out.
+
+- name: Note the ports monitoring listens on
+  ansible.builtin.set_fact:
+    verify_expected_ports: ["{{ monitoring_http_port | int }}"]

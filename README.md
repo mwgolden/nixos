@@ -14,7 +14,7 @@ On top of that, the project manages the parts that make a network:
 - **Isolated networks:** a Proxmox bridge with no physical port, behind a NixOS router VM that does NAT, the firewall, DHCP and DNS. The lab reaches the internet but not your home LAN.
 - **A DMZ:** an optional second bridge behind the same router for published hosts, such as the reverse proxy. If one of them is taken over, it still can't reach the rest of the lab, apart from the specific ports the configuration allows.
 - **Ways in from home**, from narrowest to widest: port forwards, published HTTPS routes through a Caddy reverse proxy, and a WireGuard VPN.
-- **Services:** PostgreSQL, Gitea, Garage (S3), LDAP, NATS with JetStream, OpenBao for secrets, nginx, and a workstation with a non-root user, each a host type with its own role.
+- **Services:** PostgreSQL, Gitea, Garage (S3), LDAP, NATS with JetStream, OpenBao for secrets, Prometheus and Grafana, nginx, and a workstation with a non-root user, each a host type with its own role.
 - **Checks:** files are validated before anything changes, and every deploy ends by testing the network: addresses, DNS, internet access, isolation and DMZ rules.
 
 The design and its decisions are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -245,6 +245,7 @@ Each host type is a role in [roles/](roles/), with a README that explains its se
 - [ldap](roles/ldap/README.md): lldap, a small LDAP server for user accounts and groups, with a web interface
 - [nats](roles/nats/README.md): NATS messaging server with JetStream persistence on a separate data disk
 - [openbao](roles/openbao/README.md): OpenBao secrets manager (an open-source Vault) on a separate data disk, initialized and unsealed by the deploy
+- [monitoring](roles/monitoring/README.md): Prometheus and Grafana, with Prometheus as Grafana's data source, on a separate data disk
 - [workstation](roles/workstation/README.md): a headless machine to SSH into, with a non-root user account
 
 Passwords and keys for hosts go in `secrets/<network>/<host>.env`; see [secrets/README.md](secrets/README.md).

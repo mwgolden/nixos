@@ -1,0 +1,36 @@
+# Checks Grafana answers on its final address and says how to reach it.
+# Runs on localhost from roles/host_deploy. On an isolated network only the
+# router can reach Grafana, so the check runs there.
+
+- name: Check Grafana answers
+  ansible.builtin.uri:
+    url: "{{ monitoring_url }}/api/health"
+  register: monitoring_check
+  retries: 10
+  delay: 3
+  until: monitoring_check is succeeded
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+
+- name: Show where Grafana is
+  ansible.builtin.debug:
+    msg: >-
+      {% if monitoring_route -%}
+      Grafana is up at https://{{ monitoring_route.fqdn }}/ through the proxy
+      ({{ monitoring_url }} directly).
+      {%- elif final.via_router -%}
+      Grafana is up on the isolated network at
+      http://{{ vm.name }}.{{ vm.network.domain }}:{{ monitoring_http_port }}
+      ({{ final.ip }}), for VMs on that network.
+      {% set forward = vm.expose | selectattr('port', 'equalto', monitoring_http_port | int) | first | default(none) -%}
+      {% if forward -%}
+      From home: http://{{ router_ip }}:{{ forward.wan_port }}. Redeploy the
+      router if you just added this expose: entry.
+      {%- else -%}
+      To reach it from home, add a proxy: entry (HTTPS) or
+      expose: [{port: {{ monitoring_http_port }}}] to {{ vm.name }} in
+      networks/{{ vm.network.name }}.yaml and redeploy.
+      {%- endif %}
+      {%- else -%}
+      Grafana is up at {{ monitoring_url }}.
+      {%- endif %}
+      Log in as admin (password in secrets/{{ vm.network.name }}/{{ vm.name }}.env).

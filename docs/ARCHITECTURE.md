@@ -345,6 +345,7 @@ The target layout, reached in stages (see [PLAN.md](PLAN.md)):
 │   ├── ldap/                    # lldap (type: ldap)
 │   ├── nats/                    # NATS with JetStream (type: nats)
 │   ├── openbao/                 # OpenBao secrets manager (type: openbao)
+│   ├── monitoring/              # Prometheus and Grafana (type: monitoring)
 │   └── workstation/             # SSH machine with a non-root user
 ├── modules/                     # NixOS modules shared by every VM
 └── proxmox/                     # template bootstrap

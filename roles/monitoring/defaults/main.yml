@@ -1,0 +1,55 @@
+# Defaults for monitoring hosts. Set any of monitoring_settings_defaults
+# under the host's settings: in its network file.
+
+monitoring_settings_defaults:
+  # Port Grafana's web interface listens on. Prometheus and node_exporter
+  # listen on the VM's loopback only.
+  http_port: 3000
+  # How long Prometheus keeps samples, such as 15d or 1y. The data disk
+  # must be big enough to hold them.
+  retention: 30d
+  # How often Prometheus scrapes every target, such as 15s or 1m.
+  scrape_interval: 30s
+  # More scrape jobs. Each is a job name and the host:port targets to
+  # scrape, with an optional metrics_path (default /metrics). Prometheus
+  # itself and this VM's node_exporter are always scraped.
+  #   - job: node
+  #     targets: ["gitea.lab.home.arpa:9100"]
+  scrape: []
+  # The address people use to reach Grafana, for its links and redirects.
+  # Left empty, it is the proxy's HTTPS name when there is a proxy: entry
+  # for http_port, and otherwise Grafana works it out from each request.
+  root_url: ""
+
+monitoring_settings: "{{ monitoring_settings_defaults | combine(vm.settings) }}"
+
+# The names the configuration templates and tasks use.
+monitoring_http_port: "{{ monitoring_settings.http_port }}"
+monitoring_retention: "{{ monitoring_settings.retention }}"
+monitoring_scrape_interval: "{{ monitoring_settings.scrape_interval }}"
+monitoring_scrape: "{{ monitoring_settings.scrape }}"
+# Loopback only, so not settings.
+monitoring_prometheus_port: 9090
+monitoring_node_exporter_port: 9100
+
+monitoring_vm_name: "{{ vm.name }}"
+# The router's WAN address, where port forwards to an isolated host are.
+router_ip: "{{ nixlab.networks[vm.network.name].router_wan_ip | default('') }}"
+# Secrets for this host. See secrets/README.md.
+monitoring_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}.env"
+# Where Grafana's admin password and secret key are kept on the VM, root
+# only. systemd hands them to Grafana as credentials.
+monitoring_credentials_dir: /etc/grafana-credentials
+
+data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_monitoring-data"
+
+# The network proxy's route to Grafana, or {}.
+monitoring_route: >-
+  {{ vm.network.proxy_routes | selectattr('host', 'equalto', vm.name)
+     | selectattr('port', 'equalto', monitoring_http_port | int) | first | default({}) }}
+monitoring_root_url: >-
+  {{ monitoring_settings.root_url
+     or (('https://' ~ monitoring_route.fqdn ~ '/') if monitoring_route else '') }}
+
+monitoring_local_url: "http://127.0.0.1:{{ monitoring_http_port }}"
+monitoring_url: "http://{{ final.ip }}:{{ monitoring_http_port }}"

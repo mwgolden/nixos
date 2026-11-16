@@ -187,6 +187,17 @@ class Mutations(unittest.TestCase):
             {"name": "openbao", "type": "openbao", "vm_id": 120, "ip": "192.168.1.20"})
         self.assertError("a openbao host needs a data_disk")
 
+    def test_monitoring_data_disk_required(self):
+        self.by_name["home"]["hosts"].append(
+            {"name": "monitoring", "type": "monitoring", "vm_id": 121, "ip": "192.168.1.21"})
+        self.assertError("a monitoring host needs a data_disk")
+
+    def test_monitoring_type(self):
+        self.by_name["home"]["hosts"].append(
+            {"name": "monitoring", "type": "monitoring", "vm_id": 121, "ip": "192.168.1.21",
+             "data_disk": {"size_gb": 20, "storage": "local-lvm"}})
+        self.assertEqual(errors(self.files), [])
+
     def test_openbao_type(self):
         self.by_name["home"]["hosts"].append(
             {"name": "openbao", "type": "openbao", "vm_id": 120, "ip": "192.168.1.20",

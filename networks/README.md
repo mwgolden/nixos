@@ -39,7 +39,7 @@ ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox
 | Setting | Required | Meaning |
 |---|---|---|
 | `name` | yes | VM name in Proxmox, and the host name. Unique within this network; other networks may use the same name. Across networks a host is identified as `<network>.<host>`, such as `lab.router`, which is also its name in the Ansible inventory. |
-| `type` | yes | Which kind of VM: `webserver`, `postgres`, `gitea`, `garage`, `router`, `proxy`, `ldap`, `nats`, `openbao` or `workstation`. |
+| `type` | yes | Which kind of VM: `webserver`, `postgres`, `gitea`, `garage`, `router`, `proxy`, `ldap`, `nats`, `openbao`, `monitoring` or `workstation`. |
 | `vm_id` | yes | Proxmox VM ID. Unique across all networks, and not the template's. An existing VM with this ID must have this name. |
 | `ip` | yes | Fixed address inside `cidr` (or `dmz.cidr` for a DMZ host), outside the DHCP range, and unique across all networks. A router's `ip` is its LAN address and must equal `gateway`. |
 | `zone` | no | `lan` (the default) or `dmz`, which puts the host on the network's [DMZ](#dmz) bridge. Not for routers. |
@@ -49,7 +49,7 @@ ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox
 | `cpu` | no | The VM's [CPU type](#cpu-type-cores-and-memory): `x86-64-v2-AES`, `x86-64-v2` or `host`. Defaults to `vm_cpu_type` in `proxmox/vars.yaml`. |
 | `cores` | no | CPU cores, 1 to 64 and no more than the Proxmox node has. Not set: the VM keeps what it has; a new VM gets the template's (`template_cores`, 2). |
 | `memory_mb` | no | Memory in MB, 512 to 262144. Not set: the VM keeps what it has; a new VM gets the template's (`template_memory_mb`, 4096). |
-| `data_disk` | postgres, gitea, garage, nats, openbao | `size_gb` and `storage`. It can grow but never shrink. |
+| `data_disk` | postgres, gitea, garage, nats, openbao, monitoring | `size_gb` and `storage`. It can grow but never shrink. |
 | `expose` | no, isolated networks only | Ports forwarded to this host from its router's WAN address. Each entry has `port` (on the host), and optionally `wan_port` (on the router, defaults to `port`), `proto` (`tcp` or `udp`, defaults to `tcp`) and `name` (needed when a host has more than one). Redeploy the router after changing these. |
 | `proxy` | no | Web services on this host for the network's `proxy` host to serve over HTTPS. Each entry has `name`, one DNS label, served as `<name>.<domain>`, and `port`, the port on this host. `external: true` also publishes it through the router's TCP 443 and 80 (isolated networks only; off by default). Needs a host of type `proxy` on the same network. See [roles/proxy](../roles/proxy/README.md). |
 | `settings` | no | Settings for this host type. The defaults are in the host type's role. |

@@ -1,0 +1,102 @@
+# Installs and switches to the monitoring VM's NixOS configuration, then
+# checks Prometheus and Grafana. Runs on the VM with become: true, from
+# roles/host_deploy.
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+    nixos_base_data_disk_serial: monitoring-data
+
+- name: Create the folder for Grafana's credentials
+  ansible.builtin.file:
+    path: "{{ monitoring_credentials_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Before the switch, so Grafana finds them on its first start. No trailing
+# newline: Grafana reads the whole file as the value.
+- name: Install Grafana's credentials
+  ansible.builtin.copy:
+    dest: "{{ monitoring_credentials_dir }}/{{ item.name }}"
+    content: "{{ item.value }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - { name: admin_password, value: "{{ monitoring_admin_password }}" }
+    - { name: secret_key, value: "{{ monitoring_secret_key }}" }
+  register: monitoring_credentials
+  no_log: true
+
+- name: Install monitoring settings
+  ansible.builtin.template:
+    src: monitoring.nix.j2
+    dest: /etc/nixos/monitoring.nix
+    mode: "0644"
+
+- name: Install monitoring NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Switch to the configuration and move to the monitoring address
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch
+
+- name: Check the data disk is mounted
+  ansible.builtin.command:
+    cmd: findmnt --source {{ data_disk_device }} --target /var/lib/monitoring
+  changed_when: false
+
+# The switch restarts Grafana when its configuration changes, but not when
+# only the credential files do.
+- name: Restart Grafana for the new credentials
+  ansible.builtin.systemd_service:
+    name: grafana
+    state: restarted
+  when: monitoring_credentials.changed
+
+- name: Wait for Prometheus to be ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ monitoring_prometheus_port }}/-/ready"
+  register: monitoring_prometheus_ready
+  retries: 20
+  delay: 3
+  until: monitoring_prometheus_ready is succeeded
+
+- name: Wait for Grafana to be ready
+  ansible.builtin.uri:
+    url: "{{ monitoring_local_url }}/api/health"
+  register: monitoring_grafana_ready
+  retries: 20
+  delay: 3
+  until: monitoring_grafana_ready is succeeded
+
+# Grafana only takes the password from the secrets file when it creates its
+# database, so after that the two can drift apart.
+- name: Check the admin password works
+  ansible.builtin.uri:
+    url: "{{ monitoring_local_url }}/api/user"
+    url_username: admin
+    url_password: "{{ monitoring_admin_password }}"
+    force_basic_auth: true
+    status_code: [200, 401]
+  register: monitoring_login
+  no_log: true
+
+- name: Require the admin password to match Grafana's
+  ansible.builtin.assert:
+    that: monitoring_login.status == 200
+    fail_msg: >-
+      Grafana on {{ vm.name }} refused the admin password in
+      secrets/{{ vm.network.name }}/{{ vm.name }}.env. Grafana only takes it
+      on its first start, so it was changed in one place but not the other.
+      Change it in Grafana (Profile, Change password) to match, or put the
+      old one back in the file.
+    quiet: true

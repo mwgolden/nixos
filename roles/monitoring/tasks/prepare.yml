@@ -1,0 +1,81 @@
+# Checks the monitoring host's secrets and settings before anything
+# changes. Runs on localhost from roles/host_deploy. Facts it sets land on
+# the VM's inventory entry, where configure.yml and verify.yml use them.
+
+- name: Read Grafana's secrets from the secrets file
+  ansible.builtin.include_role:
+    name: dotenv
+  vars:
+    dotenv_path: "{{ monitoring_secrets_file }}"
+    dotenv_missing_hint: "Copy roles/monitoring/env.example there and set Grafana's admin password and secret key."
+
+- name: Note Grafana's secrets
+  ansible.builtin.set_fact:
+    monitoring_admin_password: "{{ dotenv_values.GRAFANA_ADMIN_PASSWORD | default('') }}"
+    monitoring_secret_key: "{{ dotenv_values.GRAFANA_SECRET_KEY | default('') }}"
+  no_log: true
+
+# The assertions print the expressions, not the values, on failure.
+- name: Check Grafana's secrets
+  ansible.builtin.assert:
+    that:
+      - monitoring_admin_password is match('^\S{12,}$')
+      - monitoring_admin_password != 'change-me-to-a-long-random-value'
+      - monitoring_secret_key is match('^[A-Za-z0-9+/=_-]{32,}$')
+      - monitoring_secret_key is not match('^0+$')
+    fail_msg: >-
+      In secrets/{{ vm.network.name }}/{{ vm.name }}.env, set
+      GRAFANA_ADMIN_PASSWORD (at least 12 characters, no spaces) and
+      GRAFANA_SECRET_KEY (at least 32 letters and digits).
+      roles/monitoring/env.example shows how to generate them.
+    quiet: true
+
+- name: Check the settings
+  ansible.builtin.assert:
+    that:
+      - monitoring_http_port | string is match('^[0-9]+$')
+      - monitoring_http_port | int >= 1 and monitoring_http_port | int <= 65535
+      - monitoring_http_port | int not in [monitoring_prometheus_port, monitoring_node_exporter_port]
+      - monitoring_retention | string is match('^[0-9]+(ms|s|m|h|d|w|y)$')
+      - monitoring_scrape_interval | string is match('^[0-9]+(ms|s|m|h)$')
+      - monitoring_settings.root_url | string is match('^(https?://[A-Za-z0-9.:-]+(/[A-Za-z0-9._/-]*)?)?$')
+      - monitoring_scrape is sequence and monitoring_scrape is not string
+    fail_msg: >-
+      Check settings of {{ vm.name }} in networks/{{ vm.network.name }}.yaml:
+      http_port must be 1 to 65535 (not {{ monitoring_prometheus_port }} or
+      {{ monitoring_node_exporter_port }}), retention a duration like 30d or
+      1y, scrape_interval one like 30s or 1m, root_url empty or an http(s)://
+      address, and scrape a list.
+    quiet: true
+
+# Checked strictly, since they are written into the Nix configuration.
+- name: Check the scrape jobs
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.job | default('') is match('^[A-Za-z_][A-Za-z0-9_-]*$')
+      - item.job != 'prometheus'
+      - item.targets | default('') is sequence and item.targets is not string
+      - item.targets | length > 0
+      - item.targets | reject('match', '^[A-Za-z0-9.-]+:[0-9]{1,5}$') | list | length == 0
+      - item.metrics_path | default('/metrics') is match('^/[A-Za-z0-9._/-]*$')
+      - item.job != 'node' or item.metrics_path is not defined
+      - item.keys() | difference(['job', 'targets', 'metrics_path']) | length == 0
+    fail_msg: >-
+      Entry {{ item.job | default(item) }} in settings.scrape of {{ vm.name }}
+      needs a job (letters, digits, '_' and '-', not prometheus), targets (a
+      list of host:port), and optionally a metrics_path starting with '/'
+      (but not for job node, whose targets join this VM's node_exporter).
+    quiet: true
+  loop: "{{ monitoring_scrape }}"
+  loop_control:
+    label: "{{ item.job | default(item) }}"
+
+- name: Check the scrape job names are unique
+  ansible.builtin.assert:
+    that:
+      - names | length == names | unique | length
+    fail_msg: "Two entries in settings.scrape of {{ vm.name }} have the same job name."
+    quiet: true
+  vars:
+    names: "{{ monitoring_scrape | map(attribute='job') | list }}"
