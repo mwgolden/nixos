@@ -8,6 +8,8 @@ Each `<name>.yaml` here describes one network and the VMs on it. The file's name
 
 Deploy a whole network with `ansible-playbook playbooks/deploy-network.yaml -e network=<name>`, or one host with `playbooks/deploy-host.yaml -e network=<name> -e host=<host>`. Either one then rewrites the network's diagram in [docs/network-diagrams/](../docs/network-diagrams/).
 
+A network deploys in this order: its router (which creates the bridge), then its `openbao` host if it has one, then the other hosts in the order the file lists them. An `openbao` host also changes where the other hosts' secrets come from: their `secrets/<network>/<host>.env` files are imported into it, and from then on the deploys read them there. See [secrets/README.md](../secrets/README.md#networks-with-an-openbao-host).
+
 Check every file before deploying:
 
 ```bash
@@ -155,6 +157,7 @@ Checked in the files, by [plugins/filter/network_config.py](../plugins/filter/ne
 - Every setting above, including `expose:`, `proxy:`, `domain`, `dmz`, `zone` and `reach:`.
 - A DMZ's bridge and subnet are unique like a network's, and each host's `ip` is in its zone's subnet.
 - A network with `proxy:` routes has exactly one `proxy` host, and no route has a host's name.
+- A network has at most one `openbao` host. With one, the network's name is also its secrets mount in OpenBao, so it can't be `sys`, `auth`, `identity` or `cubbyhole`, or appear in that host's `kv_mounts`.
 - Host names are unique within each network.
 - VM IDs, addresses (including routers' `wan_ip`) and bridges are unique across all networks.
 - Subnets don't overlap.

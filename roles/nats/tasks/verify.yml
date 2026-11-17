@@ -29,4 +29,4 @@
       {%- else -%}
       NATS is up at {{ nats_url }}.
       {%- endif %}
-      Log in as {{ nats_user }} (password in secrets/{{ vm.network.name }}/{{ vm.name }}.env).
+      Log in as {{ nats_user }} (password in {{ host_secrets_where }}).

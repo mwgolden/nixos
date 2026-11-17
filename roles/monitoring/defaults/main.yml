@@ -35,8 +35,6 @@ monitoring_node_exporter_port: 9100
 monitoring_vm_name: "{{ vm.name }}"
 # The router's WAN address, where port forwards to an isolated host are.
 router_ip: "{{ nixlab.networks[vm.network.name].router_wan_ip | default('') }}"
-# Secrets for this host. See secrets/README.md.
-monitoring_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}.env"
 # Where Grafana's admin password and secret key are kept on the VM, root
 # only. systemd hands them to Grafana as credentials.
 monitoring_credentials_dir: /etc/grafana-credentials

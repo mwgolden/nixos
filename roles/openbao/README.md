@@ -17,10 +17,12 @@ hosts:
       ui: true             # the web UI at /ui
       key_shares: 1        # unseal keys made on the first deploy
       key_threshold: 1     # how many of them it takes to unseal
-      kv_mounts: [secret]  # KV version 2 engines; created if missing, never deleted
+      kv_mounts: [secret]  # your own KV version 2 engines; created if missing, never deleted
 ```
 
 The defaults are in [defaults/main.yml](defaults/main.yml).
+
+Besides `kv_mounts`, every deploy mounts a KV version 2 engine named after the network, such as `lab/`. That is where the deploys of the network's other hosts keep their secrets, one per host at `<network>/<host>`; see [The network's secrets](#the-networks-secrets). `kv_mounts` can't contain the network's name, and a network can have only one openbao host.
 
 ## Unseal keys and root token
 
@@ -33,7 +35,7 @@ There's no secrets file to write. On the first deploy, OpenBao is initialized an
 
 The keys are written to a root-only file on the VM first, then copied here and deleted from the VM, so a deploy that fails halfway doesn't lose them. The deploy never overwrites this file. If it finds OpenBao uninitialized while the file exists (a new or wiped data disk), it stops rather than start over; move the file away to accept that.
 
-Each deploy uses the keys to unseal OpenBao if it is sealed, and the root token to mount `kv_mounts`. With `kv_mounts: []` it doesn't need the token, so you can revoke it once you have other ways to log in.
+Each deploy uses the keys to unseal OpenBao if it is sealed, and the root token to mount the network's engine and `kv_mounts`. The deploys of the network's other hosts use the same root token to read and write their secrets, so it can't be revoked; a narrower deploy token is a possible later step.
 
 `key_shares` and `key_threshold` only matter on the first deploy. Splitting the key gains nothing while all the shares are in one file; if you want that, hand them out and remove them from the file, and unseal by hand after a restart (below). Change them later with `bao operator rekey`.
 
@@ -50,7 +52,7 @@ Besides the steps every host goes through, the deploy:
 2. Restarts OpenBao if its configuration or package changed. NixOS doesn't do this on a switch, since a restart seals it.
 3. Initializes OpenBao on the first deploy and saves the keys, as above.
 4. Unseals it if it is sealed, and waits for it to be active.
-5. Mounts the KV engines in `kv_mounts` that are missing.
+5. Mounts the network's KV engine (`<network>/`) and those in `kv_mounts` that are missing.
 6. Checks the health endpoint answers on its address (from the router, on an isolated network) and prints how to reach it.
 
 ## After a restart
@@ -87,9 +89,23 @@ EOF
 bao token create -policy=myapp -period=768h
 ```
 
+### The network's secrets
+
+Once this host is deployed, the deploys of the other hosts on its network read their secrets from `<network>/<host>` here instead of `secrets/<network>/<host>.env`, importing the file on their first deploy; the rules are in [secrets/README.md](../../secrets/README.md#networks-with-an-openbao-host). With the variables above:
+
+```bash
+bao kv get lab/gitea                                  # every key, like the .env file
+bao kv get -field=GITEA_ADMIN_PASSWORD lab/gitea
+bao kv patch lab/gitea GITEA_ADMIN_PASSWORD=new-one   # then redeploy gitea
+bao kv metadata get lab/gitea                         # versions; bao kv rollback brings one back
+bao kv list lab/                                      # every host with secrets here
+```
+
+Deploys go first to the router, then this host, then the rest, so that the others find it unsealed. After a reboot it is sealed, and their deploys stop until this host is deployed again.
+
 ### Plain HTTP
 
-OpenBao listens on plain HTTP, so tokens and secrets cross the network unencrypted. Use it on a network you trust or an isolated one, and for HTTPS, put it behind the [proxy](../proxy/README.md) with a `proxy:` entry:
+OpenBao listens on plain HTTP, so tokens and secrets cross the network unencrypted, and the deploys send the root token the same way (on an isolated network, only over the router and the network's own bridge; on a home network, over the LAN). Use it on a network you trust or an isolated one, and for HTTPS, put it behind the [proxy](../proxy/README.md) with a `proxy:` entry:
 
 ```yaml
     proxy:
@@ -134,6 +150,7 @@ Edit the host's entry or the files here and redeploy. An existing VM is updated 
 | `files/configuration.nix` | NixOS configuration: OpenBao with raft storage, its user and the data disk mount |
 | `templates/openbao.nix.j2` | Generated settings: listener, API address, UI, firewall |
 | `tasks/` | `prepare.yml` (settings, saved keys), `configure.yml` (disk, switch, restart, init, unseal, KV mounts), `verify.yml`, `ports.yml` |
+| [`../host_secrets/`](../host_secrets/tasks/main.yml) | How the other hosts' deploys read their secrets from here (the `network_secrets_store` filter in [plugins/filter/network_config.py](../../plugins/filter/network_config.py) says where) |
 
 ## Removing it
 
@@ -141,4 +158,4 @@ Edit the host's entry or the files here and redeploy. An existing VM is updated 
 ansible-playbook playbooks/destroy-host.yaml -e network=lab -e host=openbao
 ```
 
-This permanently deletes the VM, its data disk and every secret in it. It asks you to type the host name. Remove the entry from the network file too, or the next deploy creates it again, and move `secrets/<network>/<host>-init.json` away, or that deploy stops because the keys don't match the new, empty OpenBao.
+This permanently deletes the VM, its data disk and every secret in it, including the other hosts' secrets imported from their `.env` files: any whose file you deleted after the import is lost. The playbook lists those hosts before deleting. It asks you to type the host name. Remove the entry from the network file too, or the next deploy creates it again, and move `secrets/<network>/<host>-init.json` away, or that deploy stops because the keys don't match the new, empty OpenBao.

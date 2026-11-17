@@ -95,8 +95,8 @@
     that: monitoring_login.status == 200
     fail_msg: >-
       Grafana on {{ vm.name }} refused the admin password in
-      secrets/{{ vm.network.name }}/{{ vm.name }}.env. Grafana only takes it
+      {{ host_secrets_where }}. Grafana only takes it
       on its first start, so it was changed in one place but not the other.
       Change it in Grafana (Profile, Change password) to match, or put the
-      old one back in the file.
+      old one back there.
     quiet: true

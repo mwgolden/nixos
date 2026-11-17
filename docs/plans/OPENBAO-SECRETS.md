@@ -6,7 +6,13 @@ This plan makes a network that has an `openbao` host keep its hosts' secrets the
 
 ## Progress
 
-**Not started.** All decisions in [section 6](#6-decisions) are made (2026-11-16). Ready to start phase 1.
+**Phases 1 to 4 done (2026-11-16); phase 5's live checks are still to run.** All decisions in [section 6](#6-decisions) are made.
+
+- Phase 1: `network_secrets_store`, the one-openbao and mount-name checks, and the new deploy order are in [network_config.py](../../plugins/filter/network_config.py), with tests in `tests/test_network_config.py` and `tests/test_inventory_placement.py`.
+- Phase 2: the openbao role always mounts `<network>/`, checks the root token on every deploy, and refuses the network's name in `kv_mounts`.
+- Phase 3: [roles/host_secrets](../../roles/host_secrets/tasks/main.yml) and the `host_secrets_decide` / `host_secrets_diff` filters in [host_secrets.py](../../plugins/filter/host_secrets.py) (tests in `tests/test_host_secrets.py`). Every type's `prepare.yml` and postgres's `users-prepare.yml` use it; `postgres-users.yaml` adds the routers to its inventory for it. `dotenv` got `dotenv_required`. The role was run through every state of section 2's table and every rule of section 1 against a stand-in for OpenBao's API, not a real OpenBao.
+- Phase 4: messages use `host_secrets_where`; docs updated as listed in 3.5, plus `destroy-host.yaml`'s confirmation and a warning naming the hosts whose only secrets are in the OpenBao being deleted.
+- Phase 5: not run yet (needs Proxmox and the `agent-developer` network, which has no openbao host in its file yet). The unit suite and `--syntax-check` on every playbook pass.
 
 ## 1. Target
 

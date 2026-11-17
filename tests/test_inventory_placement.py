@@ -102,6 +102,52 @@ class DeployOrder(unittest.TestCase):
         self.assertEqual(nc.network_config_deploy_order(inventory(), "home"),
                          ["home.webserver", "home.gitea", "home.garage"])
 
+    def test_openbao_right_after_the_router(self):
+        # The other hosts read their secrets from it, so it goes before
+        # them wherever the file lists it.
+        inv = inventory_with_openbao()
+        self.assertEqual(nc.network_config_deploy_order(inv, "lab"),
+                         ["lab.router", "lab.openbao", "lab.postgres"])
+        self.assertEqual(nc.network_config_deploy_order(inv, "home"),
+                         ["home.bao", "home.webserver", "home.gitea", "home.garage"])
+
+
+def inventory_with_openbao():
+    """The fixtures with an openbao host last in lab (reached through its
+    router, on a non-default port) and in home (reached directly)."""
+    configs = {p.stem: yaml.safe_load(p.read_text()) for p in FIXTURES.glob("*.yaml")}
+    configs["lab"]["hosts"].append({"name": "openbao", "type": "openbao", "vm_id": 120, "ip": "10.1.0.20",
+                                    "data_disk": {"size_gb": 10, "storage": "local-lvm"},
+                                    "settings": {"port": 8300}})
+    configs["home"]["hosts"].append({"name": "bao", "type": "openbao", "vm_id": 121, "ip": "192.168.1.21",
+                                     "data_disk": {"size_gb": 10, "storage": "local-lvm"}})
+    return nc.network_config_inventory(configs)
+
+
+class SecretsStore(unittest.TestCase):
+    def test_no_openbao_host_means_files_only(self):
+        self.assertEqual(nc.network_secrets_store(inventory(), "lab"), {})
+        self.assertEqual(nc.network_secrets_store(inventory(), "home"), {})
+
+    def test_isolated_network_goes_through_its_router(self):
+        self.assertEqual(nc.network_secrets_store(inventory_with_openbao(), "lab"), {
+            "host_id": "lab.openbao",
+            "name": "openbao",
+            "mount": "lab",
+            "url": "http://10.1.0.20:8300",
+            "via_router": "lab.router",
+            "init_file": "secrets/lab/openbao-init.json",
+        })
+
+    def test_home_network_is_reached_directly(self):
+        store = nc.network_secrets_store(inventory_with_openbao(), "home")
+        self.assertEqual((store["host_id"], store["url"], store["via_router"], store["init_file"]),
+                         ("home.bao", "http://192.168.1.21:8200", "", "secrets/home/bao-init.json"))
+
+    def test_each_network_has_its_own(self):
+        inv = inventory_with_openbao()
+        self.assertNotEqual(nc.network_secrets_store(inv, "lab"), nc.network_secrets_store(inv, "home"))
+
 
 class RecordedAddress(unittest.TestCase):
     def test_round_trip_keeps_notes(self):

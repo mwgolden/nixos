@@ -1,0 +1,246 @@
+# Reads one host's secrets, from secrets/<network>/<name>.env or from the
+# network's OpenBao host when it has one. Every host type's prepare.yml
+# uses this instead of dotenv directly; dotenv stays the file reader.
+# Runs on localhost. The rules are in secrets/README.md and
+# docs/plans/OPENBAO-SECRETS.md. Sets:
+#   dotenv_values        the secrets, a dict (what the roles read today)
+#   host_secrets_source  file, openbao, imported (the file's values, now
+#                        also in OpenBao), pushed (the file's values,
+#                        written over OpenBao's) or "" (none, allowed when
+#                        host_secrets_required is false)
+#   host_secrets_found   whether there were any
+#   host_secrets_where   where they are, for messages
+#   host_secrets_file_exists  whether the .env file is there
+#
+# With an openbao host, the requests go through the network's router when
+# this machine can't reach it (an isolated network). The root token and
+# every value stay out of the log.
+
+- name: Look for the OpenBao root token
+  ansible.builtin.stat:
+    path: "{{ host_secrets_init_file }}"
+  register: host_secrets_init
+  when: host_secrets_store | length > 0
+
+# An openbao host that has never been deployed has no root token yet, so
+# the file is read, as without an openbao host. That is what lets one host
+# be deployed before OpenBao.
+- name: Note whether OpenBao holds the secrets
+  ansible.builtin.set_fact:
+    host_secrets_use_store: "{{ host_secrets_store | length > 0 and (host_secrets_init.stat | default({})).exists | default(false) }}"
+
+- name: Say OpenBao isn't deployed yet
+  ansible.builtin.debug:
+    msg: >-
+      Network {{ vm.network.name }} has an openbao host, {{ host_secrets_store.name }},
+      but it hasn't been deployed yet (no {{ host_secrets_store.init_file }}),
+      so {{ host_secrets_name }}'s secrets are read from
+      {{ host_secrets_file_short }}. Deploy it ({{ host_secrets_deploy_openbao }}),
+      then deploy this host again to move them there.
+  when: host_secrets_store | length > 0 and not host_secrets_use_store
+
+- name: Read {{ host_secrets_file_short }}
+  ansible.builtin.include_role:
+    name: dotenv
+  vars:
+    dotenv_path: "{{ host_secrets_file }}"
+    dotenv_missing_hint: "{{ host_secrets_missing_hint }}"
+    dotenv_required: "{{ host_secrets_required | bool and not host_secrets_use_store }}"
+
+- name: Note the secrets come from the file
+  ansible.builtin.set_fact:
+    host_secrets_source: "{{ 'file' if dotenv_file.stat.exists else '' }}"
+    host_secrets_found: "{{ dotenv_file.stat.exists }}"
+    host_secrets_file_exists: "{{ dotenv_file.stat.exists }}"
+    host_secrets_where: "{{ host_secrets_file_short }}"
+  when: not host_secrets_use_store
+
+# Both vars are templated even when the block is skipped (delegate_to is
+# resolved before the condition), so they must work without a store.
+- name: Read the secrets from OpenBao
+  when: host_secrets_use_store
+  vars:
+    host_secrets_token: >-
+      {{ (lookup('ansible.builtin.file', host_secrets_init_file) | from_json).root_token | default('')
+         if host_secrets_use_store else '' }}
+    host_secrets_via: "{{ host_secrets_store.via_router | default('') or 'localhost' }}"
+  block:
+    # The health endpoint needs no token: 200 only when initialized,
+    # unsealed and active. -1 means it couldn't be reached.
+    - name: Check OpenBao is up and unsealed
+      ansible.builtin.uri:
+        url: "{{ host_secrets_store.url }}/v1/sys/health"
+      register: host_secrets_health
+      failed_when: false
+      delegate_to: "{{ host_secrets_via }}"
+
+    - name: Require OpenBao
+      ansible.builtin.assert:
+        that:
+          - host_secrets_health.status == 200
+        fail_msg: >-
+          OpenBao on {{ host_secrets_store.name }} ({{ host_secrets_store.url }}
+          {%- if host_secrets_store.via_router %}, through {{ host_secrets_store.via_router }}{% endif %})
+          is sealed or down (health check: {{ 'unreachable' if host_secrets_health.status == -1
+          else 'HTTP ' ~ host_secrets_health.status }}
+          {%- if host_secrets_health.status == -1 %}, {{ host_secrets_health.msg | default('') }}{% endif %}).
+          It holds {{ host_secrets_name }}'s secrets, so deploy it first, which
+          also unseals it: {{ host_secrets_deploy_openbao }}
+        quiet: true
+
+    # One request that checks both the token and the network's mount.
+    - name: Check the root token and the network's mount
+      ansible.builtin.uri:
+        url: "{{ host_secrets_store.url }}/v1/sys/mounts/{{ host_secrets_store.mount }}"
+        headers:
+          X-Vault-Token: "{{ host_secrets_token }}"
+        status_code: [200, 400, 403]
+      register: host_secrets_mount
+      failed_when: false
+      delegate_to: "{{ host_secrets_via }}"
+      no_log: true
+
+    - name: Require the root token to work
+      ansible.builtin.assert:
+        that:
+          - host_secrets_mount.status != 403
+        fail_msg: >-
+          The root token in {{ host_secrets_store.init_file }} was refused by
+          OpenBao on {{ host_secrets_store.name }}, so it has been revoked. The
+          deploys read their secrets with it. Make a new one (bao operator
+          generate-root) and put it in root_token there.
+        quiet: true
+
+    - name: Require the network's mount
+      ansible.builtin.assert:
+        that:
+          - host_secrets_mount.status == 200
+        fail_msg: >-
+          {% if host_secrets_mount.status == 400 -%}
+          OpenBao on {{ host_secrets_store.name }} has no {{ host_secrets_store.mount }}/
+          mount, where {{ vm.network.name }}'s secrets go. Redeploy it to make
+          the mount: {{ host_secrets_deploy_openbao }}
+          {%- else -%}
+          OpenBao on {{ host_secrets_store.name }} ({{ host_secrets_store.url }})
+          answered {{ 'nothing' if host_secrets_mount.status == -1 else 'HTTP ' ~ host_secrets_mount.status }}
+          when asked about the {{ host_secrets_store.mount }}/ mount.
+          {%- endif %}
+        quiet: true
+
+    # 404: nothing there yet (or its latest version deleted).
+    - name: Read {{ host_secrets_path }}
+      ansible.builtin.uri:
+        url: "{{ host_secrets_store.url }}/v1/{{ host_secrets_store.mount }}/data/{{ host_secrets_name }}"
+        headers:
+          X-Vault-Token: "{{ host_secrets_token }}"
+        status_code: [200, 404]
+      register: host_secrets_read
+      failed_when: false
+      delegate_to: "{{ host_secrets_via }}"
+      no_log: true
+
+    - name: Require an answer
+      ansible.builtin.assert:
+        that:
+          - host_secrets_read.status in [200, 404]
+        fail_msg: >-
+          OpenBao on {{ host_secrets_store.name }} ({{ host_secrets_store.url }})
+          answered {{ 'nothing' if host_secrets_read.status == -1 else 'HTTP ' ~ host_secrets_read.status }}
+          reading {{ host_secrets_path }}.
+        quiet: true
+
+    - name: Note what OpenBao has
+      ansible.builtin.set_fact:
+        host_secrets_store_exists: "{{ host_secrets_read.status == 200 and (host_secrets_read.json.data.data | default(none)) is mapping }}"
+        host_secrets_store_values: "{{ host_secrets_read.json.data.data | default({}) if host_secrets_read.status == 200 else {} }}"
+      no_log: true
+
+    # The decision holds key names at most, never values.
+    - name: Decide where the secrets come from
+      ansible.builtin.set_fact:
+        host_secrets_decision: >-
+          {{ dotenv_values | host_secrets_decide(host_secrets_store_values, dotenv_file.stat.exists,
+                                                 host_secrets_store_exists, host_secrets_push | bool) }}
+      no_log: true
+
+    - name: Stop when the file and OpenBao differ
+      ansible.builtin.assert:
+        that:
+          - host_secrets_decision.action != 'conflict'
+        fail_msg: >-
+          {{ host_secrets_file_short }} and {{ host_secrets_path }} in OpenBao on
+          {{ host_secrets_store.name }} differ in:
+          {{ host_secrets_decision.differ | join(', ') }}. OpenBao is where the
+          deploy reads from. Either make the file match (bao kv get
+          {{ host_secrets_path }}) or delete it, or run again with
+          -e secrets_push=true to write the file over OpenBao's values (as a
+          new version; bao kv rollback brings the old one back).
+        quiet: true
+
+    - name: Require the secrets
+      ansible.builtin.assert:
+        that:
+          - host_secrets_decision.action != 'missing'
+        fail_msg: >-
+          {{ host_secrets_name }}'s secrets are neither in
+          {{ host_secrets_file_short }} nor at {{ host_secrets_path }} in OpenBao
+          on {{ host_secrets_store.name }}. {{ host_secrets_missing_hint }}
+          The deploy then imports the file into OpenBao.
+        quiet: true
+      when: host_secrets_required | bool
+
+    - name: Write {{ host_secrets_file_short }} to OpenBao
+      ansible.builtin.uri:
+        url: "{{ host_secrets_store.url }}/v1/{{ host_secrets_store.mount }}/data/{{ host_secrets_name }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ host_secrets_token }}"
+        body_format: json
+        body:
+          data: "{{ dotenv_values }}"
+      register: host_secrets_write
+      failed_when: false
+      changed_when: true
+      delegate_to: "{{ host_secrets_via }}"
+      no_log: true
+      when: host_secrets_decision.write
+
+    - name: Require the write to succeed
+      ansible.builtin.assert:
+        that:
+          - host_secrets_write.status == 200
+        fail_msg: >-
+          OpenBao on {{ host_secrets_store.name }} ({{ host_secrets_store.url }})
+          answered {{ 'nothing' if host_secrets_write.status == -1 else 'HTTP ' ~ host_secrets_write.status }}
+          writing {{ host_secrets_path }}.
+        quiet: true
+      when: host_secrets_decision.write
+
+    - name: Note the secrets
+      ansible.builtin.set_fact:
+        dotenv_values: "{{ host_secrets_store_values if host_secrets_decision.action == 'read' else dotenv_values }}"
+        host_secrets_source: "{{ host_secrets_decision.source }}"
+        host_secrets_found: "{{ host_secrets_decision.action != 'missing' }}"
+        host_secrets_file_exists: "{{ dotenv_file.stat.exists }}"
+        host_secrets_where: >-
+          {{ host_secrets_path }} in OpenBao on {{ host_secrets_store.name }}
+          (bao kv get {{ host_secrets_path }} with BAO_ADDR={{ host_secrets_store.url }})
+      no_log: true
+
+    - name: Report the import
+      ansible.builtin.debug:
+        msg: >-
+          Imported {{ host_secrets_file_short }} into OpenBao at
+          {{ host_secrets_path }} on {{ host_secrets_store.name }}. OpenBao is
+          now where it's read from; you can delete the file (back up
+          {{ host_secrets_store.init_file }} first: without it the secrets can't
+          be read).
+      when: host_secrets_source == 'imported'
+
+    - name: Report the push
+      ansible.builtin.debug:
+        msg: >-
+          Wrote {{ host_secrets_file_short }} over {{ host_secrets_path }} in
+          OpenBao on {{ host_secrets_store.name }} ({{ host_secrets_decision.differ | join(', ') }}
+          changed), as a new version; bao kv rollback brings the old one back.
+      when: host_secrets_source == 'pushed'

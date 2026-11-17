@@ -115,13 +115,13 @@
 
 # Garage can't change a key's secret. Replacing it means deleting the key
 # and importing it again, which also drops its bucket rights.
-- name: Require the secret in .env to match Garage's
+- name: Require the secret to match Garage's
   ansible.builtin.assert:
     that:
       - garage_key.secretAccessKey == garage_key_secret
     fail_msg: >-
       Garage already has key {{ garage_key_id }} with a different secret
-      than GARAGE_SECRET_ACCESS_KEY in secrets/{{ vm.network.name }}/{{ vm.name }}.env. Put the old
+      than GARAGE_SECRET_ACCESS_KEY in {{ host_secrets_where }}. Put the old
       secret back, or delete the key on the VM
       (sudo garage key delete --yes {{ garage_key_id }}) and re-run.
     quiet: true

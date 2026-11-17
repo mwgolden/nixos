@@ -24,6 +24,11 @@ openbao_ui: "{{ openbao_settings.ui | bool }}"
 openbao_key_shares: "{{ openbao_settings.key_shares }}"
 openbao_key_threshold: "{{ openbao_settings.key_threshold }}"
 openbao_kv_mounts: "{{ openbao_settings.kv_mounts }}"
+# The KV version 2 mount every deploy makes, named after the network: the
+# other hosts' deploys keep their secrets at <network>/<host> there (see
+# roles/host_secrets and the network_secrets_store filter). Separate from
+# kv_mounts, so removing names there can't break those deploys.
+openbao_network_mount: "{{ vm.network.name }}"
 # Raft's cluster port, on loopback only: with a single node nothing else
 # needs it.
 openbao_cluster_port: 8201

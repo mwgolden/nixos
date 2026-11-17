@@ -36,6 +36,20 @@
     quiet: true
   loop: "{{ openbao_kv_mounts }}"
 
+# The network's mount holds the other hosts' secrets (see
+# roles/host_secrets); every deploy makes it, so it can't also be in
+# kv_mounts. networks/ validation catches this too.
+- name: Check the network's mount isn't in kv_mounts
+  ansible.builtin.assert:
+    that:
+      - openbao_network_mount not in openbao_kv_mounts
+    fail_msg: >-
+      settings.kv_mounts of {{ vm.name }} in networks/{{ vm.network.name }}.yaml
+      lists '{{ openbao_network_mount }}', the network's own mount, which
+      every deploy of {{ vm.name }} makes for the network's secrets. Remove
+      it from kv_mounts.
+    quiet: true
+
 - name: Look for the unseal keys from an earlier deploy
   ansible.builtin.stat:
     path: "{{ openbao_init_file }}"

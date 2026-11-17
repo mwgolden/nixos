@@ -2,12 +2,14 @@
 # Runs on localhost from roles/host_deploy. Facts it sets land on the VM's
 # inventory entry, where configure.yml and verify.yml use them.
 
+# From secrets/<network>/<host>.env, or the network's OpenBao host; see
+# roles/host_secrets.
 - name: Read the lldap secrets
   ansible.builtin.include_role:
-    name: dotenv
+    name: host_secrets
   vars:
-    dotenv_path: "{{ ldap_secrets_file }}"
-    dotenv_missing_hint: "Copy roles/ldap/env.example there and set the admin password and JWT secret."
+    host_secrets_name: "{{ vm.name }}"
+    host_secrets_missing_hint: "Copy roles/ldap/env.example there and set the admin password and JWT secret."
 
 - name: Note the lldap secrets
   ansible.builtin.set_fact:
@@ -22,7 +24,7 @@
       - ldap_jwt_secret | length >= 32
       - ldap_jwt_secret != 'replace-with-32-or-more-random-characters'
     fail_msg: >-
-      In secrets/{{ vm.network.name }}/{{ vm.name }}.env, set
+      In {{ host_secrets_where }}, set
       LLDAP_ADMIN_PASSWORD (at least 8 characters) and LLDAP_JWT_SECRET (at
       least 32 random characters, such as from 'openssl rand -base64 32').
     quiet: true

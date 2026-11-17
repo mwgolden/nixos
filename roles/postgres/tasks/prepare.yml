@@ -2,17 +2,21 @@
 # Runs on localhost from roles/host_deploy. Facts it sets land on the VM's
 # inventory entry, where configure.yml and verify.yml use them.
 
-- name: Read the database admin login from the secrets file
+# From secrets/<network>/<host>.env, or the network's OpenBao host; see
+# roles/host_secrets.
+- name: Read the database admin login
   ansible.builtin.include_role:
-    name: dotenv
+    name: host_secrets
   vars:
-    dotenv_path: "{{ postgres_secrets_file }}"
-    dotenv_missing_hint: "Copy roles/postgres/env.example there and set the admin login."
+    host_secrets_name: "{{ vm.name }}"
+    host_secrets_missing_hint: "Copy roles/postgres/env.example there and set the admin login."
 
 - name: Note the database admin login
   ansible.builtin.set_fact:
     postgres_admin_user: "{{ dotenv_values.POSTGRES_ADMIN_USER | default('') }}"
     postgres_admin_password: "{{ dotenv_values.POSTGRES_ADMIN_PASSWORD | default('') }}"
+    # users-prepare.yml reads another set of secrets, so keep where these are.
+    postgres_secrets_where: "{{ host_secrets_where }}"
   no_log: true
 
 - name: Check database admin login
@@ -22,7 +26,7 @@
       - postgres_admin_password | length > 0
     fail_msg: >-
       Set POSTGRES_ADMIN_USER (lowercase letters, digits, underscores) and
-      POSTGRES_ADMIN_PASSWORD in secrets/{{ vm.network.name }}/{{ vm.name }}.env.
+      POSTGRES_ADMIN_PASSWORD in {{ postgres_secrets_where }}.
     quiet: true
 
 - name: Require users_database when users or schemas are set

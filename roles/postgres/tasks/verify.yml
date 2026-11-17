@@ -33,4 +33,4 @@
       PostgreSQL is up. Connect with:
       psql -h {{ final.ip }} -p {{ postgres_port }} -U {{ postgres_admin_user }} -d postgres
       {%- endif %}
-      (password in secrets/{{ vm.network.name }}/{{ vm.name }}.env)
+      (password in {{ postgres_secrets_where }})

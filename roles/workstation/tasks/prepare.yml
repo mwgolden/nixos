@@ -2,25 +2,19 @@
 # changes. Runs on localhost from roles/host_deploy. Facts it sets land on
 # the VM's inventory entry, where configure.yml and verify.yml use them.
 
-# The secrets file is optional: without it the user has no password.
-- name: Look for the secrets file
-  ansible.builtin.stat:
-    path: "{{ workstation_secrets_file }}"
-  register: workstation_secrets
-
-- name: Read the password from the secrets file
+# The secrets are optional: without them the user has no password. From
+# secrets/<network>/<host>.env, or the network's OpenBao host; see
+# roles/host_secrets.
+- name: Read the password hash
   ansible.builtin.include_role:
-    name: dotenv
+    name: host_secrets
   vars:
-    dotenv_path: "{{ workstation_secrets_file }}"
-    dotenv_missing_hint: "Copy roles/workstation/env.example there and set the password hash."
-  when: workstation_secrets.stat.exists
+    host_secrets_name: "{{ vm.name }}"
+    host_secrets_required: false
 
 - name: Note the password hash
   ansible.builtin.set_fact:
-    workstation_password_hash: >-
-      {{ (dotenv_values | default({})).WORKSTATION_PASSWORD_HASH | default('')
-         if workstation_secrets.stat.exists else '' }}
+    workstation_password_hash: "{{ dotenv_values.WORKSTATION_PASSWORD_HASH | default('') }}"
   no_log: true
 
 # A crypt(3) hash: yescrypt ($y$), SHA-512 ($6$), SHA-256 ($5$) or bcrypt.
@@ -30,9 +24,9 @@
       - workstation_password_hash == '' or workstation_password_hash is match('^\$(y|6|5|2b)\$[./A-Za-z0-9$]+$')
       - "'change-me' not in workstation_password_hash"
     fail_msg: >-
-      In secrets/{{ vm.network.name }}/{{ vm.name }}.env, WORKSTATION_PASSWORD_HASH
+      In {{ host_secrets_where }}, WORKSTATION_PASSWORD_HASH
       must be a password hash from `openssl passwd -6` or `mkpasswd -m yescrypt`,
-      in single quotes. Delete the file for no password.
+      in single quotes. Delete it for no password.
     quiet: true
   no_log: true
 
@@ -116,16 +110,19 @@
     quiet: true
   loop: "{{ workstation_packages }}"
 
-# WORKSTATION_ENV_<NAME> lines in the secrets file become <NAME> in the
-# user's environment. The names are read separately from the values, so a
-# line the .env reader skips, such as WORKSTATION_ENV_MY-KEY, is reported.
+# WORKSTATION_ENV_<NAME> entries in the secrets become <NAME> in the
+# user's environment. When the file is there, the names are read from it
+# separately from the values, so a line the .env reader skips, such as
+# WORKSTATION_ENV_MY-KEY, is reported. Secrets only in OpenBao have no
+# such lines: their names are the keys.
 - name: Read the secret environment variables
   ansible.builtin.set_fact:
-    workstation_secret_env: "{{ (dotenv_values | default({})) | workstation_secret_env if workstation_secrets.stat.exists else {} }}"
+    workstation_secret_env: "{{ dotenv_values | workstation_secret_env }}"
     workstation_secret_env_names: >-
       {{ (lookup('file', workstation_secrets_file)
           | regex_findall('(?m)^\s*(?:export\s+)?(WORKSTATION_ENV_[^=\s]*)\s*=')) | unique
-         if workstation_secrets.stat.exists else [] }}
+         if host_secrets_file_exists
+         else dotenv_values.keys() | select('match', '^WORKSTATION_ENV_') | list }}
   no_log: true
 
 - name: Check the environment variables
@@ -139,7 +136,7 @@
       {{ workstation_environment | workstation_env_errors(
            workstation_secret_env, workstation_secret_env_names,
            'settings.environment of ' ~ vm.name ~ ' in networks/' ~ vm.network.name ~ '.yaml',
-           'secrets/' ~ vm.network.name ~ '/' ~ vm.name ~ '.env') }}
+           host_secrets_where) }}
 
 - name: Check the tools
   ansible.builtin.assert:
@@ -161,6 +158,5 @@
     fail_msg: >-
       {{ vm.name }}'s user {{ workstation_user }} would have no way to log in.
       Add settings.ssh_key_files in networks/{{ vm.network.name }}.yaml, or a password
-      hash in secrets/{{ vm.network.name }}/{{ vm.name }}.env (see
-      roles/workstation/env.example).
+      hash in {{ host_secrets_where }} (see roles/workstation/env.example).
     quiet: true

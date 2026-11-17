@@ -23,7 +23,7 @@
   ansible.builtin.debug:
     msg: >-
       lldap is up. Web interface: {{ ldap_http_url | trim }} (user admin,
-      password in secrets/{{ vm.network.name }}/{{ vm.name }}.env).
+      password in {{ host_secrets_where }}).
       LDAP clients use ldap://{{ vm.dns_name or final.ip }}:{{ ldap_port }}
       with base DN {{ ldap_base_dn | trim }}, binding as
       uid=admin,ou=people,{{ ldap_base_dn | trim }}. Users are under

@@ -63,7 +63,7 @@
     fail_msg: >-
       Gitea already has a user named '{{ gitea_admin_user }}' who isn't an
       admin. Make them an admin in Site Administration, or pick another
-      GITEA_ADMIN_USER in secrets/{{ vm.network.name }}/{{ vm.name }}.env.
+      GITEA_ADMIN_USER in {{ host_secrets_where }}.
     quiet: true
 
 - name: Create the Gitea admin user

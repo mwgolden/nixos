@@ -1,0 +1,107 @@
+
+
+network:
+  name: agent-developer
+  type: isolated
+  bridge: vmbr10
+  cidr: 10.3.1.0/24
+  gateway: 10.3.1.1
+  nameserver: 10.3.1.1
+
+  upstream: home
+
+  dhcp:
+    start: 10.3.1.100
+    end: 10.3.1.199
+    lease_time: 12h
+
+    reserved: []
+
+  dmz:
+    bridge: vmbr11
+    cidr: 10.3.2.0/24
+    gateway: 10.3.2.1
+
+hosts: 
+  - name: router
+    type: router
+    cpu: x86-64-v2-AES
+    vm_id: 301
+    ip: 10.3.1.1
+    wan_ip: 192.168.1.31
+    settings: 
+      dns_servers:
+        - 1.1.1.1
+        - 9.9.9.9
+      blocked_networks: 
+        - 192.168.0.0/15
+        - 172.16.0.0/12
+        - 10.0.0.0/8
+
+  - name: web-proxy
+    type: proxy
+    cpu: x86-64-v2-AES
+    zone: dmz
+    vm_id: 302
+    ip: 10.3.2.3
+
+  - name: gitea
+    type: gitea
+    cpu: x86-64-v2-AES
+    vm_id: 303
+    ip: 10.3.1.2
+    data_disk: 
+      size_gb: 40
+      storage: local-lvm
+    settings: 
+      http_port: 3000
+      public_host: ""
+      public_http_port: ""
+      publiic_ssh_port: ""
+      allow_registration: false
+    proxy:
+      - name: git
+        port: 3000
+        external: true
+
+  - name: dev-workstation
+    type: workstation
+    cpu: x86-64-v2-AES
+    cores: 4
+    memory_mb: 8192
+    vm_id: 304
+    ip: 10.3.1.3
+    expose: [{port: 22, wan_port: 2222}]
+    settings: 
+      user: dev
+      ssh_key_files: 
+        - ~/.ssh/ws_lab.pub
+      sudo: false
+      packages: 
+        - uv
+        - nodejs_22
+        - openbao
+      tools: 
+        - npm: "@anthropic-ai/claude-code"
+        - uv: ruff
+
+  - name: garage
+    type: garage
+    vm_id: 305
+    ip: 10.3.1.4
+    data_disk:
+      size_gb: 20         # mounted at /var/lib/garage
+      storage: local-lvm
+    settings:
+      # All optional; these are the defaults.
+      s3_port: 3900
+      s3_region: garage    # the only region Garage accepts
+      zone: dc1            # a label, with a single node
+      key_name: default    # name of the access key in Garage
+      buckets: []          # created if missing; never deleted
+
+  - name: openbao
+    type: openbao
+    vm_id: 306
+    ip: 10.3.1.5
+    data_disk: {size_gb: 10, storage: local-lvm}

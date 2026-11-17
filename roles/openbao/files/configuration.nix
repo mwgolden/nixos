@@ -5,7 +5,7 @@
 # API address, UI and firewall), which are generated from the host's network
 # file entry.
 
-{ config, pkgs, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   dataDir = "/var/lib/openbao";
@@ -48,7 +48,8 @@ in
     requires = [ "var-lib-openbao.mount" ];
     after = [ "var-lib-openbao.mount" ];
     serviceConfig = {
-      DynamicUser = false;
+      # The module sets this to true, so it has to be forced off.
+      DynamicUser = lib.mkForce false;
       User = "openbao";
       Group = "openbao";
       ProtectSystem = "strict";

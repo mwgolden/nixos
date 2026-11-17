@@ -26,8 +26,6 @@ ldap_http_url: >-
      else ('http://' ~ (vm.dns_name or vm.ip) ~ ':' ~ ldap_http_port) }}
 
 ldap_vm_name: "{{ vm.name }}"
-# Secrets for this host. See secrets/README.md.
-ldap_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}.env"
 # Where the secrets go on the VM: root only. lldap reads them as systemd
 # credentials, so they are never in the Nix store.
 ldap_secrets_dir: /var/lib/lldap-secrets

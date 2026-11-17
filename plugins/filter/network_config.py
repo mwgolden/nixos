@@ -78,6 +78,14 @@ VPN_KEYS = {"cidr", "port", "endpoint", "peers"}
 VPN_PEER_KEYS = {"name", "ip", "public_key"}
 WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 DEFAULT_VPN_PORT = 51820
+# A network with an openbao host keeps its hosts' secrets in a KV mount
+# named after the network (see network_secrets_store and
+# docs/plans/OPENBAO-SECRETS.md). These mount paths are OpenBao's own, so a
+# network can't have one of them as its name. The port and kv_mounts
+# defaults mirror roles/openbao/defaults/main.yml.
+OPENBAO_RESERVED_MOUNTS = ("sys", "auth", "identity", "cubbyhole")
+DEFAULT_OPENBAO_PORT = 8200
+DEFAULT_OPENBAO_KV_MOUNTS = ("secret",)
 
 
 def network_domain(net):
@@ -621,6 +629,22 @@ class _Checker:
                 self.warn(where, f"serves external routes ({', '.join(external)}) but is on the LAN. "
                                  f"Network {net['name']} has a DMZ; consider zone: dmz for the proxy.")
 
+    def check_secrets_mount(self, net, openbao):
+        """The network's name is also the KV mount its openbao host keeps
+        the network's secrets in (network_secrets_store), so it must be a
+        mount path OpenBao accepts and not one the host mounts itself.
+        NAME_RE already limits it to 63 lowercase letters, digits and '-'."""
+        where = f"host {openbao.get('name')} (network {net['name']})"
+        if net["name"] in OPENBAO_RESERVED_MOUNTS:
+            self.error(net["where"], f"a network with an openbao host can't be named '{net['name']}': the host keeps "
+                                     f"the network's secrets in a KV mount named after the network, and OpenBao "
+                                     f"reserves {', '.join(OPENBAO_RESERVED_MOUNTS)}.")
+        settings = openbao.get("settings")
+        mounts = settings.get("kv_mounts", DEFAULT_OPENBAO_KV_MOUNTS) if isinstance(settings, dict) else DEFAULT_OPENBAO_KV_MOUNTS
+        if isinstance(mounts, list) and net["name"] in mounts:
+            self.error(where, f"settings.kv_mounts lists '{net['name']}', the network's own mount, which every deploy "
+                              "of this host makes for the network's secrets. Remove it from kv_mounts.")
+
     def check_allowed_networks(self, where, settings):
         allowed = settings.get("allowed_networks")
         if allowed is None:
@@ -659,6 +683,12 @@ class _Checker:
             proxies = [h.get("name") for h in hosts if h.get("type") == "proxy"]
             if len(proxies) > 1:
                 self.error(net["where"], f"a network can have only one proxy host, not {len(proxies)}: {', '.join(proxies)}.")
+            openbaos = [h for h in hosts if h.get("type") == "openbao"]
+            if len(openbaos) > 1:
+                self.error(net["where"], f"a network can have only one openbao host, not {len(openbaos)} "
+                                         f"({', '.join(h.get('name') for h in openbaos)}); it holds the network's secrets.")
+            elif openbaos:
+                self.check_secrets_mount(net, openbaos[0])
             routes = self.routes.get(net["name"], {})
             if routes and not proxies:
                 self.error(net["where"], f"hosts here have proxy: routes ({', '.join(sorted(routes))}) "
@@ -1224,11 +1254,46 @@ def _candidate(inventory, ip, bridge, delay, timeout):
 
 def network_config_deploy_order(inventory, network):
     """IDs of a network's hosts in the order to deploy them: its router
-    first (everything else reaches the network through it), then the rest
-    in the order the network file lists them."""
+    first (everything else reaches the network through it), then its
+    openbao host (the other hosts' deploys read their secrets from it, see
+    network_secrets_store), then the rest in the order the network file
+    lists them."""
     hosts = [h for h in inventory["hosts"].values() if h["network"]["name"] == network]
     return ([h["id"] for h in hosts if h["type"] == "router"]
-            + [h["id"] for h in hosts if h["type"] != "router"])
+            + [h["id"] for h in hosts if h["type"] == "openbao"]
+            + [h["id"] for h in hosts if h["type"] not in ("router", "openbao")])
+
+
+def network_secrets_store(inventory, network):
+    """Where a network's hosts' secrets are kept when it has an openbao
+    host, or {} when it has none (then they are only in files, see
+    secrets/README.md). The one place that decides; roles/host_secrets and
+    roles/openbao use it. The result has:
+      host_id     the openbao host's ID, such as lab.openbao
+      name        its host name
+      mount       the KV version 2 mount holding the secrets: the network's
+                  name. Each host's secrets are at <mount>/<host>, with the
+                  same keys as its secrets/<network>/<host>.env file
+      url         OpenBao's API, http://<ip>:<port>
+      via_router  the ID of the router to reach it through, or "" when
+                  it is reachable from this machine (a home network)
+      init_file   secrets/<network>/<host>-init.json, relative to the
+                  repository: the root token the deploys use
+    """
+    hosts = [h for h in inventory["hosts"].values()
+             if h["network"]["name"] == network and h["type"] == "openbao"]
+    if not hosts:
+        return {}
+    bao = hosts[0]
+    port = int((bao.get("settings") or {}).get("port", DEFAULT_OPENBAO_PORT))
+    return {
+        "host_id": bao["id"],
+        "name": bao["name"],
+        "mount": network,
+        "url": f"http://{bao['ip']}:{port}",
+        "via_router": bao["attach"]["via_router"],
+        "init_file": f"secrets/{network}/{bao['name']}-init.json",
+    }
 
 
 # Ownership: tags the project puts on the VMs it deploys. Only these kinds
@@ -1484,6 +1549,7 @@ class FilterModule:
             "record_address": record_address,
             "recorded_dns_name": recorded_dns_name,
             "network_config_deploy_order": network_config_deploy_order,
+            "network_secrets_store": network_secrets_store,
             "nixlab_tags": nixlab_tags,
             "proxmox_tags_merge": proxmox_tags_merge,
             "proxmox_tags_list": _tags,

@@ -248,7 +248,7 @@ Each host type is a role in [roles/](roles/), with a README that explains its se
 - [monitoring](roles/monitoring/README.md): Prometheus and Grafana, with Prometheus as Grafana's data source, on a separate data disk
 - [workstation](roles/workstation/README.md): a headless machine to SSH into, with a non-root user account
 
-Passwords and keys for hosts go in `secrets/<network>/<host>.env`; see [secrets/README.md](secrets/README.md).
+Passwords and keys for hosts go in `secrets/<network>/<host>.env`; a network with an openbao host keeps them there instead, importing the files. See [secrets/README.md](secrets/README.md).
 
 ### Adding hosts and host types
 

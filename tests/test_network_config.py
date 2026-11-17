@@ -209,6 +209,41 @@ class Mutations(unittest.TestCase):
             {"name": "ws", "type": "workstation", "vm_id": 120, "ip": "192.168.1.20"})
         self.assertEqual(errors(self.files), [])
 
+    # A network's openbao host keeps the network's secrets (see
+    # network_secrets_store), so there can be only one, and the network's
+    # name has to work as the KV mount holding them.
+
+    def openbao(self, name="openbao", vm_id=120, ip="192.168.1.20", settings=None):
+        host = {"name": name, "type": "openbao", "vm_id": vm_id, "ip": ip,
+                "data_disk": {"size_gb": 10, "storage": "local-lvm"}}
+        if settings is not None:
+            host["settings"] = settings
+        return host
+
+    def test_two_openbao_hosts(self):
+        self.by_name["home"]["hosts"].append(self.openbao())
+        self.by_name["home"]["hosts"].append(self.openbao("openbao2", 121, "192.168.1.21"))
+        self.assertError("a network can have only one openbao host, not 2 (openbao, openbao2)")
+
+    def test_openbao_network_name_must_be_a_mount_path(self):
+        for reserved in ("sys", "auth", "identity", "cubbyhole"):
+            with self.subTest(name=reserved):
+                files = copy.deepcopy(self.files)
+                home = next(f for f in files if f["file"] == "home")
+                home["file"] = reserved
+                home["config"]["network"]["name"] = reserved
+                home["config"]["hosts"].append(self.openbao())
+                found = errors(files)
+                self.assertTrue(any(f"can't be named '{reserved}'" in e for e in found), found)
+
+    def test_openbao_kv_mounts_may_not_hold_the_network_name(self):
+        self.by_name["home"]["hosts"].append(self.openbao(settings={"kv_mounts": ["secret", "home"]}))
+        self.assertError("settings.kv_mounts lists 'home', the network's own mount")
+
+    def test_openbao_own_mounts_are_fine(self):
+        self.by_name["home"]["hosts"].append(self.openbao(settings={"kv_mounts": ["secret", "apps"]}))
+        self.assertEqual(errors(self.files), [])
+
     def test_router_port_forwards_replaced(self):
         self.host("lab", "router")["settings"]["port_forwards"] = []
         self.assertError("settings.port_forwards has been replaced by expose:")

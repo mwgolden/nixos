@@ -7,19 +7,22 @@
 # postgres_users_schemas, postgres_users_group_prefix and
 # postgres_users_passwords.
 
-- name: Read user passwords from the users' secrets file
+# From secrets/<network>/<host>-users.env, or <network>/<host>-users in
+# the network's OpenBao host; see roles/host_secrets.
+- name: Read the user passwords
   ansible.builtin.include_role:
-    name: dotenv
+    name: host_secrets
     apply:
       tags: [always]
   vars:
-    dotenv_path: "{{ postgres_users_secrets_file }}"
-    dotenv_missing_hint: "Copy roles/postgres/users-env.example there and set each user's password."
+    host_secrets_name: "{{ vm.name }}-users"
+    host_secrets_missing_hint: "Copy roles/postgres/users-env.example there and set each user's password."
   tags: [always]
 
 - name: Note user passwords
   ansible.builtin.set_fact:
     postgres_users_passwords: "{{ dotenv_values }}"
+    postgres_users_secrets_where: "{{ host_secrets_where }}"
   no_log: true
   tags: [always]
 
@@ -82,7 +85,7 @@
   ansible.builtin.assert:
     that:
       - (postgres_users_passwords[item.name | upper ~ '_PASSWORD'] | default('')) | length > 0
-    fail_msg: "Set {{ item.name | upper }}_PASSWORD in secrets/{{ vm.network.name }}/{{ vm.name }}-users.env."
+    fail_msg: "Set {{ item.name | upper }}_PASSWORD in {{ postgres_users_secrets_where }}."
     quiet: true
   loop: "{{ postgres_users_list | selectattr('state', 'equalto', 'present') | list }}"
   loop_control:

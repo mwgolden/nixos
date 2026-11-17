@@ -190,6 +190,7 @@
   until: openbao_health is succeeded
 
 # ---- KV secrets engines ----
+# The network's mount (openbao_network_mount) always, then kv_mounts.
 
 - name: List the secrets engines
   ansible.builtin.uri:
@@ -200,16 +201,18 @@
   register: openbao_mounts
   no_log: true
 
+# The deploys of the other hosts on this network use the same token to
+# read their secrets, so it can't be done without.
 - name: Check the root token still works
   ansible.builtin.assert:
     that: openbao_mounts.status == 200
     fail_msg: >-
       The root token in secrets/{{ vm.network.name }}/{{ vm.name }}-init.json
-      was refused, so it has been revoked. Make a new one (bao operator
-      generate-root) and put it in root_token there, or set kv_mounts: [] for
-      {{ vm.name }} in networks/{{ vm.network.name }}.yaml.
+      was refused, so it has been revoked. This deploy needs it for the
+      {{ openbao_network_mount }}/ mount, and the deploys of the other hosts
+      on {{ vm.network.name }} need it to read their secrets there. Make a
+      new one (bao operator generate-root) and put it in root_token there.
     quiet: true
-  when: openbao_kv_mounts | length > 0
 
 - name: Mount KV secrets engines
   ansible.builtin.uri:
@@ -223,6 +226,6 @@
       options:
         version: "2"
     status_code: [200, 204]
-  loop: "{{ openbao_kv_mounts }}"
+  loop: "{{ [openbao_network_mount] + openbao_kv_mounts }}"
   when: (item ~ '/') not in openbao_mounts.json.data
   changed_when: true

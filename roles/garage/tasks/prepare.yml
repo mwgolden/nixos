@@ -2,12 +2,14 @@
 # Runs on localhost from roles/host_deploy. Facts it sets land on the VM's
 # inventory entry, where configure.yml and verify.yml use them.
 
-- name: Read the access key from the secrets file
+# From secrets/<network>/<host>.env, or the network's OpenBao host; see
+# roles/host_secrets.
+- name: Read the access key
   ansible.builtin.include_role:
-    name: dotenv
+    name: host_secrets
   vars:
-    dotenv_path: "{{ garage_secrets_file }}"
-    dotenv_missing_hint: "Copy roles/garage/env.example there and set the access key."
+    host_secrets_name: "{{ vm.name }}"
+    host_secrets_missing_hint: "Copy roles/garage/env.example there and set the access key."
 
 - name: Note the access key
   ansible.builtin.set_fact:
@@ -22,7 +24,7 @@
       - garage_key_secret is match('^[0-9a-f]{64}$')
       - garage_key_id != 'GK000000000000000000000000'
     fail_msg: >-
-      In secrets/{{ vm.network.name }}/{{ vm.name }}.env, set GARAGE_ACCESS_KEY_ID to "GK" and 24 hex
+      In {{ host_secrets_where }}, set GARAGE_ACCESS_KEY_ID to "GK" and 24 hex
       digits and GARAGE_SECRET_ACCESS_KEY to 64 hex digits. roles/garage/env.example
       shows how to generate them.
     quiet: true

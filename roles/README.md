@@ -14,7 +14,8 @@ Two kinds of role live here:
 | `nixos_base` | Finds the VM, checks it's the right one, installs `common.nix` and `network.nix`, formats the data disk, and switches to the new configuration |
 | `isolated_bridge` | Creates and removes the Proxmox bridges of isolated networks |
 | `network_verify` | Checks the whole network after a deploy. See its [README](network_verify/README.md) |
-| `dotenv` | Reads a `secrets/<network>/<host>.env` file |
+| `host_secrets` | Reads a host's secrets: `secrets/<network>/<host>.env`, or the network's OpenBao host when it has one, importing the file there first. See [secrets/README.md](../secrets/README.md#networks-with-an-openbao-host) |
+| `dotenv` | Reads a `secrets/<network>/<host>.env` file; the file reader `host_secrets` uses |
 
 ## Adding a host
 
@@ -125,18 +126,18 @@ Check them in `prepare.yml`. Unknown keys aren't rejected by the validator.
 
 ### Secrets
 
-Read `secrets/<network>/<host>.env` in `prepare.yml` with the `dotenv` role, which fails with your hint if the file is missing:
+Read the host's secrets in `prepare.yml` with the `host_secrets` role, which reads `secrets/<network>/<host>.env`, or the network's OpenBao host when it has one, and fails with your hint if they are nowhere:
 
 ```yaml
-- name: Read the secrets file
+- name: Read the secrets
   ansible.builtin.include_role:
-    name: dotenv
+    name: host_secrets
   vars:
-    dotenv_path: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}.env"
-    dotenv_missing_hint: "Copy roles/<type>/env.example there and fill it in."
+    host_secrets_name: "{{ vm.name }}"
+    host_secrets_missing_hint: "Copy roles/<type>/env.example there and fill it in."
 ```
 
-The values are in `dotenv_values`. Add `no_log: true` to any task that handles them. Ship an `env.example` with placeholder values, and have `prepare.yml` refuse the placeholders.
+The values are in `dotenv_values`, and `host_secrets_where` says where they came from, for messages. Add `no_log: true` to any task that handles the values. Ship an `env.example` with placeholder values, and have `prepare.yml` refuse the placeholders. `host_secrets_required: false` makes them optional (see workstation).
 
 ### Data disk
 

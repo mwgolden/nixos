@@ -33,5 +33,5 @@
       {%- else -%}
       Garage is up. S3 clients use endpoint {{ garage_endpoint }},
       region {{ garage_s3_region }}, path-style addressing, and access key
-      {{ garage_key_id }} (secret in secrets/{{ vm.network.name }}/{{ vm.name }}.env).
+      {{ garage_key_id }} (secret in {{ host_secrets_where }}).
       {%- endif %}

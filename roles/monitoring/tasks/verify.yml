@@ -33,4 +33,4 @@
       {%- else -%}
       Grafana is up at {{ monitoring_url }}.
       {%- endif %}
-      Log in as admin (password in secrets/{{ vm.network.name }}/{{ vm.name }}.env).
+      Log in as admin (password in {{ host_secrets_where }}).

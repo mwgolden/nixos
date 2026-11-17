@@ -1,0 +1,32 @@
+# Which secrets to read: the file is secrets/<network>/<name>.env and, in
+# OpenBao, <network>/<name>. Usually the host's name; postgres also reads
+# <host>-users.
+host_secrets_name: "{{ vm.name }}"
+
+# Added to the error when the secrets are nowhere, to say how to create
+# the file.
+host_secrets_missing_hint: ""
+
+# Fail when the secrets are nowhere. With false (workstation), a missing
+# file and nothing in OpenBao give an empty dotenv_values and
+# host_secrets_found false.
+host_secrets_required: true
+
+# -e secrets_push=true: when the file and OpenBao differ, write the file's
+# values over OpenBao's (a new version) instead of stopping.
+host_secrets_push: "{{ secrets_push | default(false) }}"
+
+# The network's OpenBao host, or {} when it has none (then only the file
+# is read). See the network_secrets_store filter.
+host_secrets_store: "{{ nixlab | network_secrets_store(vm.network.name) }}"
+
+host_secrets_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ host_secrets_name }}.env"
+host_secrets_file_short: "secrets/{{ vm.network.name }}/{{ host_secrets_name }}.env"
+# The root token the deploy uses, written by the openbao host's first
+# deploy. Missing means OpenBao hasn't been deployed yet.
+host_secrets_init_file: "{{ role_path }}/../../{{ host_secrets_store.init_file | default('') }}"
+# Where the secrets are in OpenBao, for messages.
+host_secrets_path: "{{ host_secrets_store.mount | default('') }}/{{ host_secrets_name }}"
+host_secrets_deploy_openbao: >-
+  ansible-playbook playbooks/deploy-host.yaml -e network={{ vm.network.name }}
+  -e host={{ host_secrets_store.name | default('') }}

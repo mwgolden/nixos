@@ -10,15 +10,17 @@ flowchart TB
         gw["home gateway and DNS<br/>192.168.1.1"]
         h_nats["nats, VM 118<br/>nats, 192.168.1.18"]
         h_ws["ws, VM 109<br/>workstation, 192.168.1.19"]
-        r_lab["router of lab, VM 113<br/>WAN 192.168.1.13"]
+        r_agent_developer["router of agent-developer, VM 301<br/>WAN 192.168.1.31"]
+        r_lab["router of lab, VM 113<br/>WAN 192.168.1.13<br/>not deployed"]
         r_workstation_lab["router of workstation-lab, VM 223<br/>WAN 192.168.1.3<br/>not deployed"]
     end
     gw <--> h_nats
     gw <--> h_ws
+    gw <--> r_agent_developer
     gw <--> r_lab
     gw <--> r_workstation_lab
     classDef pending stroke-dasharray: 5 5
-    class r_workstation_lab pending
+    class r_lab,r_workstation_lab pending
 ```
 
 ## Hosts

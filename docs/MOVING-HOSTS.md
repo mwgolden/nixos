@@ -62,8 +62,17 @@ If the checks above were somehow bypassed, two more checks stop a deploy before 
 
 ## Secrets are found by name
 
-Secrets are read from `secrets/<network>/<host>.env`, keyed by name, not by `vm_id`. There is no check for this.
+Secrets are read from `secrets/<network>/<host>.env`, or from `<network>/<host>` in the network's [OpenBao host](../secrets/README.md#networks-with-an-openbao-host) if it has one, keyed by network and name, not by `vm_id`. There is no check for this.
 
-In case 3, the moved VM 119 would read `secrets/lab/ws.env`, which was written for VM 120, not the file it used on `home`. For roles that create an admin user or set a password from the secrets file, such as gitea, the moved host ends up with the old host's login. Its data is not lost, but the credentials change.
+In case 3, the moved VM 119 would read `secrets/lab/ws.env` (or `lab/ws` in lab's OpenBao), which was written for VM 120, not the secrets it used on `home`. For roles that create an admin user or set a password from the secrets, such as gitea, the moved host ends up with the old host's login. Its data is not lost, but the credentials change.
 
-When you move a host, check that `secrets/<new network>/<host>.env` holds the values you want the moved VM to have.
+When you move a host, check that `secrets/<new network>/<host>.env` holds the values you want the moved VM to have. If the old network kept them in OpenBao, copy them across first:
+
+```bash
+# with BAO_ADDR and BAO_TOKEN for the old network's OpenBao
+bao kv get -format=json -field=data home/ws > ws.json
+# then, for the new network's OpenBao
+bao kv put lab/ws @ws.json
+```
+
+Or keep the `.env` file: the first deploy on the new network imports it into that network's OpenBao. Renaming a network is the same: its secrets stay under the old name until copied, or imported again from the files.

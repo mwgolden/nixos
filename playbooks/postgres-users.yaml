@@ -14,7 +14,9 @@
 #   ansible-playbook playbooks/postgres-users.yaml -e network=lab -e host=postgres --tags list
 #
 # The admin login is read from secrets/<network>/<host>.env and the users'
-# passwords from secrets/<network>/<host>-users.env.
+# passwords from secrets/<network>/<host>-users.env, or from the network's
+# openbao host once it is deployed (<network>/<host> and
+# <network>/<host>-users there); see secrets/README.md.
 
 - name: Prepare database users
   hosts: localhost
@@ -75,6 +77,19 @@
           - vm.settings.users_database | default('') | length > 0
         fail_msg: "Set settings.users_database of {{ host }} in networks/{{ network }}.yaml."
         quiet: true
+      tags: [always]
+
+    # The network's router, for reading the secrets from an OpenBao host on
+    # an isolated network (roles/host_secrets goes through it). Adds no
+    # hosts to deploy.
+    - name: Add the routers to the inventory
+      ansible.builtin.include_role:
+        name: network_config
+        tasks_from: inventory
+        apply:
+          tags: [always]
+      vars:
+        network_config_deploy: []
       tags: [always]
 
     # The same checks a deploy runs: the admin login, then the users settings

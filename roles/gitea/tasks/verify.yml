@@ -26,6 +26,5 @@
       {%- else -%}
       Gitea is up at {{ gitea_url | trim }}, with SSH clones at
       ssh://gitea@{{ gitea_ssh_host | trim }}:{{ gitea_url_ssh_port | trim }}/<owner>/<repo>.git.
-      Log in as {{ gitea_admin_user }} (password in
-      secrets/{{ vm.network.name }}/{{ vm.name }}.env).
+      Log in as {{ gitea_admin_user }} (password in {{ host_secrets_where }}).
       {%- endif %}

@@ -1,7 +1,14 @@
 # Deploys every host of one network from its network file, one at a time:
 # on an isolated network the router first (which also creates the
-# network's bridge if it is missing), then the other hosts in the order the
-# file lists them. Safe to re-run: existing VMs are updated in place.
+# network's bridge if it is missing), then the openbao host if there is
+# one (the other hosts read their secrets from it), then the other hosts
+# in the order the file lists them. Safe to re-run: existing VMs are
+# updated in place.
+#
+# Secrets are read from secrets/<network>/<host>.env, or from the network's
+# openbao host (the files are imported there on the first deploy); see
+# secrets/README.md. -e secrets_push=true makes a changed file overwrite
+# what OpenBao has.
 #
 #   source proxmox/.env
 #   ansible-playbook playbooks/deploy-network.yaml -e network=lab
