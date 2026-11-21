@@ -15,7 +15,9 @@
 # VM uses it.
 #
 # The network file stays; deploying it again recreates everything. Its
-# diagram in docs/network-diagrams/ is deleted.
+# diagram in docs/network-diagrams/ is deleted. Before deleting a network's
+# openbao host, a snapshot of it is saved to secrets/<network>/backups/
+# (-e openbao_skip_backup=true to skip). Nothing in secrets/ is deleted.
 
 - name: Destroy a network
   hosts: localhost
@@ -82,6 +84,51 @@
           {{ destroy_owned.untagged | map(attribute='name') | join(', ') }}.{% endif %}
           {% if destroy_owned.moved %}Left alone, moved to another network file:
           {{ destroy_owned.moved | map(attribute='name') | join(', ') }}.{% endif %}
+
+    # Deleting the network's OpenBao deletes everything it stores, so save
+    # a snapshot first (docs/plans/NETWORK-SECURITY.md, 4.4). -e
+    # openbao_skip_backup=true deletes it without (a VM that won't start).
+    # The network's tokens and backups in secrets/<network>/ are kept.
+    - name: Note the network's OpenBao host, if it is being deleted
+      ansible.builtin.set_fact:
+        destroy_openbao: >-
+          {{ destroy_inventory.hosts.values() | selectattr('network.name', 'equalto', network)
+             | selectattr('type', 'equalto', 'openbao')
+             | selectattr('vm_id', 'in', destroy_list | map(attribute='vmid') | map('int') | list)
+             | first | default({}) }}
+
+    - name: Back up the network's OpenBao first
+      when: destroy_openbao | length > 0 and not (openbao_skip_backup | default(false) | bool)
+      block:
+        - name: Add the OpenBao VM to the inventory
+          ansible.builtin.add_host:
+            name: "{{ destroy_openbao.id }}"
+            ansible_host: "{{ destroy_openbao.attach.ip }}"
+            ansible_user: admin
+            ansible_ssh_private_key_file: "{{ key }}"
+            ansible_ssh_common_args: >-
+              {{ (destroy_inventory.networks[network].router_wan_ip if destroy_openbao.attach.via_router else '')
+                 | nixlab_ssh_args(key) }}
+          vars:
+            key: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
+
+        - name: Save a snapshot of {{ destroy_openbao.name }}
+          ansible.builtin.include_role:
+            name: openbao
+            tasks_from: backup
+            apply:
+              delegate_to: "{{ destroy_openbao.id }}"
+              become: true
+          vars:
+            vm: "{{ destroy_openbao }}"
+            nixlab: "{{ destroy_inventory }}"
+      rescue:
+        - name: Stop without a backup
+          ansible.builtin.fail:
+            msg: >-
+              Couldn't save a snapshot of {{ destroy_openbao.name }}'s OpenBao,
+              so nothing was deleted. If it can't be reached any more and you
+              accept losing what it stores, run again with -e openbao_skip_backup=true.
 
     - name: Delete each VM
       ansible.builtin.include_role:

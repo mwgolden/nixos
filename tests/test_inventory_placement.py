@@ -137,6 +137,8 @@ class SecretsStore(unittest.TestCase):
             "url": "http://10.1.0.20:8300",
             "via_router": "lab.router",
             "init_file": "secrets/lab/openbao-init.json",
+            "deploy_token_file": "secrets/lab/openbao-deploy-token",
+            "ca_file": "",
         })
 
     def test_home_network_is_reached_directly(self):

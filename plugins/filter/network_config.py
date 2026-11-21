@@ -1659,7 +1659,12 @@ def network_secrets_store(inventory, network):
       via_router  the ID of the router to reach it through, or "" when
                   it is reachable from this machine (a home network)
       init_file   secrets/<network>/<host>-init.json, relative to the
-                  repository: the root token the deploys use
+                  repository: the root token, used when there's no deploy
+                  token yet
+      deploy_token_file
+                  secrets/<network>/<host>-deploy-token: the token the
+                  deploys use once the openbao host has made it
+      ca_file     secrets/<network>/<host>-tls.crt with tls, else ""
     """
     secrets = network_security(inventory, network)["secrets"]
     # secrets: {provider: files} keeps a network's secrets in files even
@@ -1667,15 +1672,49 @@ def network_secrets_store(inventory, network):
     if secrets["provider"] != "openbao" or secrets["instance"] not in inventory["hosts"]:
         return {}
     bao = inventory["hosts"][secrets["instance"]]
-    port = int((bao.get("settings") or {}).get("port", DEFAULT_OPENBAO_PORT))
+    endpoint = openbao_endpoint(inventory, bao["id"])
     return {
         "host_id": bao["id"],
         "name": bao["name"],
         "mount": network,
-        "url": f"http://{bao['ip']}:{port}",
+        "url": endpoint["url"],
         "via_router": bao["attach"]["via_router"],
-        "init_file": f"secrets/{network}/{bao['name']}-init.json",
+        "init_file": endpoint["init_file"],
+        "deploy_token_file": f"secrets/{network}/{bao['name']}-deploy-token",
+        "ca_file": endpoint["ca_file"],
     }
+
+
+def openbao_deploy_token(network, openbao_name):
+    """The deploy token a network's openbao host makes for the other hosts'
+    deploys (roles/host_secrets): {name, file, policy}. The policy reads
+    and writes the network's secrets and reads its KV mount's settings,
+    which host_secrets checks first."""
+    policy = (f"# Written by roles/openbao for the deploys of {network}'s hosts.\n"
+              f'path "{network}/config" {{\n  capabilities = ["read"]\n}}\n'
+              f'path "{network}/data/*" {{\n  capabilities = ["create", "read", "update"]\n}}\n'
+              f'path "{network}/metadata/*" {{\n  capabilities = ["read", "list"]\n}}\n')
+    return {"name": f"deploy-{network}", "file": f"secrets/{network}/{openbao_name}-deploy-token",
+            "policy": policy}
+
+
+def openbao_read_tokens(inventory, network):
+    """The read-only tokens a network's openbao host makes, one per host
+    that may have secrets (not routers, not the openbao host): {host, name,
+    paths, file}. paths are the secrets it may read: <host>, and
+    <host>-users for postgres (docs/plans/NETWORK-SECURITY.md, 4.4)."""
+    tokens = []
+    for vm in inventory["hosts"].values():
+        if vm["network"]["name"] != network or vm["type"] in ("router", "openbao"):
+            continue
+        paths = [vm["name"]] + ([f"{vm['name']}-users"] if vm["type"] == "postgres" else [])
+        # Exact paths, no globs: postgres can't read postgres2.
+        policy = f"# Written by roles/openbao: {vm['name']} reads its own secrets.\n" + "".join(
+            f'path "{network}/{kind}/{p}" {{\n  capabilities = ["read"]\n}}\n'
+            for p in paths for kind in ("data", "metadata"))
+        tokens.append({"host": vm["name"], "name": f"{network}-{vm['name']}-read", "paths": paths,
+                       "file": f"secrets/{network}/{vm['name']}-read-token", "policy": policy})
+    return tokens
 
 
 # Ownership: tags the project puts on the VMs it deploys. Only these kinds
@@ -1832,6 +1871,13 @@ def blocked_targets(vm, inventory, proxmox_ip=""):
             if other.get("dmz"):
                 targets.append({"name": f"{other['name']}'s DMZ gateway", "host": other["dmz"]["gateway"],
                                 "port": 53})
+    # Every other network's OpenBao, the home one included: an isolated
+    # network has no business with another's secrets or CA
+    # (docs/plans/NETWORK-SECURITY.md, 4.4).
+    for other in inventory["hosts"].values():
+        if other["type"] == "openbao" and other["network"]["name"] != net["name"]:
+            port = int((other.get("settings") or {}).get("port", DEFAULT_OPENBAO_PORT))
+            targets.append({"name": f"{other['id']}'s OpenBao", "host": other["ip"], "port": port})
     # From the DMZ, SSH on each LAN host: every VM listens on 22, so a
     # timeout shows the router dropped it, not that nothing was there.
     if vm.get("zone") == "dmz":
@@ -1939,6 +1985,8 @@ class FilterModule:
             "ssh_host_principals": ssh_host_principals,
             "openbao_ssh_host_roles": openbao_ssh_host_roles,
             "openbao_endpoint": openbao_endpoint,
+            "openbao_read_tokens": openbao_read_tokens,
+            "openbao_deploy_token": openbao_deploy_token,
             "nixlab_tags": nixlab_tags,
             "proxmox_tags_merge": proxmox_tags_merge,
             "proxmox_tags_list": _tags,

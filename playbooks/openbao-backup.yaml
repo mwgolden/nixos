@@ -1,0 +1,75 @@
+# Saves a snapshot of a network's OpenBao (everything it stores, encrypted)
+# to secrets/<network>/backups/<host>-<time>.snap. See roles/openbao/README.md,
+# "Backups".
+#
+#   source proxmox/.env
+#   ansible-playbook playbooks/openbao-backup.yaml -e network=home
+#   ansible-playbook playbooks/openbao-backup.yaml -e network=lab -e host=openbao
+#
+# host defaults to the network's openbao host.
+
+- name: Find the OpenBao host
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../proxmox/vars.yaml
+
+  tasks:
+    - name: Check the arguments
+      ansible.builtin.assert:
+        that:
+          - network | default('') | length > 0
+          - lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') | length > 0
+        fail_msg: "Run with -e network=<file in networks/>, after 'source proxmox/.env'."
+        quiet: true
+
+    - name: Load the network files
+      ansible.builtin.include_role:
+        name: network_config
+      vars:
+        network_config_name: "{{ network }}"
+        network_config_check_proxmox: false
+
+    - name: Find the openbao host
+      ansible.builtin.set_fact:
+        nixlab: "{{ network_configs | network_config_inventory }}"
+
+    - name: Note the openbao host
+      ansible.builtin.set_fact:
+        backup_vm: >-
+          {{ nixlab.hosts[network ~ '.' ~ host] if host is defined
+             else (nixlab.hosts.values() | selectattr('network.name', 'equalto', network)
+                   | selectattr('type', 'equalto', 'openbao') | first | default({})) }}
+
+    - name: Require an openbao host
+      ansible.builtin.assert:
+        that:
+          - backup_vm.type | default('') == 'openbao'
+        fail_msg: "networks/{{ network }}.yaml has no openbao host{{ (' named ' ~ host) if host is defined else '' }}."
+        quiet: true
+
+    # On an isolated network the VM is reached over SSH through the router.
+    - name: Add the OpenBao VM to the inventory
+      ansible.builtin.add_host:
+        name: "{{ backup_vm.id }}"
+        groups: [openbao_backup]
+        ansible_host: "{{ backup_vm.ip }}"
+        ansible_user: admin
+        ansible_ssh_private_key_file: "{{ key }}"
+        ansible_ssh_common_args: "{{ router_wan | nixlab_ssh_args(key) }}"
+        vm: "{{ backup_vm }}"
+        nixlab: "{{ nixlab }}"
+      vars:
+        router_wan: "{{ nixlab.networks[network].router_wan_ip if backup_vm.network.type == 'isolated' else '' }}"
+        key: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
+
+- name: Back up OpenBao
+  hosts: openbao_backup
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Save a snapshot
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: backup

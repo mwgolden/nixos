@@ -88,3 +88,65 @@
   when: >-
     nixos_base_ca_instance | length > 0 and not
     (role_path ~ '/../../secrets/' ~ (nixos_base_ca_instance | replace('.', '/', 1)) ~ '-ssh-user-ca.pub') is file
+
+# ---- This host's read-only OpenBao token ----
+# Made by its network's openbao host (roles/openbao, tokens.yml) in
+# secrets/<network>/<host>-read-token, and put here, root-only, outside
+# the Nix store. openbao-client.nix (imported by common.nix) adds the bao
+# CLI, the address and a daily renewal.
+
+- name: Note this host's OpenBao token
+  ansible.builtin.set_fact:
+    nixos_base_bao_store: "{{ nixlab | network_secrets_store(vm.network.name) }}"
+    nixos_base_bao_token_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}-read-token"
+
+- name: Look for this host's OpenBao token
+  ansible.builtin.stat:
+    path: "{{ nixos_base_bao_token_file }}"
+  register: nixos_base_bao_token_stat
+  delegate_to: localhost
+  become: false
+
+- name: Note whether this host gets an OpenBao token
+  ansible.builtin.set_fact:
+    nixos_base_bao_client: >-
+      {{ nixos_base_bao_store | length > 0 and vm.type not in ['router', 'openbao']
+         and nixos_base_bao_token_stat.stat.exists }}
+
+- name: Make /etc/openbao
+  ansible.builtin.file:
+    path: /etc/openbao
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: nixos_base_bao_client | bool
+
+- name: Install this host's OpenBao token
+  ansible.builtin.copy:
+    src: "{{ nixos_base_bao_token_file }}"
+    dest: "/etc/openbao/{{ vm.name }}.token"
+    owner: root
+    group: root
+    mode: "0400"
+  when: nixos_base_bao_client | bool
+  no_log: true
+
+- name: Install OpenBao's certificate
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../{{ nixos_base_bao_store.ca_file }}"
+    dest: /etc/openbao/ca.crt
+    mode: "0644"
+  when: nixos_base_bao_client | bool and nixos_base_bao_store.ca_file | length > 0
+
+- name: Remove a token this host no longer has
+  ansible.builtin.file:
+    path: "/etc/openbao/{{ vm.name }}.token"
+    state: absent
+  when: not nixos_base_bao_client | bool
+
+- name: Install the OpenBao client configuration
+  ansible.builtin.template:
+    src: openbao-client.nix.j2
+    dest: /etc/nixos/openbao-client.nix
+    mode: "0644"

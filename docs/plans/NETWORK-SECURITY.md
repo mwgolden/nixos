@@ -13,7 +13,7 @@ In short: each network file gets an optional `security:` block. It says which au
 | 1 | `security:` schema, presets, validation. No change in behaviour | **done** (2026-11-21) |
 | 2 | Home OpenBao with TLS, SSH user CA, password login with optional MFA, hosts trust the CA, desktop script | **done** (2026-11-21), except running `scripts/ssh-cert` itself |
 | 2b | Unique SSH host keys per VM, then an SSH host CA | **done** (2026-11-21) |
-| 3 | Network-local OpenBao hardening: deploy token, TLS, backups, isolation and outage checks | not started |
+| 3 | Network-local OpenBao hardening: deploy token, TLS, backups, isolation and outage checks | **done** (2026-11-21), except AppRole |
 | 4 | Offline root CA, per-network intermediates, the proxy gets certificates from OpenBao | not started |
 | 5 | `independent` strategy, switching authorities | not started |
 
@@ -43,6 +43,16 @@ Phase 2b is deployed on `home` (openbao, nats, ws):
 - **Host CA** ([ssh-host-roles.yml](../../roles/openbao/tasks/ssh-host-roles.yml)): `ssh-host-signer/` with one role per network, `hosts-<network>`, allowed only that network's hosts' names and addresses (`openbao_ssh_host_roles`). `ssh-ca.yml` is now shared by both CAs; the user CA's roles moved to `ssh-user-roles.yml`.
 - **Host certificates** ([host-cert.yml](../../roles/nixos_base/tasks/host-cert.yml)): signed for a year, kept while they match the key, CA and names with 30 days left, `HostCertificate` in `ssh-trust.nix`. `scripts/ssh-cert --trust-hosts` prints the `@cert-authority` lines; `network_verify` checks the certificate.
 - **Checked live:** each VM reported a new host key; with only the `@cert-authority` line in `known_hosts` and `StrictHostKeyChecking=yes`, all three hosts are accepted and without it refused; nats's certificate is refused when presented as ws ("name is not a listed principal"); a redeploy keeps the certificate and the keys; `verify-network` on home is clean.
+
+Phase 3 was built and checked on a temporary OpenBao on `lab` (deployed with lab's router and postgres, then destroyed); no network keeps one yet besides `agent-developer`, which picks it up on its next deploy:
+
+- **Tokens** ([tokens.yml](../../roles/openbao/tasks/tokens.yml)): `deploy-<network>` and one `<network>-<host>-read` per host, orphan, periodic (768h), renewed by each deploy of the openbao host, made again when missing or revoked, `-e openbao_rotate_tokens=true` to replace them all. Policies are built in Python (`openbao_deploy_token`, `openbao_read_tokens`). [host_secrets](../../roles/host_secrets/tasks/main.yml) uses the deploy token, and HTTPS with the network OpenBao's certificate (copied to the router on an isolated network).
+- **On the VM** ([openbao-client.nix.j2](../../roles/nixos_base/templates/openbao-client.nix.j2)): `/etc/openbao/<host>.token` (root, 0400), `/etc/openbao/env`, the `bao` CLI and a daily renewal timer. `common.nix` imports it; the template build writes an empty one.
+- **Backups** ([backup.yml](../../roles/openbao/tasks/backup.yml), [openbao-backup.yaml](../../playbooks/openbao-backup.yaml)): raft snapshots to `secrets/<network>/backups/`. `destroy-host` and `destroy-network` save one before deleting an openbao host (`-e openbao_skip_backup=true` to skip). `destroy-host` revokes the destroyed host's read-only token (with the token itself, `revoke-self`).
+- **Isolation**: `blocked_targets` now includes every other network's OpenBao port, so `verify-network` checks an isolated host can't reach any of them, the home CA included.
+- **Checked live on lab:** postgres's deploy imported its two files with the deploy token; its token on the VM read `lab/postgres` and `lab/postgres-users` and was refused `lab/gitea`, writes and listing; the timer ran; with the home OpenBao stopped, postgres redeployed reading from lab's OpenBao; `verify-network` found lab's hosts can't reach the home or agent-developer OpenBao (the probe to agent-developer's address was dropped by lab's router, so nothing reached that network); `destroy-host` revoked postgres's token, leaving the others; `destroy-network` saved a snapshot of lab's OpenBao before deleting it. `openbao-backup.yaml` also saved one of the home OpenBao (`secrets/home/backups/`).
+- **Bugs found on the way:** (1) since phase 2b a new clone met the previous clone's key on the template's address (192.168.1.10); placement now forgets it for new clones. (2) A policy written as a Jinja string in YAML kept its `\n` literal, which made it one comment line, so the deploy token could do nothing; policies now come from Python, and a test checks for real newlines. (3) A non-root token can't read `sys/mounts/<mount>`; host_secrets checks `<mount>/config` instead.
+- **Not done:** AppRole per host (optional in 4.4; the read-only token covers it for now). Not related to this plan, but seen: a new router's dnsmasq can start before its LAN and DMZ cards exist and then not answer on the DMZ address, which stops its deploy; restarting dnsmasq fixes it.
 
 ## 1. Where things stand
 

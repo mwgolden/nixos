@@ -50,6 +50,12 @@ def add_home_openbao(files, **settings):
     return files
 
 
+def without_openbao(files, network):
+    hosts = config(files, network)["hosts"]
+    hosts[:] = [h for h in hosts if h["type"] != "openbao"]
+    return files
+
+
 def set_security(files, network, block):
     config(files, network)["network"]["security"] = block
     return files
@@ -125,7 +131,9 @@ class NoSecurityBlock(unittest.TestCase):
                         "host_id": f"{name}.{bao['name']}", "name": bao["name"], "mount": name,
                         "url": f"http://{bao['ip']}:8200",
                         "via_router": inv["hosts"][f"{name}.{bao['name']}"]["attach"]["via_router"],
-                        "init_file": f"secrets/{name}/{bao['name']}-init.json"})
+                        "init_file": f"secrets/{name}/{bao['name']}-init.json",
+                        "deploy_token_file": f"secrets/{name}/{bao['name']}-deploy-token",
+                        "ca_file": ""})
 
     def test_no_security_warnings(self):
         self.assertFalse([w for w in warnings(repo()) if "security" in w or "not deployed yet" in w])
@@ -264,7 +272,7 @@ class Rejected(unittest.TestCase):
         self.assertError(files, "pki.instance home.openbao is on network home")
 
     def test_secrets_openbao_without_a_host(self):
-        files = set_security(repo(), "lab", {"secrets": {"provider": "openbao"}})
+        files = set_security(without_openbao(repo(), "lab"), "lab", {"secrets": {"provider": "openbao"}})
         self.assertError(files, "secrets.provider openbao needs an openbao host on network lab")
 
     # 4. One isolated network never depends on another.
@@ -300,7 +308,7 @@ class Rejected(unittest.TestCase):
     # 6. Strategies that need a local OpenBao.
 
     def test_centralized_local_without_openbao(self):
-        files = add_home_openbao(repo())
+        files = without_openbao(add_home_openbao(repo()), "lab")
         set_security(files, "lab", {"strategy": "centralized-local",
                                     "administrative_identity": {"instance": "home.openbao"}})
         self.assertError(files, "strategy centralized-local needs an openbao host on network lab")
@@ -483,6 +491,30 @@ class HostCA(unittest.TestCase):
     def test_bad_host_ttl(self):
         found = errors(add_home_openbao(repo(), ssh_host_cert_ttl="a year"))
         self.assertTrue(any("ssh_host_cert_ttl must be a duration" in e for e in found))
+
+
+class ReadTokens(unittest.TestCase):
+    def test_one_per_host_with_exact_paths(self):
+        tokens = nc.openbao_read_tokens(inventory(repo()), "agent-developer")
+        by_host = {t["host"]: t for t in tokens}
+        self.assertNotIn("router", by_host)
+        self.assertNotIn("openbao", by_host)
+        self.assertEqual(by_host["postgres"]["paths"], ["postgres", "postgres-users"])
+        self.assertEqual(by_host["gitea"]["paths"], ["gitea"])
+        self.assertEqual(by_host["gitea"]["name"], "agent-developer-gitea-read")
+        self.assertEqual(by_host["gitea"]["file"], "secrets/agent-developer/gitea-read-token")
+
+    def test_deploy_policy_has_real_lines(self):
+        token = nc.openbao_deploy_token("lab", "openbao")
+        self.assertEqual(token["file"], "secrets/lab/openbao-deploy-token")
+        self.assertIn('\npath "lab/data/*" {\n  capabilities = ["create", "read", "update"]\n}', token["policy"])
+        self.assertNotIn("\\n", token["policy"])
+
+    def test_isolated_hosts_are_blocked_from_other_openbaos(self):
+        inv = inventory(repo())
+        targets = nc.blocked_targets(inv["hosts"]["agent-developer.gitea"], inv)
+        self.assertIn({"name": "home.openbao's OpenBao", "host": "192.168.1.20", "port": 8200}, targets)
+        self.assertFalse([t for t in targets if t["host"] == "10.3.1.5"])
 
 
 if __name__ == "__main__":

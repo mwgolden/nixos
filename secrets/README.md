@@ -9,6 +9,9 @@ secrets/<network>/<openbao>-init.json  # written by deploys: OpenBao's unseal ke
 secrets/<network>/<openbao>-tls.crt    # written by deploys: the certificate OpenBao serves (tls: self-signed)
 secrets/<network>/<openbao>-ssh-user-ca.pub  # written by deploys: its SSH user CA's public key
 secrets/<network>/<openbao>-ssh-host-ca.pub  # written by deploys: its SSH host CA's public key
+secrets/<network>/<openbao>-deploy-token     # written by deploys: the token other deploys read secrets with
+secrets/<network>/<host>-read-token          # written by deploys: a host's read-only token, also on the VM
+secrets/<network>/backups/                   # written by backups: OpenBao snapshots
 secrets/<network>/<proxy>-ca.crt       # written by deploys: the proxy's root certificate
 secrets/<network>/vpn/                 # written by deploys: WireGuard keys and client files
 ```
@@ -33,6 +36,8 @@ These files are written by deploys, not by you:
 - `<openbao>-tls.crt`: the certificate of an [OpenBao](../roles/openbao/README.md#https) host with `tls: self-signed`, for clients to trust (`BAO_CACERT`). Not secret. Replaced when OpenBao makes a new one.
 - `<openbao>-ssh-user-ca.pub`: the public key of an OpenBao host's [SSH user CA](../roles/openbao/README.md#ssh-certificates). Not secret, but the deploys of every network that trusts the CA write it onto their hosts, so it is never overwritten: a deploy stops if the CA's key no longer matches it.
 - `<openbao>-ssh-host-ca.pub`: the public key of an OpenBao host's [SSH host CA](../roles/openbao/README.md#ssh-host-certificates), which your SSH client trusts through `scripts/ssh-cert --trust-hosts`. Guarded the same way.
+- `<openbao>-deploy-token` and `<host>-read-token`: an OpenBao host's [tokens](../roles/openbao/README.md#the-networks-tokens) for its network's deploys, and for each host to read its own secrets. Secret. Made again when missing or revoked.
+- `backups/<openbao>-<time>.snap`: [snapshots](../roles/openbao/README.md#backups) of an OpenBao. Encrypted, but restoring one needs `<openbao>-init.json`; keep both, off this machine.
 - `vpn/`: the router's [VPN](../roles/router/README.md#vpn) keys, made on the first deploy and kept after that. `<name>.key` files are private keys. `<peer>.conf` files are ready-to-use client configurations, and contain the peer's private key. Deleting `<router>.key` makes a new router key on the next deploy, and every client file has to be handed out again.
 
 Proxmox and SSH key settings are still in `proxmox/.env`.
@@ -52,7 +57,7 @@ On every deploy of a host, [roles/host_secrets](../roles/host_secrets/tasks/main
 
 To change a secret afterwards, either `bao kv patch <network>/<host> KEY=value` and redeploy the host, or edit the file and redeploy with `-e secrets_push=true`. To read one: `bao kv get <network>/<host>` (see [Using OpenBao](../roles/openbao/README.md#using-openbao) for `BAO_ADDR` and `BAO_TOKEN`).
 
-The deploy reaches OpenBao with the root token from `<openbao>-init.json`, through the network's router on an isolated network. When it can't:
+The deploy reaches OpenBao with the network's deploy token (`<openbao>-deploy-token`), or the root token from `<openbao>-init.json` until that exists, through the network's router on an isolated network. When it can't:
 
 | State | What the deploy does |
 |---|---|

@@ -1,0 +1,50 @@
+# Saves a raft snapshot of this OpenBao (everything it stores, encrypted)
+# to secrets/<network>/backups/<host>-<time>.snap on this machine
+# (docs/plans/NETWORK-SECURITY.md, 4.4). Restoring it needs the same unseal
+# keys, so keep it with <host>-init.json, and copy both off this machine.
+# Used by playbooks/openbao-backup.yaml and, before deleting an openbao
+# host, playbooks/destroy-host.yaml. Runs on the VM with become: true;
+# needs vm. Sets openbao_backup_file.
+
+- name: Note the backup's name
+  ansible.builtin.set_fact:
+    openbao_backup_file: >-
+      {{ role_path }}/../../secrets/{{ vm.network.name }}/backups/{{ vm.name }}-{{ lookup('ansible.builtin.pipe', 'date +%Y%m%d-%H%M%S') }}.snap
+
+- name: Save a snapshot on the VM
+  ansible.builtin.shell:
+    cmd: >-
+      umask 077 &&
+      /run/current-system/sw/bin/bao operator raft snapshot save
+      -address={{ openbao_local_url }}
+      {{ ('-ca-cert=' ~ openbao_uri_ca) if openbao_uri_ca else '' }}
+      /root/openbao-backup.snap
+  environment:
+    BAO_TOKEN: "{{ (lookup('ansible.builtin.file', openbao_init_file) | from_json).root_token }}"
+  changed_when: true
+  no_log: true
+
+- name: Copy the snapshot here
+  ansible.builtin.fetch:
+    src: /root/openbao-backup.snap
+    dest: "{{ openbao_backup_file }}"
+    flat: true
+
+- name: Make the backup readable only by you
+  ansible.builtin.file:
+    path: "{{ openbao_backup_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+
+- name: Delete the snapshot on the VM
+  ansible.builtin.file:
+    path: /root/openbao-backup.snap
+    state: absent
+
+- name: Report the backup
+  ansible.builtin.debug:
+    msg: >-
+      Saved {{ vm.id }}'s OpenBao to secrets/{{ vm.network.name }}/backups/{{ openbao_backup_file | basename }}.
+      Restoring it needs the unseal keys in secrets/{{ vm.network.name }}/{{ vm.name }}-init.json;
+      copy both somewhere other than this machine.

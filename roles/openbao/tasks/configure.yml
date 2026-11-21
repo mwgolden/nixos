@@ -243,6 +243,12 @@
   when: (item ~ '/') not in openbao_mounts.json.data
   changed_when: true
 
+# ---- Tokens for the network's deploys and hosts ----
+
+- name: Make and renew the network's tokens
+  ansible.builtin.include_tasks: tokens.yml
+  when: (nixlab | network_secrets_store(vm.network.name)).host_id | default('') == vm.id
+
 # ---- SSH user CA and its administrators ----
 
 - name: Set up the SSH user CA

@@ -60,16 +60,34 @@
 - name: Read the secrets from OpenBao
   when: host_secrets_use_store
   vars:
+    # The network's deploy token once the openbao host has made it,
+    # otherwise the root token (docs/plans/NETWORK-SECURITY.md, 4.4).
     host_secrets_token: >-
-      {{ (lookup('ansible.builtin.file', host_secrets_init_file) | from_json).root_token | default('')
+      {{ ((lookup('ansible.builtin.file', host_secrets_deploy_token_file, errors='ignore') | default('', true) | trim)
+          or (lookup('ansible.builtin.file', host_secrets_init_file) | from_json).root_token | default(''))
          if host_secrets_use_store else '' }}
     host_secrets_via: "{{ host_secrets_store.via_router | default('') or 'localhost' }}"
+    # With TLS, the certificate where the requests are made: here, or a
+    # copy on the router.
+    host_secrets_ca: >-
+      {{ '' if not host_secrets_store.ca_file | default('')
+         else ('/tmp/nixlab-' ~ host_secrets_store.host_id ~ '-tls.crt') if host_secrets_store.via_router
+         else (role_path ~ '/../../' ~ host_secrets_store.ca_file) }}
   block:
+    - name: Copy OpenBao's certificate to the router
+      ansible.builtin.copy:
+        src: "{{ role_path }}/../../{{ host_secrets_store.ca_file }}"
+        dest: "{{ host_secrets_ca }}"
+        mode: "0644"
+      delegate_to: "{{ host_secrets_via }}"
+      when: host_secrets_store.ca_file | default('') | length > 0 and host_secrets_store.via_router | length > 0
+
     # The health endpoint needs no token: 200 only when initialized,
     # unsealed and active. -1 means it couldn't be reached.
     - name: Check OpenBao is up and unsealed
       ansible.builtin.uri:
         url: "{{ host_secrets_store.url }}/v1/sys/health"
+        ca_path: "{{ host_secrets_ca or omit }}"
       register: host_secrets_health
       failed_when: false
       delegate_to: "{{ host_secrets_via }}"
@@ -88,27 +106,31 @@
           also unseals it: {{ host_secrets_deploy_openbao }}
         quiet: true
 
-    # One request that checks both the token and the network's mount.
-    - name: Check the root token and the network's mount
+    # One request that checks both the token and the network's mount: the
+    # KV mount's own settings, which the deploy token may read. 200: both
+    # fine; 403: the token; 404: no such mount.
+    - name: Check the token and the network's mount
       ansible.builtin.uri:
-        url: "{{ host_secrets_store.url }}/v1/sys/mounts/{{ host_secrets_store.mount }}"
+        url: "{{ host_secrets_store.url }}/v1/{{ host_secrets_store.mount }}/config"
+        ca_path: "{{ host_secrets_ca or omit }}"
         headers:
           X-Vault-Token: "{{ host_secrets_token }}"
-        status_code: [200, 400, 403]
+        status_code: [200, 403, 404]
       register: host_secrets_mount
       failed_when: false
       delegate_to: "{{ host_secrets_via }}"
       no_log: true
 
-    - name: Require the root token to work
+    - name: Require the token to work
       ansible.builtin.assert:
         that:
           - host_secrets_mount.status != 403
         fail_msg: >-
-          The root token in {{ host_secrets_store.init_file }} was refused by
-          OpenBao on {{ host_secrets_store.name }}, so it has been revoked. The
-          deploys read their secrets with it. Make a new one (bao operator
-          generate-root) and put it in root_token there.
+          The token in {{ host_secrets_store.deploy_token_file }} (or, without
+          it, the root token in {{ host_secrets_store.init_file }}) was refused
+          by OpenBao on {{ host_secrets_store.name }}. Deploy it again, which
+          makes a new deploy token: {{ host_secrets_deploy_openbao }}. If the
+          root token was revoked, make a new one first (bao operator generate-root).
         quiet: true
 
     - name: Require the network's mount
@@ -116,7 +138,7 @@
         that:
           - host_secrets_mount.status == 200
         fail_msg: >-
-          {% if host_secrets_mount.status == 400 -%}
+          {% if host_secrets_mount.status == 404 -%}
           OpenBao on {{ host_secrets_store.name }} has no {{ host_secrets_store.mount }}/
           mount, where {{ vm.network.name }}'s secrets go. Redeploy it to make
           the mount: {{ host_secrets_deploy_openbao }}
@@ -131,6 +153,7 @@
     - name: Read {{ host_secrets_path }}
       ansible.builtin.uri:
         url: "{{ host_secrets_store.url }}/v1/{{ host_secrets_store.mount }}/data/{{ host_secrets_name }}"
+        ca_path: "{{ host_secrets_ca or omit }}"
         headers:
           X-Vault-Token: "{{ host_secrets_token }}"
         status_code: [200, 404]
@@ -192,6 +215,7 @@
     - name: Write {{ host_secrets_file_short }} to OpenBao
       ansible.builtin.uri:
         url: "{{ host_secrets_store.url }}/v1/{{ host_secrets_store.mount }}/data/{{ host_secrets_name }}"
+        ca_path: "{{ host_secrets_ca or omit }}"
         method: POST
         headers:
           X-Vault-Token: "{{ host_secrets_token }}"

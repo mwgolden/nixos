@@ -1,0 +1,139 @@
+# Tokens narrower than the root token, for the network whose secrets this
+# host keeps (docs/plans/NETWORK-SECURITY.md, 4.4):
+#   deploy-<network>   read and write <network>/*, for the other hosts'
+#                      deploys (roles/host_secrets): secrets/<network>/<host>-deploy-token
+#   <network>-<host>-read  read the host's own secrets and nothing else:
+#                      secrets/<network>/<host>-read-token, also put on the
+#                      VM by its deploy (roles/nixos_base, openbao-client)
+# Each is an orphan (revoking the root token doesn't revoke it), periodic
+# (768h, renewed by every deploy of this host), and named, so the audit
+# log says whose it was. A token that still works is kept; one that is
+# missing, expired or revoked is made again. -e openbao_rotate_tokens=true
+# replaces them all and revokes the old ones. Included from configure.yml
+# when this host keeps its network's secrets. Runs on the VM.
+
+- name: Note the tokens
+  ansible.builtin.set_fact:
+    openbao_tokens: >-
+      {{ [openbao_network_mount | openbao_deploy_token(vm.name)]
+         + (nixlab | openbao_read_tokens(vm.network.name)) }}
+
+- name: Write the tokens' policies
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/policies/acl/{{ item.name }}"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      policy: "{{ item.policy }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_tokens }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  no_log: true
+
+# 403 or 400: unknown, expired or revoked.
+- name: Check the tokens made before
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/token/lookup"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      token: "{{ lookup('ansible.builtin.file', role_path ~ '/../../' ~ item.file, errors='ignore') | default('', true) | trim or 'none' }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 400, 403]
+  loop: "{{ openbao_tokens }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: openbao_token_lookup
+  no_log: true
+
+- name: Note which tokens still work
+  ansible.builtin.set_fact:
+    openbao_tokens_valid: >-
+      {{ openbao_token_lookup.results | selectattr('status', 'equalto', 200)
+         | map(attribute='item.name') | list }}
+    openbao_tokens_rotate: "{{ openbao_rotate_tokens | default(false) | bool }}"
+
+- name: Renew the tokens that still work
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/token/renew"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      token: "{{ lookup('ansible.builtin.file', role_path ~ '/../../' ~ item.file) | trim }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+  loop: "{{ openbao_tokens | selectattr('name', 'in', openbao_tokens_valid) | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: not openbao_tokens_rotate
+  changed_when: false
+  no_log: true
+
+- name: Revoke the tokens being replaced
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/token/revoke"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      token: "{{ lookup('ansible.builtin.file', role_path ~ '/../../' ~ item.file) | trim }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_tokens | selectattr('name', 'in', openbao_tokens_valid) | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: openbao_tokens_rotate
+  changed_when: true
+  no_log: true
+
+- name: Make the missing tokens
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/token/create-orphan"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      policies: ["{{ item.name }}"]
+      period: 768h
+      display_name: "{{ item.name }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+  loop: >-
+    {{ openbao_tokens if openbao_tokens_rotate
+       else openbao_tokens | rejectattr('name', 'in', openbao_tokens_valid) | list }}
+  loop_control:
+    label: "{{ item.name }}"
+  register: openbao_tokens_made
+  changed_when: true
+  no_log: true
+
+- name: Save the new tokens
+  ansible.builtin.copy:
+    content: "{{ item.json.auth.client_token }}\n"
+    dest: "{{ role_path }}/../../{{ item.item.file }}"
+    mode: "0600"
+  loop: "{{ openbao_tokens_made.results }}"
+  loop_control:
+    label: "{{ item.item.file }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Report the new tokens
+  ansible.builtin.debug:
+    msg: >-
+      Made {{ openbao_tokens_made.results | length }} token(s) for
+      {{ vm.network.name }}: {{ openbao_tokens_made.results | map(attribute='item.name') | join(', ') }},
+      in secrets/{{ vm.network.name }}/. The deploys of {{ vm.network.name }}'s
+      hosts now use deploy-{{ openbao_network_mount }} instead of the root token,
+      and each host gets its read-only token on its next deploy.
+  when: openbao_tokens_made.results | length > 0

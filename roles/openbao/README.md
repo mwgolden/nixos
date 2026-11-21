@@ -44,7 +44,7 @@ There's no secrets file to write. On the first deploy, OpenBao is initialized an
 
 The keys are written to a root-only file on the VM first, then copied here and deleted from the VM, so a deploy that fails halfway doesn't lose them. The deploy never overwrites this file. If it finds OpenBao uninitialized while the file exists (a new or wiped data disk), it stops rather than start over; move the file away to accept that.
 
-Each deploy uses the keys to unseal OpenBao if it is sealed, and the root token to mount the network's engine and `kv_mounts`. The deploys of the network's other hosts use the same root token to read and write their secrets, so it can't be revoked; a narrower deploy token is a possible later step.
+Each deploy uses the keys to unseal OpenBao if it is sealed, and the root token to mount the network's engine and `kv_mounts` and to make the network's [tokens](#the-networks-tokens). The deploys of the network's other hosts use the deploy token, and the root token only until that exists.
 
 `key_shares` and `key_threshold` only matter on the first deploy. Splitting the key gains nothing while all the shares are in one file; if you want that, hand them out and remove them from the file, and unseal by hand after a restart (below). Change them later with `bao operator rekey`.
 
@@ -190,6 +190,34 @@ scripts/ssh-cert --trust-hosts home lab >> ~/.ssh/known_hosts
 
 That adds one `@cert-authority` line per network. A host with a certificate is also still accepted by a `known_hosts` entry for its key. This CA deploys its own certificate only on its second deploy, since the CA doesn't exist yet during the first one.
 
+## The network's tokens
+
+On a network whose secrets this host keeps, every deploy of it also makes and renews narrower tokens than the root token. Each is an orphan (revoking the root token doesn't revoke it), periodic (768h, renewed on every deploy), and named, so the audit log says whose it was:
+
+| Token | File | Policy |
+|---|---|---|
+| `deploy-<network>` | `secrets/<network>/<host>-deploy-token` | Read and write `<network>/*`, and read the mount's settings. The other hosts' deploys ([host_secrets](../host_secrets/tasks/main.yml)) use it instead of the root token once it exists. |
+| `<network>-<host>-read`, one per host except routers and this one | `secrets/<network>/<host>-read-token` | Read the host's own secrets, by exact path: `<network>/<host>`, and `<network>/<host>-users` for postgres. Nothing else, not even listing. |
+
+Each host's deploy puts its read-only token on the VM at `/etc/openbao/<host>.token`, readable only by root and kept out of the Nix store, with `/etc/openbao/env` (`BAO_ADDR`, `BAO_CACERT`), the `bao` CLI, and a daily timer that renews it. As root on the VM:
+
+```bash
+set -a; . /etc/openbao/env; set +a
+BAO_TOKEN=$(cat /etc/openbao/postgres.token) bao kv get lab/postgres
+```
+
+A host in the DMZ can't reach this host, so its timer fails; its deploys still renew it.
+
+A token that is missing, expired or revoked is made again on the next deploy of this host; `-e openbao_rotate_tokens=true` replaces them all and revokes the old ones. Destroying a host revokes its read-only token (its secret stays). The root token is then needed only by this host's own deploy.
+
+## Backups
+
+```bash
+ansible-playbook playbooks/openbao-backup.yaml -e network=home
+```
+
+saves a raft snapshot, everything OpenBao stores, encrypted, to `secrets/<network>/backups/<host>-<time>.snap`, readable only by you. Restoring it (`bao operator raft snapshot restore`) needs the unseal keys in `<host>-init.json`, so copy the two somewhere other than this machine together. `destroy-host` and `destroy-network` save one before deleting an openbao host, and stop if they can't (`-e openbao_skip_backup=true` to delete without). Nothing in `secrets/` is ever deleted by them.
+
 ## On an isolated network
 
 The network's VMs and VPN clients use `http://openbao.lab.home.arpa:8200`. To reach it from home, add a `proxy:` entry with `external: true` (HTTPS, preferred), or forward the port and redeploy the router:
@@ -224,7 +252,7 @@ Edit the host's entry or the files here and redeploy. An existing VM is updated 
 |---|---|
 | `files/configuration.nix` | NixOS configuration: OpenBao with raft storage, its user and the data disk mount |
 | `templates/openbao.nix.j2` | Generated settings: listener (and its TLS), API address, UI, audit log, firewall |
-| `tasks/` | `prepare.yml` (settings, saved keys), `configure.yml` (disk, switch, restart, init, unseal, KV mounts), `tls.yml` (the listener's certificate), `ssh-ca.yml` (the SSH user CA and its roles), `admins.yml` (logins, policies, MFA), `verify.yml`, `ports.yml` |
+| `tasks/` | `prepare.yml` (settings, saved keys), `configure.yml` (disk, switch, restart, init, unseal, KV mounts), `tls.yml` (the listener's certificate), `tokens.yml` (the network's deploy and read-only tokens), `ssh-ca.yml` (an SSH CA's key), `ssh-user-roles.yml` and `ssh-host-roles.yml` (their signing roles), `admins.yml` (logins, policies, MFA), `backup.yml` (a snapshot), `verify.yml`, `ports.yml` |
 | [`../host_secrets/`](../host_secrets/tasks/main.yml) | How the other hosts' deploys read their secrets from here (the `network_secrets_store` filter in [plugins/filter/network_config.py](../../plugins/filter/network_config.py) says where) |
 
 ## Removing it

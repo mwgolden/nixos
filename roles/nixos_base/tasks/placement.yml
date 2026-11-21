@@ -110,6 +110,15 @@
     state: absent
   when: proxmox_vm_new_clone
 
+# A new clone starts on the template's address with the template's host
+# key. The last clone there got its own key before it moved on
+# (identity.yml), and that key is what known_hosts has for the address.
+- name: Forget the last clone's host key for {{ template_ip }}
+  ansible.builtin.known_hosts:
+    name: "{{ template_ip }}"
+    state: absent
+  when: proxmox_vm_new_clone
+
 - name: Show where {{ vm.name }} is and where it goes
   ansible.builtin.debug:
     msg: >-

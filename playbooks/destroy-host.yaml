@@ -11,7 +11,9 @@
 # of its network still exist, since they would lose their only way out.
 # An openbao host holds the other hosts' secrets (see secrets/README.md):
 # before deleting it, the hosts whose .env file is gone are listed, since
-# their secrets go with it.
+# their secrets go with it, and a snapshot is saved to
+# secrets/<network>/backups/ (-e openbao_skip_backup=true to delete without).
+# Any other host's read-only OpenBao token is revoked; its secrets stay.
 # Only VMs tagged as the project's for this network (nixlab, net-<network>)
 # are deleted; deploying a VM tags it. Afterwards the network's diagram in
 # docs/network-diagrams/ shows the host as not deployed.
@@ -116,6 +118,101 @@
           vars:
             missing: "{{ destroy_secrets_files.results | rejectattr('stat.exists') | map(attribute='item.name') | list }}"
           when: missing | length > 0
+
+    # Over SSH, through the router on an isolated network.
+    - name: Add the VM and its router to the inventory
+      ansible.builtin.add_host:
+        name: "{{ item.id }}"
+        ansible_host: "{{ item.attach.ip }}"
+        ansible_user: admin
+        ansible_ssh_private_key_file: "{{ key }}"
+        ansible_ssh_common_args: >-
+          {{ (destroy_inventory.networks[item.attach.network].router_wan_ip if item.attach.via_router else '')
+             | nixlab_ssh_args(key) }}
+      loop: >-
+        {{ [destroy_vm] + ([destroy_inventory.hosts[destroy_vm.network.router_id]]
+                           if destroy_vm.network.router_id and destroy_vm.type != 'router' else []) }}
+      loop_control:
+        label: "{{ item.id }}"
+      vars:
+        key: "{{ lookup('env', 'NIXOS_DEPLOYMENT_PRIVATE_KEY') }}"
+
+    # Deleting the VM deletes everything OpenBao stores. -e
+    # openbao_skip_backup=true deletes it without (a VM that won't start).
+    - name: Back up the OpenBao first
+      when: destroy_vm.type == 'openbao' and not (openbao_skip_backup | default(false) | bool)
+      block:
+        - name: Save a snapshot of {{ host }}
+          ansible.builtin.include_role:
+            name: openbao
+            tasks_from: backup
+            apply:
+              delegate_to: "{{ destroy_vm.id }}"
+              become: true
+          vars:
+            vm: "{{ destroy_vm }}"
+            nixlab: "{{ destroy_inventory }}"
+      rescue:
+        - name: Stop without a backup
+          ansible.builtin.fail:
+            msg: >-
+              Couldn't save a snapshot of {{ host }}'s OpenBao, so nothing was
+              deleted. If it can't be reached any more and you accept losing
+              what it stores, run again with -e openbao_skip_backup=true.
+
+    # The token ends with the host. Its secret stays, as its .env file does.
+    - name: Revoke the host's read-only OpenBao token
+      when: destroy_vm.type not in ['router', 'openbao']
+      vars:
+        destroy_store: "{{ destroy_inventory | network_secrets_store(network) }}"
+        destroy_token_file: "{{ playbook_dir }}/../secrets/{{ network }}/{{ host }}-read-token"
+        destroy_via: "{{ destroy_store.via_router | default('') or 'localhost' }}"
+        destroy_ca: >-
+          {{ '' if not destroy_store.ca_file | default('')
+             else ('/tmp/nixlab-' ~ destroy_store.host_id ~ '-tls.crt') if destroy_store.via_router
+             else (playbook_dir ~ '/../' ~ destroy_store.ca_file) }}
+      block:
+        - name: Look for the host's token
+          ansible.builtin.stat:
+            path: "{{ destroy_token_file }}"
+          register: destroy_token
+
+        - name: Copy OpenBao's certificate to the router
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../{{ destroy_store.ca_file }}"
+            dest: "{{ destroy_ca }}"
+            mode: "0644"
+          delegate_to: "{{ destroy_via }}"
+          when: destroy_token.stat.exists and destroy_ca | length > 0 and destroy_store.via_router | length > 0
+
+        - name: Revoke the token
+          ansible.builtin.uri:
+            url: "{{ destroy_store.url }}/v1/auth/token/revoke-self"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ lookup('ansible.builtin.file', destroy_token_file) | trim }}"
+            ca_path: "{{ destroy_ca or omit }}"
+            status_code: [200, 204]
+          register: destroy_revoked
+          failed_when: false
+          delegate_to: "{{ destroy_via }}"
+          no_log: true
+          when: destroy_token.stat.exists and destroy_store | length > 0
+
+        - name: Say the token couldn't be revoked
+          ansible.builtin.debug:
+            msg: >-
+              Couldn't revoke {{ host }}'s read-only token in OpenBao
+              ({{ destroy_revoked.status | default('-') }}). It is still valid
+              until it expires (768h after its last renewal). Revoke it by hand:
+              bao token revoke $(cat secrets/{{ network }}/{{ host }}-read-token)
+          when: destroy_token.stat.exists and destroy_revoked.status | default(-1) not in [200, 204]
+
+        - name: Delete the token file
+          ansible.builtin.file:
+            path: "{{ destroy_token_file }}"
+            state: absent
+          when: destroy_token.stat.exists and destroy_revoked.status | default(-1) in [200, 204]
 
     - name: Delete the VM
       ansible.builtin.include_role:

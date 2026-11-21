@@ -25,6 +25,7 @@ host_secrets_file_short: "secrets/{{ vm.network.name }}/{{ host_secrets_name }}.
 # The root token the deploy uses, written by the openbao host's first
 # deploy. Missing means OpenBao hasn't been deployed yet.
 host_secrets_init_file: "{{ role_path }}/../../{{ host_secrets_store.init_file | default('') }}"
+host_secrets_deploy_token_file: "{{ role_path }}/../../{{ host_secrets_store.deploy_token_file | default('') }}"
 # Where the secrets are in OpenBao, for messages.
 host_secrets_path: "{{ host_secrets_store.mount | default('') }}/{{ host_secrets_name }}"
 host_secrets_deploy_openbao: >-
