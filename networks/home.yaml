@@ -13,6 +13,17 @@ network:
   # (template_ip in proxmox/vars.yaml), which are always reserved.
   reserved: []
 
+  # Which authorities this network uses. See README.md#security.
+  security:
+    strategy: centralized
+    # Hosts here trust the SSH user CA of the openbao host below.
+    administrative_identity:
+      instance: home.openbao
+    # Home's own secrets stay in secrets/home/
+    # (docs/plans/NETWORK-SECURITY.md, decision 10).
+    secrets:
+      provider: files
+
 hosts:
   - name: nats
     type: nats
@@ -49,3 +60,23 @@ hosts:
         - npm: "@anthropic-ai/claude-code"
         - uv: ruff
           version: "0.8.4"
+
+  # The SSH user CA for administrators (docs/plans/NETWORK-SECURITY.md).
+  # Its unseal keys and root token: secrets/home/openbao-init.json.
+  - name: openbao
+    type: openbao
+    vm_id: 120
+    ip: 192.168.1.20
+    data_disk:
+      size_gb: 10
+      storage: local-lvm
+    settings:
+      tls: self-signed           # certificate in secrets/home/openbao-tls.crt
+      ssh_user_ca: true          # public key in secrets/home/openbao-ssh-user-ca.pub
+      ssh_cert_max_ttl: 24h
+      admin_mfa: false
+      # Who may ask for certificates, such as
+      #   - {name: alice, roles: [homelab-admin, home-operator], mfa: true}
+      # Logins are made by hand; see roles/openbao/README.md,
+      # "Adding an administrator".
+      admins: []

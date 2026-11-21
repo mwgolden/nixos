@@ -8,6 +8,7 @@
     name: nixos_base
   vars:
     nixos_base_hostname: "{{ vm.name }}"
+    nixos_base_operator_user: "{{ workstation_user }}"
 
 - name: Create the folder for the password hash
   ansible.builtin.file:

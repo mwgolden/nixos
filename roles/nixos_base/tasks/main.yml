@@ -46,3 +46,36 @@
     host_prefix_length: "{{ final.prefix_length }}"
     host_gateway: "{{ final.gateway }}"
     host_nameserver: "{{ final.nameserver }}"
+
+# Which SSH user CA this host trusts, from its network's security: block.
+# Empty ({ }) with static keys only. common.nix imports it.
+- name: Install SSH certificate trust
+  ansible.builtin.template:
+    src: ssh-trust.nix.j2
+    dest: /etc/nixos/ssh-trust.nix
+    mode: "0644"
+  vars:
+    nixos_base_security: "{{ nixlab | network_security(vm.network.name) }}"
+    nixos_base_ca_instance: "{{ nixos_base_security.administrative_identity.instance }}"
+    nixos_base_ca_file: >-
+      {{ role_path }}/../../secrets/{{ nixos_base_ca_instance | replace('.', '/', 1) }}-ssh-user-ca.pub
+    nixos_base_ssh_trust:
+      instance: "{{ nixos_base_ca_instance }}"
+      ca_key: >-
+        {{ (lookup('ansible.builtin.file', nixos_base_ca_file, errors='ignore') or '') | trim
+           if nixos_base_ca_instance else '' }}
+      principals: "{{ nixos_base_security | ssh_trust_principals(nixos_base_operator_user) }}"
+
+- name: Say the SSH user CA isn't deployed yet
+  ansible.builtin.debug:
+    msg: >-
+      Network {{ vm.network.name }} trusts the SSH user CA of {{ nixos_base_ca_instance }},
+      but secrets/{{ nixos_base_ca_instance | replace('.', '/', 1) }}-ssh-user-ca.pub
+      doesn't exist yet, so {{ vm.name }} accepts static keys only for now.
+      Deploy {{ nixos_base_ca_instance }} (with settings.ssh_user_ca: true),
+      then this host again.
+  vars:
+    nixos_base_ca_instance: "{{ (nixlab | network_security(vm.network.name)).administrative_identity.instance }}"
+  when: >-
+    nixos_base_ca_instance | length > 0 and not
+    (role_path ~ '/../../secrets/' ~ (nixos_base_ca_instance | replace('.', '/', 1)) ~ '-ssh-user-ca.pub') is file

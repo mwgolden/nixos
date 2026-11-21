@@ -24,7 +24,12 @@ REPO_FILES = [{"file": p.stem, "config": yaml.safe_load(p.read_text())}
 
 
 def repo():
-    return copy.deepcopy(REPO_FILES)
+    """The repository's network files with every security: block removed,
+    so tests don't depend on what home or lab declare today."""
+    files = copy.deepcopy(REPO_FILES)
+    for f in files:
+        f["config"]["network"].pop("security", None)
+    return files
 
 
 def config(files, name):
@@ -35,9 +40,13 @@ def add_home_openbao(files, **settings):
     """The home network with an openbao host that signs SSH user
     certificates, as in section 2.1 of the plan."""
     settings = {"tls": "self-signed", "ssh_user_ca": True, **settings}
-    config(files, "home")["hosts"].append({
-        "name": "openbao", "type": "openbao", "vm_id": 120, "ip": "192.168.1.20",
-        "data_disk": {"size_gb": 10, "storage": "local-lvm"}, "settings": settings})
+    hosts = config(files, "home")["hosts"]
+    bao = next((h for h in hosts if h["name"] == "openbao"), None)
+    if bao is None:
+        bao = {"name": "openbao", "type": "openbao", "vm_id": 120, "ip": "192.168.1.20",
+               "data_disk": {"size_gb": 10, "storage": "local-lvm"}}
+        hosts.append(bao)
+    bao["settings"] = settings
     return files
 
 
@@ -77,9 +86,10 @@ class NoSecurityBlock(unittest.TestCase):
         inv = inventory(repo())
         for f in REPO_FILES:
             name = f["file"]
+            if "security" in f["config"]["network"]:
+                continue
             has_openbao = any(h["type"] == "openbao" for h in f["config"].get("hosts") or [])
             with self.subTest(network=name):
-                self.assertNotIn("security", f["config"]["network"])
                 self.assertEqual(nc.network_security(inv, name), {
                     "strategy": "current",
                     "administrative_identity": {"provider": "keys", "instance": "", "ssh_host_ca": False,
@@ -89,12 +99,22 @@ class NoSecurityBlock(unittest.TestCase):
                     "pki": {"provider": "proxy-internal", "instance": ""},
                 })
 
+    def test_repo_files_are_valid(self):
+        self.assertEqual(errors(copy.deepcopy(REPO_FILES)), [])
+
+    def test_home_keeps_secrets_in_files(self):
+        """home has an openbao host, but declares secrets: files
+        (decision 10), so nats keeps reading secrets/home/nats.env."""
+        self.assertEqual(nc.network_secrets_store(inventory(copy.deepcopy(REPO_FILES)), "home"), {})
+
     def test_secrets_store_is_unchanged(self):
         """network_secrets_store gives what it gave before: the network's
         openbao host when it has one, {} otherwise."""
         inv = inventory(repo())
         for f in REPO_FILES:
             name = f["file"]
+            if "security" in f["config"]["network"]:
+                continue
             bao = next((h for h in f["config"].get("hosts") or [] if h["type"] == "openbao"), None)
             store = nc.network_secrets_store(inv, name)
             with self.subTest(network=name):
@@ -172,10 +192,14 @@ class Presets(unittest.TestCase):
         self.assertEqual(sec["pki"], {"provider": "openbao", "instance": "agent-developer.openbao"})
 
     def test_not_deployed_settings_warn(self):
-        found = warnings(centralized(repo()))
-        self.assertTrue(any("administrative_identity is checked but not deployed yet" in w for w in found))
-        self.assertTrue(any("settings.ssh_user_ca is checked but not deployed yet" in w for w in found))
-        self.assertTrue(any("settings.tls is checked but not deployed yet" in w for w in found))
+        files = centralized(repo())
+        self.assertFalse([w for w in warnings(files) if "not deployed yet" in w])
+        config(files, "agent-developer")["network"]["security"]["pki"] = {"provider": "openbao"}
+        bao = next(h for h in config(files, "agent-developer")["hosts"] if h["type"] == "openbao")
+        bao["settings"] = {"pki": True}
+        found = warnings(files)
+        self.assertTrue(any("pki is checked but not deployed yet" in w for w in found))
+        self.assertTrue(any("settings.pki is checked but not deployed yet" in w for w in found))
 
 
 class Rejected(unittest.TestCase):
@@ -335,6 +359,88 @@ class Rejected(unittest.TestCase):
                                         "administrative_identity": {"instance": "home.openbao",
                                                                     "principals": {"admin": ["Bad Name"]}}}),
                          "principals.admin must be a list of names")
+
+
+class OpenbaoAuthority(unittest.TestCase):
+    """What an openbao host provides (phase 2)."""
+
+    def assertError(self, files, text):
+        found = errors(files)
+        self.assertTrue(any(text in e for e in found), f"no error containing {text!r} in {found}")
+
+    def test_admins_valid(self):
+        files = add_home_openbao(repo(), admins=[{"name": "alice", "roles": ["homelab-admin"]},
+                                                 {"name": "alice-mfa", "roles": ["homelab-admin"], "mfa": True}],
+                                 admin_mfa=False, admin_sources=["192.168.1.0/24", "192.168.1.5"],
+                                 ssh_cert_max_ttl="24h")
+        self.assertEqual(errors(files), [])
+
+    def test_admin_bad_name(self):
+        self.assertError(add_home_openbao(repo(), admins=[{"name": "Alice", "roles": ["homelab-admin"]}]),
+                         "name 'Alice' must be lowercase")
+
+    def test_admin_twice(self):
+        a = {"name": "alice", "roles": ["homelab-admin"]}
+        self.assertError(add_home_openbao(repo(), admins=[a, dict(a)]), "is listed twice")
+
+    def test_admin_without_roles(self):
+        self.assertError(add_home_openbao(repo(), admins=[{"name": "alice"}]), "roles must be a list")
+
+    def test_admin_unknown_key(self):
+        self.assertError(add_home_openbao(repo(), admins=[{"name": "alice", "roles": ["x"], "password": "p"}]),
+                         "unknown setting password")
+
+    def test_admin_mfa_not_bool(self):
+        self.assertError(add_home_openbao(repo(), admins=[{"name": "alice", "roles": ["x"], "mfa": "yes"}]),
+                         "mfa must be true or false")
+
+    def test_admins_need_ssh_user_ca(self):
+        self.assertError(add_home_openbao(repo(), ssh_user_ca=False, admins=[{"name": "a", "roles": ["x"]}]),
+                         "settings.admins needs settings.ssh_user_ca: true")
+
+    def test_bad_admin_sources(self):
+        self.assertError(add_home_openbao(repo(), admin_sources=["desktop"]), "admin_sources must be a list")
+
+    def test_bad_ttl(self):
+        self.assertError(add_home_openbao(repo(), ssh_cert_max_ttl="1 day"), "ssh_cert_max_ttl must be a duration")
+
+    def test_tls_pki_not_yet(self):
+        self.assertError(add_home_openbao(repo(), tls="pki"), "settings.tls: pki isn't available yet")
+
+
+class Filters(unittest.TestCase):
+    def test_ssh_roles(self):
+        files = centralized(repo())
+        set_security(files, "lab", {"strategy": "centralized",
+                                    "administrative_identity": {"instance": "home.openbao"}})
+        self.assertEqual(nc.openbao_ssh_roles(inventory(files), "home.openbao"), [
+            "homelab-admin", "agent-developer-admin", "agent-developer-operator",
+            "home-admin", "home-operator", "lab-admin", "lab-operator"])
+
+    def test_ssh_roles_follow_principals(self):
+        files = centralized(repo())
+        config(files, "agent-developer")["network"]["security"]["administrative_identity"]["principals"] = {
+            "admin": ["dev-root"], "operator": []}
+        roles = nc.openbao_ssh_roles(inventory(files), "home.openbao")
+        self.assertIn("dev-root", roles)
+        self.assertNotIn("agent-developer-admin", roles)
+
+    def test_ssh_admin_roles(self):
+        self.assertEqual(nc.openbao_ssh_admin_roles(inventory(centralized(repo())), "home.openbao"),
+                         ["agent-developer-admin", "home-admin", "homelab-admin"])
+
+    def test_ssh_roles_without_users(self):
+        self.assertEqual(nc.openbao_ssh_roles(inventory(repo()), "home.openbao"), ["homelab-admin"])
+
+    def test_trust_principals(self):
+        sec = nc.network_security(inventory(centralized(repo())), "agent-developer")
+        self.assertEqual(nc.ssh_trust_principals(sec, "dev"), {
+            "admin": ["homelab-admin", "agent-developer-admin"], "dev": ["agent-developer-operator"]})
+        self.assertEqual(nc.ssh_trust_principals(sec), {"admin": ["homelab-admin", "agent-developer-admin"]})
+
+    def test_trust_principals_keys(self):
+        sec = nc.network_security(inventory(repo()), "lab")
+        self.assertEqual(nc.ssh_trust_principals(sec, "dev"), {})
 
 
 if __name__ == "__main__":

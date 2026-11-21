@@ -99,6 +99,14 @@
         dest: /mnt/etc/nixos/common.nix
         mode: "0644"
 
+    # common.nix imports it. The template trusts no SSH CA; each VM's
+    # deploy writes its own (roles/nixos_base).
+    - name: Install empty SSH certificate trust
+      ansible.builtin.copy:
+        dest: /mnt/etc/nixos/ssh-trust.nix
+        content: "# Written by proxmox/scripts/install-nix.yaml; replaced by each VM's deploy.\n{ }\n"
+        mode: "0644"
+
     - name: Create NixOS configuration
       ansible.builtin.copy:
         dest: /mnt/etc/nixos/configuration.nix

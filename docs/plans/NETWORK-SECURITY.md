@@ -11,13 +11,31 @@ In short: each network file gets an optional `security:` block. It says which au
 | Phase | What it delivers | Status |
 |---|---|---|
 | 1 | `security:` schema, presets, validation. No change in behaviour | **done** (2026-11-21) |
-| 2 | Home OpenBao with TLS, SSH user CA, password login with optional MFA, hosts trust the CA, desktop script | not started |
+| 2 | Home OpenBao with TLS, SSH user CA, password login with optional MFA, hosts trust the CA, desktop script | **done** (2026-11-21), except running `scripts/ssh-cert` itself |
 | 2b | Unique SSH host keys per VM, then an SSH host CA | not started |
 | 3 | Network-local OpenBao hardening: deploy token, TLS, backups, isolation and outage checks | not started |
 | 4 | Offline root CA, per-network intermediates, the proxy gets certificates from OpenBao | not started |
 | 5 | `independent` strategy, switching authorities | not started |
 
 Phase 1 is in [network_config.py](../../plugins/filter/network_config.py): `check_security`, `check_openbao_authority`, `_resolve_security`, the `network_security` filter and the inventory's `network.security`. `network_secrets_store` now follows `secrets.provider`, so `secrets: {provider: files}` turns OpenBao off for a network's secrets. The tests are in `tests/test_security.py` (39 tests): every rule of section 2.4, the presets, and a check that every file in `networks/` resolves to what it did before. `validate-network.yaml` passes on the repository's files, and on a copy with the section 2.1 example. The settings that nothing deploys yet (`administrative_identity`, `pki`, and the openbao host's `tls`, `ssh_user_ca`, `ssh_host_ca` and `pki`) are validated and print a "not deployed yet" warning. Remove each warning in `NOT_DEPLOYED_YET` as its phase lands. The schema is in [networks/README.md](../../networks/README.md#security).
+
+Phase 2 is deployed on `home` (`home.openbao`, VM 120, at https://192.168.1.20:8200) and trusted by `home` and `lab`; `agent-developer` is untouched. What it added:
+
+- [roles/openbao](../../roles/openbao/README.md#ssh-certificates): `tls.yml` (4.2.2), `ssh-ca.yml` (4.2.3), `admins.yml` (4.2.4), the audit log and `admin_sources` in `templates/openbao.nix.j2`, and HTTPS in `configure.yml` and `verify.yml`.
+- [roles/nixos_base](../../roles/nixos_base/templates/ssh-trust.nix.j2): `ssh-trust.nix` on every host, imported by `common.nix` (4.2.5). The template build writes an empty one.
+- [scripts/ssh-cert](../../scripts/ssh-cert) (4.2.6), the `openbao_ssh_roles`, `openbao_ssh_admin_roles` and `ssh_trust_principals` filters, the trusted-CA check in [network_verify](../../roles/network_verify/tasks/main.yml), and more tests in `tests/test_security.py`.
+
+Live checks (4.2.7), run with two throwaway admins on `home` (nats, ws) and on `lab` (its router and webserver-lab, deployed for this), through OpenBao's API with `curl`:
+
+1. Certificates log in as the user their principal is for: `home-admin` as `admin` on nats and ws, `home-operator` as `dev` on ws (no sudo), `lab-admin` on the lab router and, through it with `ssh -J`, on webserver-lab. sshd logs the key ID (`userpass-<admin>-<role>`).
+2. Refused: `home-admin` on lab, `lab-admin` on home, an admin certificate as `dev`, an operator one as `admin`, an operator certificate as a jump, the key without a certificate.
+3. A 5-second certificate stops working when it expires; a session opened with it stays open.
+4. No certificate for a role the admin doesn't have, for another principal than the role's, or for more than 24h. With `mfa: true`: no token without a code or with a wrong one; with the right one, the admin's policy. With `mfa: false`, the password alone.
+5. With OpenBao stopped, an existing certificate still logs in and `deploy-host` of nats still works. Its redeploy unseals it.
+6. Ansible deploys with its static key throughout.
+7. `verify-network` on home and lab reports each host's CA as the network's.
+
+Differences from the plan, found while building it: admin certificates allow port forwarding (4.2.3); the audit log is configured, not enabled through the API (4.2.1); `userpass` can't make a login without a password, so new logins are made by hand with the root token and the deploy gives them their policies; TOTP enrolment uses the root token's `admin-generate`, since an admin with MFA on can't log in to enrol. **Not checked:** running `scripts/ssh-cert` itself, which needs the `bao` CLI on the desktop. Its `--list` and `--config` work; signing was checked with the same API calls through `curl`.
 
 ## 1. Where things stand
 
@@ -176,6 +194,8 @@ Before writing any role code, check that `pkgs.openbao` in the flake's nixpkgs h
 
 If login MFA is missing, the `admin_mfa` and `mfa` settings in 4.2.4 are left out until a version has it. Validation then rejects them, and logins use the password only.
 
+**Result (2026-11-21):** nixpkgs on the VMs (NixOS 26.05) has OpenBao 2.6.2. The SSH engine makes ed25519 CA keys; `userpass` works; TOTP methods and login enforcement work; PKI has ACME (`config/acme`). One difference: audit devices can't be enabled through the API in OpenBao 2.x ("use declarative, config-based audit device management"), so the audit log is in OpenBao's configuration file (`audit.file = {type, path, options}`).
+
 #### 4.2.2 TLS for OpenBao
 
 A new `tls` setting on the [openbao](../../roles/openbao/README.md) role, for every `openbao` host:
@@ -196,14 +216,14 @@ A new `tasks/ssh-ca.yml` in the openbao role, run when `ssh_user_ca: true`:
 
    | Role | `allowed_users` (principals) | TTL | Extensions |
    |---|---|---|---|
-   | `homelab-admin` | `homelab-admin` | 24 h, max 24 h | `permit-pty` |
-   | `<network>-admin` | `<network>-admin` | 24 h, max 24 h | `permit-pty` |
+   | `homelab-admin` | `homelab-admin` | 24 h, max 24 h | `permit-pty`, `permit-port-forwarding` |
+   | `<network>-admin` | `<network>-admin` | 24 h, max 24 h | `permit-pty`, `permit-port-forwarding` |
    | `<network>-operator` | `<network>-operator` | 24 h, max 24 h | `permit-pty` |
 
    `settings.ssh_cert_max_ttl` (default `24h`) sets both. OpenBao refuses anything longer. `scripts/ssh-cert --ttl 2h` asks for a shorter certificate.
 
-   `allow_user_key_ids: false` and `key_id_format: "{{token_display_name}}-{{role_name}}"`, so each certificate's key ID names who asked for it and appears in the hosts' sshd logs. No agent or port forwarding unless a role asks for it. Roles of networks that no longer use this instance are reported, not deleted.
-5. Enable a file audit device at `/var/lib/openbao/audit.log` on the data disk. Every signing is then recorded.
+   `allow_user_key_ids: false` and `key_id_format: "{{token_display_name}}-{{role_name}}"`, so each certificate's key ID names who asked for it and appears in the hosts' sshd logs. Admin roles allow port forwarding: the live checks found that `ssh -J` through an isolated network's router needs it, and admin certificates give root anyway. Operator roles allow a terminal only, so they can't be used as a jump. No role allows agent forwarding. Roles of networks that no longer use this instance are reported, not deleted.
+5. A file audit device at `/var/lib/openbao/audit.log` on the data disk, in OpenBao's configuration file (4.2.1). Every signing is then recorded.
 
 #### 4.2.4 Administrators and their login
 

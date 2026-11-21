@@ -2,11 +2,25 @@
 # reach it. Runs on localhost from roles/host_deploy. On an isolated network
 # only the router can reach OpenBao, so the check runs there.
 
+# A check from the router needs the certificate there.
+- name: Copy the certificate to the router
+  ansible.builtin.copy:
+    src: "{{ openbao_tls_cert_file }}"
+    dest: "/tmp/nixlab-{{ vm.network.name }}-{{ vm.name }}-tls.crt"
+    mode: "0644"
+  # Resolved even when skipped, so it must work without a router.
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+  when: openbao_tls != 'none' and final.via_router | length > 0
+
 # The health endpoint needs no token, and answers 200 only when OpenBao is
 # initialized, unsealed and active.
 - name: Check OpenBao answers
   ansible.builtin.uri:
     url: "{{ openbao_url }}/v1/sys/health"
+    ca_path: >-
+      {{ omit if openbao_tls == 'none'
+         else ('/tmp/nixlab-' ~ vm.network.name ~ '-' ~ vm.name ~ '-tls.crt') if final.via_router
+         else openbao_tls_cert_file }}
   register: openbao_check
   retries: 10
   delay: 3
@@ -18,11 +32,11 @@
     msg: >-
       {% if final.via_router -%}
       OpenBao is up on the isolated network at
-      http://{{ vm.name }}.{{ vm.network.domain }}:{{ openbao_port }}
+      {{ openbao_scheme }}://{{ vm.name }}.{{ vm.network.domain }}:{{ openbao_port }}
       ({{ final.ip }}), for VMs on that network.
       {% set forward = vm.expose | selectattr('port', 'equalto', openbao_port | int) | first | default(none) -%}
       {% if forward -%}
-      From home: http://{{ router_ip }}:{{ forward.wan_port }}. Redeploy the
+      From home: {{ openbao_scheme }}://{{ router_ip }}:{{ forward.wan_port }}. Redeploy the
       router if you just added this expose: entry.
       {%- else -%}
       To reach it from home, add a proxy: entry (HTTPS) or
@@ -35,3 +49,7 @@
       The root token and unseal keys are in
       secrets/{{ vm.network.name }}/{{ vm.name }}-init.json; keep a copy
       somewhere safe.
+      {%- if openbao_tls != 'none' %} Clients trust it with
+      {{ openbao_tls_cert_file_short }} (BAO_CACERT).{% endif %}
+      {%- if openbao_ssh_user_ca %} Its SSH user CA's public key is in
+      {{ openbao_ssh_user_ca_file_short }}; get certificates with scripts/ssh-cert.{% endif %}

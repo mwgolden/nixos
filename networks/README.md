@@ -144,7 +144,7 @@ Postgres's `settings.allowed_networks` takes network names as well as subnets. L
 
 An optional `security:` block in `network:` says which authorities the network uses. Without it, the network behaves as it always has: static SSH keys, its own `openbao` host for secrets if it has one (otherwise the `.env` files), and the proxy's internal CA. The design is in [docs/ARCHITECTURE.md §12](../docs/ARCHITECTURE.md#12-identity-secrets-and-certificate-authorities); the plan is [docs/plans/NETWORK-SECURITY.md](../docs/plans/NETWORK-SECURITY.md).
 
-**What deploys use today:** only `secrets.provider`. `administrative_identity`, `pki` and the openbao settings below are validated now, so files can be written ahead, but nothing is deployed from them yet. Validation warns when they are set.
+**What deploys use today:** `secrets.provider`, and `administrative_identity` without `ssh_host_ca`: hosts trust the named SSH user CA (see [roles/openbao](../roles/openbao/README.md#ssh-certificates)). `pki`, `ssh_host_ca` and `tls: pki` are validated, so files can be written ahead, but nothing is deployed from them yet; validation warns when they are set.
 
 ```yaml
 network:
@@ -184,7 +184,11 @@ What an `openbao` host provides goes in its `settings:`:
 | Setting | Values | Meaning |
 |---|---|---|
 | `tls` | `none` (default), `self-signed`, `pki` | HTTPS on its listener. Required when it signs anything. |
+| `admin_sources` | list of addresses or subnets | Who may reach its port. `[]` (default) is anyone. |
 | `ssh_user_ca` | `true`, `false` (default) | It signs administrators' SSH certificates. |
+| `ssh_cert_max_ttl` | duration, default `24h` | Longest certificate it signs. |
+| `admins` | list of `{name, roles, mfa}` | Who may ask for certificates, and for which roles (principals). |
+| `admin_mfa` | `true`, `false` (default) | Every admin also enters a TOTP code; an admin's `mfa:` overrides it. |
 | `ssh_host_ca` | `true`, `false` (default) | It signs hosts' SSH certificates. |
 | `pki` | `true`, `false` (default), or a mapping | It holds the network's TLS intermediate CA. |
 

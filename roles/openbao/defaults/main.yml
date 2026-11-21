@@ -15,6 +15,28 @@ openbao_settings_defaults:
   # removing a name doesn't delete the mount or its secrets.
   kv_mounts:
     - secret
+  # HTTPS on the listener: none (plain HTTP), self-signed (a key and
+  # certificate made on the VM; the certificate is copied to
+  # secrets/<network>/<host>-tls.crt for clients), or pki (phase 4 of
+  # docs/plans/NETWORK-SECURITY.md, not yet).
+  tls: none
+  # Addresses or subnets allowed to reach the port. [] means anyone who can
+  # reach the VM, as before.
+  admin_sources: []
+  # Sign administrators' SSH certificates (an SSH user CA). Needs tls.
+  ssh_user_ca: false
+  # Longest certificate it signs, and the TTL each role gives by default.
+  ssh_cert_max_ttl: 24h
+  # Administrators allowed to ask for certificates: {name, roles, mfa}.
+  # roles are principals such as homelab-admin or <network>-admin. See
+  # README.md, "SSH certificates".
+  admins: []
+  # Every admin needs a TOTP code as well as the password. An admin's own
+  # mfa: true or false overrides this.
+  admin_mfa: false
+  # Not yet: phase 2b and 4 of docs/plans/NETWORK-SECURITY.md.
+  ssh_host_ca: false
+  pki: false
 
 openbao_settings: "{{ openbao_settings_defaults | combine(vm.settings) }}"
 
@@ -45,6 +67,48 @@ openbao_pending_init_file: /root/openbao-init.json
 
 data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_openbao-data"
 
+openbao_tls: "{{ openbao_settings.tls }}"
+openbao_scheme: "{{ 'http' if openbao_tls == 'none' else 'https' }}"
+openbao_admin_sources: "{{ openbao_settings.admin_sources }}"
+# The listener's key and certificate on the VM, root-only. OpenBao gets
+# them through systemd's LoadCredential (see templates/openbao.nix.j2).
+openbao_tls_dir: /etc/openbao/tls
+openbao_tls_cert: "{{ openbao_tls_dir }}/cert.pem"
+openbao_tls_key: "{{ openbao_tls_dir }}/key.pem"
+# Made again when fewer days than this are left.
+openbao_tls_days: 730
+openbao_tls_renew_days: 30
+# Where clients find the certificate to trust it.
+openbao_tls_cert_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}-tls.crt"
+openbao_tls_cert_file_short: "secrets/{{ vm.network.name }}/{{ vm.name }}-tls.crt"
+# Names and addresses in the certificate.
+openbao_tls_names: >-
+  {{ ['IP:' ~ final.ip, 'IP:127.0.0.1', 'DNS:' ~ vm.name, 'DNS:localhost']
+     + (['DNS:' ~ vm.dns_name] if vm.dns_name else []) }}
+# What the deploy's own requests on the VM trust: the certificate, or
+# nothing (omit) with plain HTTP.
+openbao_uri_ca: "{{ openbao_tls_cert if openbao_tls != 'none' else '' }}"
+
+# ---- SSH user CA (tasks/ssh-ca.yml) and administrators (tasks/admins.yml) ----
+openbao_ssh_user_ca: "{{ openbao_settings.ssh_user_ca | bool }}"
+openbao_ssh_user_mount: ssh-client-signer
+openbao_ssh_cert_max_ttl: "{{ openbao_settings.ssh_cert_max_ttl }}"
+openbao_ssh_user_ca_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}-ssh-user-ca.pub"
+openbao_ssh_user_ca_file_short: "secrets/{{ vm.network.name }}/{{ vm.name }}-ssh-user-ca.pub"
+# homelab-admin, then <network>-admin and <network>-operator for every
+# network whose administrative_identity is this host.
+openbao_ssh_roles: "{{ nixlab | openbao_ssh_roles(vm.id) }}"
+# Those whose certificates may also forward ports (ssh -J through a router).
+openbao_ssh_admin_roles: "{{ nixlab | openbao_ssh_admin_roles(vm.id) }}"
+openbao_admins: "{{ openbao_settings.admins }}"
+openbao_admin_mfa: "{{ openbao_settings.admin_mfa | bool }}"
+openbao_userpass_mount: userpass
+# How long a login lasts: long enough to sign, then scripts/ssh-cert
+# revokes it.
+openbao_admin_token_ttl: 15m
+openbao_mfa_method_name: admins-totp
+openbao_audit_file: /var/lib/openbao/audit.log
+
 # The API as the deploy reaches it on the VM itself.
-openbao_local_url: "http://127.0.0.1:{{ openbao_port }}"
-openbao_url: "http://{{ final.ip }}:{{ openbao_port }}"
+openbao_local_url: "{{ openbao_scheme }}://127.0.0.1:{{ openbao_port }}"
+openbao_url: "{{ openbao_scheme }}://{{ final.ip }}:{{ openbao_port }}"

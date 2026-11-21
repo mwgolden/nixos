@@ -336,6 +336,7 @@ The target layout, reached in stages (see [PLAN.md](plans/completed/PLAN.md)):
 │   ├── home.yaml                # VMs directly on the home LAN
 │   └── lab.yaml                 # an isolated network behind a router VM
 ├── secrets/<network>/<host>.env # gitignored credentials
+├── scripts/ssh-cert             # SSH certificates from an OpenBao SSH user CA
 ├── playbooks/
 │   ├── validate-network.yaml
 │   ├── deploy-network.yaml
@@ -542,7 +543,7 @@ The workflow with SSH certificates:
 
 The private key never leaves the desktop. No private key is handed out to VMs.
 
-Authentication and authorization are separate. Principals name roles, such as `homelab-admin`, `<network>-admin` and `<network>-operator`. Signing policies limit each role's principals, lifetime and extensions. Hosts accept only principals they list for each user.
+Authentication and authorization are separate. Principals name roles, such as `homelab-admin`, `<network>-admin` and `<network>-operator`. Admin certificates also allow port forwarding, which jumping through an isolated network's router needs; operator certificates allow a terminal only. Signing policies limit each role's principals, lifetime and extensions. Hosts accept only principals they list for each user.
 
 Hosts never contact the authority. Its public key is written into their configuration by Ansible at deploy time, so isolated networks don't need any path to the home network. A redeploy updates an existing host in place, like any other configuration change, and doesn't recreate it. Each change to trust, such as a new CA or new principals, reaches a host on its next deploy. A valid certificate gives no connectivity. Administrators reach hosts over the same paths as before: the home LAN, the router's WAN SSH, a port forward, or the network's VPN.
 

@@ -1,0 +1,304 @@
+# Administrators who may ask the SSH user CA for certificates
+# (settings.admins; docs/plans/NETWORK-SECURITY.md, 4.2.4): a userpass
+# login each, a policy that lets it sign its roles and nothing else, an
+# identity entity, and TOTP for those with MFA on. Passwords and TOTP
+# enrolment are never set here; see README.md, "SSH certificates".
+# Included from configure.yml after ssh-ca.yml. Runs on the VM.
+
+- name: List the auth methods
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/auth"
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+  register: openbao_auth
+  no_log: true
+
+- name: Turn on userpass logins
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/auth/{{ openbao_userpass_mount }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      type: userpass
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204]
+  when: (openbao_userpass_mount ~ '/') not in openbao_auth.json.data
+  changed_when: true
+  no_log: true
+
+- name: Read the userpass accessor
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/auth"
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+  register: openbao_auth
+  no_log: true
+
+- name: Note the userpass accessor
+  ansible.builtin.set_fact:
+    openbao_userpass_accessor: "{{ openbao_auth.json.data[openbao_userpass_mount ~ '/'].accessor }}"
+
+# Writing a policy replaces it, so a changed roles: list applies.
+- name: Write each admin's policy
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/policies/acl/ssh-admin-{{ item.name }}"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      policy: |
+        # Written by roles/openbao from settings.admins of {{ vm.name }}.
+        {% for role in item.roles %}
+        path "{{ openbao_ssh_user_mount }}/sign/{{ role }}" {
+          capabilities = ["update"]
+        }
+        {% endfor %}
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_admins }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  no_log: true
+
+- name: List the userpass logins
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/{{ openbao_userpass_mount }}/users?list=true"
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 404]
+  register: openbao_userpass_users
+  no_log: true
+
+- name: Note which admins have a login
+  ansible.builtin.set_fact:
+    openbao_logins: "{{ openbao_userpass_users.json.data['keys'] | default([]) if openbao_userpass_users.status == 200 else [] }}"
+
+# Updating a login needs no password; making one does, so new logins are
+# made by hand (README.md).
+- name: Give each admin's login its policy
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/{{ openbao_userpass_mount }}/users/{{ item.name }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      token_policies: ["ssh-admin-{{ item.name }}"]
+      token_ttl: "{{ openbao_admin_token_ttl }}"
+      token_max_ttl: "{{ openbao_admin_token_ttl }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_admins | selectattr('name', 'in', openbao_logins) | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  no_log: true
+
+# Removed from settings.admins: the login stays, but signs nothing.
+- name: Take signing away from logins no longer in settings.admins
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/{{ openbao_userpass_mount }}/users/{{ item }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      token_policies: []
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_logins | difference(openbao_admins | map(attribute='name')) }}"
+  changed_when: true
+  no_log: true
+
+# ---- Identity entities ----
+# One per admin, named admin-<name>, with its userpass login as alias. MFA
+# is enforced per entity, and the audit log names it.
+
+- name: Read each admin's entity
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/identity/entity/name/admin-{{ item.name }}"
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 404]
+  loop: "{{ openbao_admins }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: openbao_entities
+  no_log: true
+
+- name: Make missing entities
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/identity/entity"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      name: "admin-{{ item.item.name }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_entities.results | selectattr('status', 'equalto', 404) | list }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  changed_when: true
+  no_log: true
+
+- name: Read each admin's entity again
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/identity/entity/name/admin-{{ item.name }}"
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+  loop: "{{ openbao_admins }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: openbao_entities
+  no_log: true
+
+- name: Note each admin's entity
+  ansible.builtin.set_fact:
+    openbao_entity_ids: >-
+      {{ dict(openbao_entities.results | map(attribute='item.name')
+              | zip(openbao_entities.results | map(attribute='json.data.id'))) }}
+    openbao_entity_aliases: >-
+      {{ dict(openbao_entities.results | map(attribute='item.name')
+              | zip(openbao_entities.results | map(attribute='json.data.aliases')
+                    | map('map', attribute='mount_accessor') | map('list'))) }}
+
+- name: Tie each login to its entity
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/identity/entity-alias"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      canonical_id: "{{ openbao_entity_ids[item.name] }}"
+      mount_accessor: "{{ openbao_userpass_accessor }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_admins }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: openbao_userpass_accessor not in openbao_entity_aliases[item.name]
+  changed_when: true
+  no_log: true
+
+# ---- MFA ----
+# One TOTP method, and a login enforcement listing the entities of admins
+# with MFA on. With none, the enforcement is removed; the method and
+# everyone's enrolment stay, so turning MFA on again needs no new code.
+
+- name: Note who needs MFA
+  ansible.builtin.set_fact:
+    openbao_mfa_admins: >-
+      {{ openbao_admins | selectattr('mfa', 'defined') | selectattr('mfa') | map(attribute='name') | list
+         + (openbao_admins | rejectattr('mfa', 'defined') | map(attribute='name') | list
+            if openbao_admin_mfa else []) }}
+
+- name: List the TOTP methods
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/identity/mfa/method/totp?list=true"
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 404]
+  register: openbao_totp_methods
+  no_log: true
+
+- name: Find the admins' TOTP method
+  ansible.builtin.set_fact:
+    openbao_mfa_method_id: >-
+      {{ (openbao_totp_methods.json.data.key_info | default({}) | dict2items
+          | selectattr('value.name', 'equalto', openbao_mfa_method_name)
+          | map(attribute='key') | first | default(''))
+         if openbao_totp_methods.status == 200 else '' }}
+
+- name: Make the admins' TOTP method
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/identity/mfa/method/totp"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      method_name: "{{ openbao_mfa_method_name }}"
+      issuer: "nixlab {{ vm.id }}"
+      period: 30
+      digits: 6
+      algorithm: SHA1
+    ca_path: "{{ openbao_uri_ca or omit }}"
+  register: openbao_totp_made
+  when: openbao_mfa_admins | length > 0 and not openbao_mfa_method_id
+  changed_when: true
+  no_log: true
+
+- name: Note the new TOTP method
+  ansible.builtin.set_fact:
+    openbao_mfa_method_id: "{{ openbao_totp_made.json.data.method_id }}"
+  when: openbao_totp_made is changed
+
+- name: Enforce MFA for those admins
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/identity/mfa/login-enforcement/{{ openbao_mfa_method_name }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      mfa_method_ids: ["{{ openbao_mfa_method_id }}"]
+      identity_entity_ids: "{{ openbao_mfa_admins | map('extract', openbao_entity_ids) | list }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204]
+  when: openbao_mfa_admins | length > 0
+  changed_when: false
+  no_log: true
+
+- name: Stop enforcing MFA
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/identity/mfa/login-enforcement/{{ openbao_mfa_method_name }}"
+    method: DELETE
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204, 404]
+  register: openbao_mfa_off
+  when: openbao_mfa_admins | length == 0
+  changed_when: openbao_mfa_off.status in [200, 204]
+  no_log: true
+
+# ---- What's left to do by hand ----
+
+- name: Report admins who still need a login
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.name }} in settings.admins of {{ vm.name }} has no login yet, so
+      it can't ask for certificates. With BAO_ADDR={{ openbao_url }},
+      BAO_CACERT={{ openbao_tls_cert_file_short }} and the root token from
+      secrets/{{ vm.network.name }}/{{ vm.name }}-init.json as BAO_TOKEN, run
+      bao write auth/{{ openbao_userpass_mount }}/users/{{ item.name }} password=-
+      (it asks for the password), then redeploy {{ vm.name }} to give it its roles.
+  loop: "{{ openbao_admins | rejectattr('name', 'in', openbao_logins) | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Report how to enrol admins in TOTP
+  ansible.builtin.debug:
+    msg: >-
+      MFA is on for {{ item }}. If they haven't enrolled yet, they can't log
+      in. Enrol them once with the root token (as above):
+      bao write identity/mfa/method/totp/admin-generate
+      method_id={{ openbao_mfa_method_id }} entity_id={{ openbao_entity_ids[item] }}
+      and scan the url in its answer (otpauth://...) with an authenticator
+      app, or turn the barcode field (a base64 PNG) into an image. Running it
+      again makes a new code and the old one stops working.
+  loop: "{{ openbao_mfa_admins }}"

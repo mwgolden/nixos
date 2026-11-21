@@ -1,6 +1,8 @@
 # Installs and switches to the openbao VM's NixOS configuration, then
 # initializes OpenBao on the first deploy, unseals it and mounts its KV
-# secrets engines. Runs on the VM with become: true, from roles/host_deploy.
+# secrets engines. With settings.tls, makes the listener's certificate
+# first (tls.yml); with settings.ssh_user_ca, sets up the SSH user CA and
+# its administrators last (ssh-ca.yml, admins.yml). Runs on the VM with become: true, from roles/host_deploy.
 
 - name: Install the shared NixOS configuration
   ansible.builtin.include_role:
@@ -14,6 +16,10 @@
     src: openbao.nix.j2
     dest: /etc/nixos/openbao.nix
     mode: "0644"
+
+- name: Make the listener's key and certificate
+  ansible.builtin.include_tasks: tls.yml
+  when: openbao_tls == 'self-signed'
 
 - name: Install openbao NixOS configuration
   ansible.builtin.copy:
@@ -53,7 +59,7 @@
   ansible.builtin.systemd_service:
     name: openbao
     state: restarted
-  when: openbao_running.stdout == 'changed'
+  when: openbao_running.stdout == 'changed' or openbao_tls_changed | default(false)
 
 - name: Start OpenBao
   ansible.builtin.systemd_service:
@@ -64,6 +70,7 @@
 - name: Wait for OpenBao's API
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/seal-status"
+    ca_path: "{{ openbao_uri_ca or omit }}"
   register: openbao_seal
   retries: 20
   delay: 3
@@ -92,6 +99,7 @@
       umask 077 &&
       /run/current-system/sw/bin/bao operator init
       -address={{ openbao_local_url }}
+      {{ ('-ca-cert=' ~ openbao_uri_ca) if openbao_uri_ca else '' }}
       -key-shares={{ openbao_key_shares }}
       -key-threshold={{ openbao_key_threshold }}
       -format=json > {{ openbao_pending_init_file }}.new &&
@@ -165,12 +173,14 @@
 - name: Read the seal status
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/seal-status"
+    ca_path: "{{ openbao_uri_ca or omit }}"
   register: openbao_seal
   changed_when: false
 
 - name: Unseal OpenBao
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/unseal"
+    ca_path: "{{ openbao_uri_ca or omit }}"
     method: POST
     body_format: json
     body:
@@ -184,6 +194,7 @@
 - name: Wait for OpenBao to be active
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/health"
+    ca_path: "{{ openbao_uri_ca or omit }}"
   register: openbao_health
   retries: 20
   delay: 3
@@ -195,6 +206,7 @@
 - name: List the secrets engines
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/mounts"
+    ca_path: "{{ openbao_uri_ca or omit }}"
     headers:
       X-Vault-Token: "{{ openbao_init.root_token }}"
     status_code: [200, 403]
@@ -217,6 +229,7 @@
 - name: Mount KV secrets engines
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/mounts/{{ item }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
     method: POST
     headers:
       X-Vault-Token: "{{ openbao_init.root_token }}"
@@ -229,3 +242,13 @@
   loop: "{{ [openbao_network_mount] + openbao_kv_mounts }}"
   when: (item ~ '/') not in openbao_mounts.json.data
   changed_when: true
+
+# ---- SSH user CA and its administrators ----
+
+- name: Set up the SSH user CA
+  ansible.builtin.include_tasks: ssh-ca.yml
+  when: openbao_ssh_user_ca
+
+- name: Set up the administrators
+  ansible.builtin.include_tasks: admins.yml
+  when: openbao_ssh_user_ca

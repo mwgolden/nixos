@@ -3,6 +3,10 @@
 { config, lib, pkgs, ... }:
 
 {
+  # Which SSH user CA this host trusts, if any. Written by roles/nixos_base
+  # from the network's security: block.
+  imports = [ ./ssh-trust.nix ];
+
   environment.systemPackages = with pkgs; [
               python3
               git

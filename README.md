@@ -90,6 +90,7 @@ To build your own network, start from [networks/README.md](networks/README.md), 
 | `roles/`                     | One role per host type (its NixOS configuration and service setup), plus shared roles: creating and removing VMs, reading the network files, finding a VM and switching it to its network. See [roles/README.md](roles/README.md) |
 | `playbooks/`                 | `deploy-network.yaml`, `deploy-host.yaml`, `destroy-network.yaml`, `destroy-host.yaml`, `validate-network.yaml`, `verify-network.yaml`, `diagram-network.yaml` and `postgres-users.yaml` |
 | `secrets/`                   | Host passwords and keys, gitignored. See [secrets/README.md](secrets/README.md) |
+| `scripts/ssh-cert`           | Gets SSH certificates from an OpenBao SSH user CA. See [roles/openbao/README.md](roles/openbao/README.md#ssh-certificates) |
 | `docs/`                      | [ARCHITECTURE.md](docs/ARCHITECTURE.md), the design and its decisions, and [plans/](docs/plans/) for changes to it |
 | `docs/network-diagrams/`     | One diagram per network, written by deploys. See [Network diagrams](#network-diagrams) |
 | `Dockerfile`, `start_container.sh` | Nix build container                                     |

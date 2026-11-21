@@ -110,13 +110,14 @@ OPENBAO_AUTHORITY_BOOLS = ("ssh_user_ca", "ssh_host_ca")
 # of docs/plans/NETWORK-SECURITY.md that implements them. Validation warns
 # when they are set, so no one thinks they are in effect.
 NOT_DEPLOYED_YET = {
-    "administrative_identity": "phase 2",
     "pki": "phase 4",
-    "ssh_user_ca": "phase 2",
     "ssh_host_ca": "phase 2b",
-    "tls": "phase 2",
+    "tls: pki": "phase 4",
     "openbao pki": "phase 4",
 }
+OPENBAO_ADMIN_KEYS = {"name", "roles", "mfa"}
+ADMIN_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+TTL_RE = re.compile(r"^[1-9][0-9]*[smh]$")
 
 
 def network_domain(net):
@@ -695,10 +696,49 @@ class _Checker:
         if signs and tls == "none":
             self.error(where, f"settings.{' and '.join(signs)} needs settings.tls (self-signed or pki): "
                               "administrators' logins to a signing authority must not cross the network in clear.")
-        for key in OPENBAO_AUTHORITY_BOOLS + ("tls",):
-            if settings.get(key) not in (None, False, "none"):
-                self.warn(where, f"settings.{key} is checked but not deployed yet "
-                                 f"({NOT_DEPLOYED_YET[key]} of docs/plans/NETWORK-SECURITY.md).")
+        if settings.get("ssh_host_ca") is True:
+            self.warn(where, "settings.ssh_host_ca is checked but not deployed yet "
+                             f"({NOT_DEPLOYED_YET['ssh_host_ca']} of docs/plans/NETWORK-SECURITY.md).")
+        if tls == "pki":
+            self.error(where, "settings.tls: pki isn't available yet "
+                              f"({NOT_DEPLOYED_YET['tls: pki']} of docs/plans/NETWORK-SECURITY.md); use self-signed.")
+        for key in ("admin_mfa",):
+            if key in settings and not isinstance(settings[key], bool):
+                self.error(where, f"settings.{key} must be true or false.")
+        ttl = settings.get("ssh_cert_max_ttl")
+        if ttl is not None and not (isinstance(ttl, str) and TTL_RE.match(ttl)):
+            self.error(where, f"settings.ssh_cert_max_ttl must be a duration such as 24h or 90m, not {ttl!r}.")
+        sources = settings.get("admin_sources", [])
+        if not isinstance(sources, list) or not all(
+                _addr(x) is not None or _net(x) is not None for x in sources):
+            self.error(where, "settings.admin_sources must be a list of IPv4 addresses or subnets (host bits zero).")
+        admins = settings.get("admins", [])
+        if not isinstance(admins, list):
+            self.error(where, "settings.admins must be a list of {name, roles, mfa}.")
+            admins = []
+        seen = set()
+        for admin in admins:
+            if not isinstance(admin, dict):
+                self.error(where, f"settings.admins: {admin!r} must be a mapping with name and roles.")
+                continue
+            name = admin.get("name")
+            label = f"settings.admins entry {name}"
+            if not isinstance(name, str) or not ADMIN_NAME_RE.match(name):
+                self.error(where, f"settings.admins: name '{name}' must be lowercase letters, digits, '_' and '-', "
+                                  "starting with a letter.")
+            elif name in seen:
+                self.error(where, f"{label} is listed twice.")
+            seen.add(name)
+            for key in sorted(set(admin) - OPENBAO_ADMIN_KEYS):
+                self.error(where, f"{label}: unknown setting {key}.")
+            roles = admin.get("roles")
+            if not isinstance(roles, list) or not roles or not all(
+                    isinstance(r, str) and PRINCIPAL_RE.match(r) for r in roles):
+                self.error(where, f"{label}: roles must be a list of principals such as homelab-admin.")
+            if "mfa" in admin and not isinstance(admin["mfa"], bool):
+                self.error(where, f"{label}: mfa must be true or false.")
+        if admins and settings.get("ssh_user_ca") is not True:
+            self.error(where, "settings.admins needs settings.ssh_user_ca: true; admins ask its SSH user CA for certificates.")
         if settings.get("pki"):
             self.warn(where, "settings.pki is checked but not deployed yet "
                              f"({NOT_DEPLOYED_YET['openbao pki']} of docs/plans/NETWORK-SECURITY.md).")
@@ -766,8 +806,9 @@ class _Checker:
                                   "secrets.provider files contradicts it. Use strategy centralized or current.")
 
         if admin["provider"] == "openbao":
-            self.warn(where, "administrative_identity is checked but not deployed yet "
-                             f"({NOT_DEPLOYED_YET['administrative_identity']} of docs/plans/NETWORK-SECURITY.md).")
+            if admin["ssh_host_ca"]:
+                self.warn(where, "administrative_identity.ssh_host_ca is checked but not deployed yet "
+                                 f"({NOT_DEPLOYED_YET['ssh_host_ca']} of docs/plans/NETWORK-SECURITY.md).")
             if not admin["instance"]:
                 self.error(where, "administrative_identity needs an instance: the openbao host whose SSH user CA "
                                   "this network's hosts trust, such as home.openbao.")
@@ -1525,6 +1566,49 @@ def network_security(inventory, network):
     return inventory["networks"][network]["security"]
 
 
+def openbao_ssh_roles(inventory, instance):
+    """The SSH signing roles an openbao host with ssh_user_ca needs, one per
+    principal: homelab-admin, then every principal of every network whose
+    administrative_identity is this host (by default <network>-admin and
+    <network>-operator). Sorted, homelab-admin first."""
+    names = set()
+    for net in inventory["networks"].values():
+        ai = net["security"]["administrative_identity"]
+        if ai["provider"] == "openbao" and ai["instance"] == instance:
+            for principals in ai["principals"].values():
+                names.update(principals)
+    names.discard("homelab-admin")
+    return ["homelab-admin"] + sorted(names)
+
+
+def openbao_ssh_admin_roles(inventory, instance):
+    """Which of openbao_ssh_roles are admin roles: homelab-admin and every
+    network's admin principals. Their certificates also allow port
+    forwarding, which ssh -J through an isolated network's router needs;
+    they give root already, so it adds nothing they can't do. Operator
+    roles get a terminal only."""
+    names = {"homelab-admin"}
+    for net in inventory["networks"].values():
+        ai = net["security"]["administrative_identity"]
+        if ai["provider"] == "openbao" and ai["instance"] == instance:
+            names.update(ai["principals"].get("admin", []))
+    return sorted(names)
+
+
+def ssh_trust_principals(security, operator_user=""):
+    """Which principals each local user of a host accepts, for
+    /etc/ssh/auth_principals/<user>: admin always, and operator_user (a
+    workstation's user) when there is one. {} when the network uses static
+    keys only."""
+    ai = security["administrative_identity"]
+    if ai["provider"] != "openbao":
+        return {}
+    result = {"admin": list(ai["principals"].get("admin", []))}
+    if operator_user and operator_user != "admin":
+        result[operator_user] = list(ai["principals"].get("operator", []))
+    return result
+
+
 def network_secrets_store(inventory, network):
     """Where a network's hosts' secrets are kept when it has an openbao
     host, or {} when it has none (then they are only in files, see
@@ -1813,6 +1897,9 @@ class FilterModule:
             "network_config_deploy_order": network_config_deploy_order,
             "network_secrets_store": network_secrets_store,
             "network_security": network_security,
+            "openbao_ssh_roles": openbao_ssh_roles,
+            "openbao_ssh_admin_roles": openbao_ssh_admin_roles,
+            "ssh_trust_principals": ssh_trust_principals,
             "nixlab_tags": nixlab_tags,
             "proxmox_tags_merge": proxmox_tags_merge,
             "proxmox_tags_list": _tags,

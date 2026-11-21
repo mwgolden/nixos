@@ -72,3 +72,31 @@
       there. Restore it from your backup.
     quiet: true
   when: openbao_init_stat.stat.exists
+
+# networks/ validation checks the settings' shapes; this needs the
+# inventory: which roles exist depends on the networks that trust this host.
+- name: Check the admins' roles
+  ansible.builtin.assert:
+    that:
+      - item.roles | difference(openbao_ssh_roles) | length == 0
+    fail_msg: >-
+      settings.admins of {{ vm.name }} in networks/{{ vm.network.name }}.yaml:
+      {{ item.name }} has roles this CA doesn't sign:
+      {{ item.roles | difference(openbao_ssh_roles) | join(', ') }}. It signs
+      {{ openbao_ssh_roles | join(', ') }}: homelab-admin, and the principals
+      of every network whose administrative_identity is {{ vm.id }}.
+    quiet: true
+  loop: "{{ openbao_admins }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: openbao_ssh_user_ca
+
+- name: Refuse settings that aren't deployed yet
+  ansible.builtin.assert:
+    that:
+      - openbao_tls in ['none', 'self-signed']
+      - not (openbao_settings.ssh_host_ca | bool)
+    fail_msg: >-
+      settings of {{ vm.name }}: tls: pki and ssh_host_ca: true aren't
+      deployed yet (phases 4 and 2b of docs/plans/NETWORK-SECURITY.md).
+    quiet: true

@@ -2,7 +2,8 @@
 {
   services.openbao.settings = {
     ui = {{ 'true' if openbao_ui | bool else 'false' }};
-    # Where clients reach this node. Plain HTTP; see roles/openbao/README.md.
+    # Where clients reach this node.{% if openbao_tls == 'none' %} Plain HTTP; see roles/openbao/README.md.{% endif %}
+
     api_addr = "{{ openbao_url }}";
     cluster_addr = "http://127.0.0.1:{{ openbao_cluster_port }}";
 
@@ -10,9 +11,43 @@
       type = "tcp";
       address = "0.0.0.0:{{ openbao_port }}";
       cluster_address = "127.0.0.1:{{ openbao_cluster_port }}";
+{% if openbao_tls == 'none' %}
       tls_disable = true;
+{% else %}
+      tls_disable = false;
+      # Copied in by systemd from {{ openbao_tls_dir }}, which only root can read.
+      tls_cert_file = "/run/credentials/openbao.service/tls-cert";
+      tls_key_file = "/run/credentials/openbao.service/tls-key";
+      tls_min_version = "tls12";
+{% endif %}
     };
-  };
+{% if openbao_ssh_user_ca %}
 
+    # Every request and answer, with secrets hashed. OpenBao only accepts
+    # audit devices from its configuration, not through the API.
+    audit.file = {
+      type = "file";
+      path = "file";
+      options.file_path = "{{ openbao_audit_file }}";
+    };
+{% endif %}
+  };
+{% if openbao_tls != 'none' %}
+
+  systemd.services.openbao.serviceConfig.LoadCredential = [
+    "tls-cert:{{ openbao_tls_cert }}"
+    "tls-key:{{ openbao_tls_key }}"
+  ];
+{% endif %}
+
+{% if openbao_admin_sources | length > 0 %}
+  # Only these sources may reach port {{ openbao_port }} (settings.admin_sources).
+  networking.firewall.extraCommands = ''
+{% for source in openbao_admin_sources %}
+    iptables -A nixos-fw -p tcp -s {{ source }} --dport {{ openbao_port }} -j nixos-fw-accept
+{% endfor %}
+  '';
+{% else %}
   networking.firewall.allowedTCPPorts = [ {{ openbao_port }} ];
+{% endif %}
 }

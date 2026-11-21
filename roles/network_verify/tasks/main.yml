@@ -185,3 +185,36 @@
             {%- endif -%}
           {%- endfor -%}
           {{ p }}
+
+# The SSH user CA the host trusts must be the one its network's security:
+# block names (docs/plans/NETWORK-SECURITY.md, 4.2.5), and none with static
+# keys only.
+- name: Check which SSH user CA {{ vm.name }} trusts
+  when: verify_ssh is succeeded
+  vars:
+    verify_ca_instance: "{{ (nixlab | network_security(vm.network.name)).administrative_identity.instance }}"
+    verify_ca_file: >-
+      {{ playbook_dir }}/../secrets/{{ verify_ca_instance | replace('.', '/', 1) }}-ssh-user-ca.pub
+    verify_ca_wanted: >-
+      {{ (lookup('ansible.builtin.file', verify_ca_file, errors='ignore') or '') | trim
+         if verify_ca_instance else '' }}
+  block:
+    - name: Read the trusted SSH user CA
+      ansible.builtin.command:
+        cmd: cat /etc/ssh/trusted-user-ca.pub
+      register: verify_ca
+      changed_when: false
+      failed_when: false
+
+    - name: Note a CA that isn't the network's
+      ansible.builtin.set_fact:
+        verify_problems: >-
+          {{ verify_problems + [
+               ('it trusts no SSH user CA, but its network uses ' ~ verify_ca_instance ~ '; redeploy it.')
+                 if verify_ca_wanted and verify_ca.rc != 0 else
+               ('it trusts an SSH user CA that isn\'t ' ~ verify_ca_instance ~ '\'s (secrets/'
+                ~ (verify_ca_instance | replace('.', '/', 1)) ~ '-ssh-user-ca.pub); redeploy it.')
+                 if verify_ca_wanted and (verify_ca.stdout | trim) != verify_ca_wanted else
+               ('it trusts an SSH user CA, but its network uses static keys only; redeploy it.')
+                 if not verify_ca_instance and verify_ca.rc == 0 else '' ]
+             | select | list }}

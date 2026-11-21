@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# Gets short-lived SSH certificates from an OpenBao SSH user CA, one file per
+# role. See docs/plans/NETWORK-SECURITY.md, section 4.2.6, and
+# roles/openbao/README.md ("SSH certificates").
+#
+#   scripts/ssh-cert [options] <role>...     sign one certificate per role
+#   scripts/ssh-cert --list                  every certificate, its principal and expiry
+#   scripts/ssh-cert --clean                 delete expired certificates
+#   scripts/ssh-cert --config <network>...   print ~/.ssh/config blocks for networks
+#
+# Options:
+#   --ttl <duration>   such as 2h or 30m; at most the role's maximum (24h by default)
+#   --key <path>       private key whose public key is signed (default ~/.ssh/id_ed25519)
+#   --user <name>      OpenBao login (default $NIXLAB_BAO_USER, else $USER)
+#   --instance <id>    the CA's host, as <network>.<host> (default home.openbao)
+#   --addr <url>       OpenBao's address (default: read from networks/<network>.yaml)
+#
+# Certificates go to ~/.ssh/nixlab/<role>-cert.pub. Nothing is written to
+# ~/.ssh/config: --config prints blocks to paste there. The OpenBao token is
+# used for these requests only and revoked before the script ends.
+
+set -euo pipefail
+
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+dir="$HOME/.ssh/nixlab"
+key="$HOME/.ssh/id_ed25519"
+ttl=""
+user="${NIXLAB_BAO_USER:-${USER:-}}"
+instance="home.openbao"
+addr=""
+mode="sign"
+args=()
+
+die() { echo "ssh-cert: $*" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --ttl) ttl="${2:?--ttl needs a duration}"; shift 2 ;;
+    --key) key="${2:?--key needs a path}"; shift 2 ;;
+    --user) user="${2:?--user needs a name}"; shift 2 ;;
+    --instance) instance="${2:?--instance needs <network>.<host>}"; shift 2 ;;
+    --addr) addr="${2:?--addr needs a URL}"; shift 2 ;;
+    --list) mode="list"; shift ;;
+    --clean) mode="clean"; shift ;;
+    --config) mode="config"; shift ;;
+    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) die "unknown option $1 (see --help)" ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+# Seconds until a certificate expires; negative once expired.
+seconds_left() {
+  local valid to
+  valid=$(ssh-keygen -L -f "$1" | sed -n 's/^ *Valid: from [^ ]* to //p')
+  [ "$valid" = "forever" ] && { echo 999999999; return; }
+  to=$(date -d "$valid" +%s 2>/dev/null) || { echo 0; return; }
+  echo $(( to - $(date +%s) ))
+}
+
+principals() {
+  ssh-keygen -L -f "$1" | awk '/Principals:/{p=1; next} /Critical Options:/{p=0} p{gsub(/^ +/, ""); print}' | paste -sd, -
+}
+
+list() {
+  shopt -s nullglob
+  local files=("$dir"/*-cert.pub)
+  [ ${#files[@]} -gt 0 ] || { echo "No certificates in $dir."; return; }
+  printf '%-34s %-34s %s\n' FILE PRINCIPALS EXPIRES
+  for f in "${files[@]}"; do
+    local left state
+    left=$(seconds_left "$f")
+    if [ "$left" -le 0 ]; then state="expired"
+    else state="in $((left / 3600))h $(((left % 3600) / 60))m"; fi
+    printf '%-34s %-34s %s\n' "$(basename "$f")" "$(principals "$f")" "$state"
+  done
+}
+
+clean() {
+  shopt -s nullglob
+  local n=0
+  for f in "$dir"/*-cert.pub; do
+    if [ "$(seconds_left "$f")" -le 0 ]; then rm -f "$f"; echo "Deleted $(basename "$f")"; n=$((n + 1)); fi
+  done
+  [ "$n" -gt 0 ] || echo "No expired certificates."
+}
+
+# A network's DNS domain and address prefix, from its file in networks/.
+network_facts() {
+  python3 - "$repo/networks/$1.yaml" <<'EOF'
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit("python3 has no yaml module; pass --addr, or install PyYAML")
+net = yaml.safe_load(open(sys.argv[1]))["network"]
+domain = net.get("domain") or f"{net['name']}.home.arpa"
+prefix = ".".join(str(net["cidr"]).split("/")[0].split(".")[:3]) + ".*"
+print(net["type"], domain, prefix)
+EOF
+}
+
+config() {
+  [ ${#args[@]} -gt 0 ] || die "--config needs one or more network names"
+  for net in "${args[@]}"; do
+    [ -f "$repo/networks/$net.yaml" ] || die "no networks/$net.yaml"
+    read -r type domain prefix < <(network_facts "$net")
+    # A home network's DNS isn't this project's, so its hosts are reached by address.
+    local patterns="*.$domain $prefix"
+    [ "$type" = "home" ] && patterns="$prefix"
+    cat <<EOF
+Host $patterns
+    IdentityFile $key
+    IdentitiesOnly yes
+    CertificateFile $dir/$net-admin-cert.pub
+    CertificateFile $dir/$net-operator-cert.pub
+    CertificateFile $dir/homelab-admin-cert.pub
+
+EOF
+  done
+}
+
+openbao_addr() {
+  [ -n "$addr" ] && { echo "$addr"; return; }
+  [ -n "${BAO_ADDR:-}" ] && { echo "$BAO_ADDR"; return; }
+  local net=${instance%%.*} host=${instance#*.}
+  python3 - "$repo/networks/$net.yaml" "$host" <<'EOF'
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit("python3 has no yaml module; pass --addr, or install PyYAML")
+hosts = yaml.safe_load(open(sys.argv[1])).get("hosts") or []
+h = next((h for h in hosts if h.get("name") == sys.argv[2] and h.get("type") == "openbao"), None)
+if h is None:
+    sys.exit(f"{sys.argv[1]} has no openbao host {sys.argv[2]}")
+s = h.get("settings") or {}
+scheme = "http" if s.get("tls", "none") == "none" else "https"
+print(f"{scheme}://{h['ip']}:{s.get('port', 8200)}")
+EOF
+}
+
+sign() {
+  [ ${#args[@]} -gt 0 ] || die "name at least one role, such as homelab-admin (see --help)"
+  [ -f "$key.pub" ] || die "no public key at $key.pub (use --key)"
+  [ -n "$user" ] || die "no OpenBao user; pass --user or set NIXLAB_BAO_USER"
+  command -v bao >/dev/null || die "the bao CLI isn't installed (nix shell nixpkgs#openbao)"
+
+  local net=${instance%%.*} host=${instance#*.}
+  BAO_ADDR=$(openbao_addr); export BAO_ADDR
+  local ca="$repo/secrets/$net/$host-tls.crt"
+  if [ -z "${BAO_CACERT:-}" ] && [ -f "$ca" ]; then export BAO_CACERT="$ca"; fi
+  case "$BAO_ADDR" in
+    http://*) die "$BAO_ADDR is plain HTTP; the CA needs settings.tls so your password doesn't cross the network in clear" ;;
+  esac
+
+  mkdir -p "$dir"; chmod 700 "$dir"
+  echo "Logging in to $BAO_ADDR as $user."
+  local token
+  # -no-store keeps the token out of ~/.vault-token; it is revoked below.
+  token=$(bao login -method=userpass -no-store -token-only username="$user") || die "login failed"
+  trap 'BAO_TOKEN="$token" bao token revoke -self >/dev/null 2>&1 || true' EXIT
+
+  for role in "${args[@]}"; do
+    local out="$dir/$role-cert.pub" extra=()
+    [ -n "$ttl" ] && extra=(ttl="$ttl")
+    if ! BAO_TOKEN="$token" bao write -field=signed_key "ssh-client-signer/sign/$role" \
+        public_key=@"$key.pub" valid_principals="$role" "${extra[@]}" > "$out.new"; then
+      rm -f "$out.new"
+      echo "ssh-cert: no certificate for $role (is it one of your roles?)" >&2
+      continue
+    fi
+    mv "$out.new" "$out"; chmod 644 "$out"
+    local left; left=$(seconds_left "$out")
+    echo
+    echo "$role: $out, valid for $((left / 3600))h $(((left % 3600) / 60))m"
+    echo "  ssh -i $key -o IdentitiesOnly=yes -o CertificateFile=$out <user>@<host>"
+  done
+}
+
+case "$mode" in
+  list) list ;;
+  clean) clean ;;
+  config) config ;;
+  sign) sign ;;
+esac
