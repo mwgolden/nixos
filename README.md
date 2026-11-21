@@ -60,7 +60,7 @@ You need a Proxmox host, and Docker and [uv](https://docs.astral.sh/uv/) on your
 6. **Open the site.** Point the name at the router's `wan_ip` in `/etc/hosts`, then browse to `https://web.test.home.arpa/`. To avoid the browser's certificate warning, trust `secrets/test/test-proxy-ca.crt`.
 
    ```text
-   192.168.1.20  web.test.home.arpa
+   192.168.1.90  web.test.home.arpa
    ```
 
 7. **Remove it** when you're done, including its bridges:
