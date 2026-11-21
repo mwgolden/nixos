@@ -17,34 +17,34 @@ network:
   name: test
   type: isolated
   bridge: vmbr2
-  cidr: 10.2.0.0/24
-  gateway: 10.2.0.1
-  nameserver: 10.2.0.1
+  cidr: 10.9.0.0/24
+  gateway: 10.9.0.1
+  nameserver: 10.9.0.1
   upstream: home
   dhcp:
-    start: 10.2.0.100
-    end: 10.2.0.199
+    start: 10.9.0.100
+    end: 10.9.0.199
     lease_time: 12h
 
   # A second bridge behind the router for published hosts. They reach the
   # LAN only through the proxy's routes and reach: entries.
   dmz:
-    bridge: vmbr3
-    cidr: 10.2.1.0/24
-    gateway: 10.2.1.1
+    bridge: vmbr6
+    cidr: 10.9.1.0/24
+    gateway: 10.9.1.1
 
 hosts:
   - name: test-router
     type: router
     vm_id: 901
-    ip: 10.2.0.1
+    ip: 10.9.0.1
     # Must be free on the home LAN.
-    wan_ip: 192.168.1.20
+    wan_ip: 192.168.1.90
 
   - name: test-web
     type: webserver
     vm_id: 902
-    ip: 10.2.0.11
+    ip: 10.9.0.11
     # Served by test-proxy as https://web.test.home.arpa/. The proxy is in
     # the DMZ, so the router lets it reach port 80 here. external: the
     # router also forwards its 443 and 80 to the proxy, so the site works
@@ -53,20 +53,19 @@ hosts:
       - name: web
         port: 80
         external: true
-        external: true
 
   - name: test-proxy
     type: proxy
     zone: dmz
     vm_id: 903
-    ip: 10.2.1.10
+    ip: 10.9.1.10
 
   # An LDAP server, with its web interface at https://users.test.home.arpa/.
   # Needs secrets/test/test-ldap.env first: copy roles/ldap/env.example.
   # - name: test-ldap
   #   type: ldap
   #   vm_id: 904
-  #   ip: 10.2.0.12
+  #   ip: 10.9.0.12
   #   proxy:
   #     - name: users
   #       port: 17170
