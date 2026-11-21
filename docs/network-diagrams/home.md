@@ -12,7 +12,7 @@ flowchart TB
         h_ws["ws, VM 109<br/>workstation, 192.168.1.19"]
         h_openbao["openbao, VM 120<br/>openbao, 192.168.1.20"]
         r_agent_developer["router of agent-developer, VM 301<br/>WAN 192.168.1.31"]
-        r_lab["router of lab, VM 113<br/>WAN 192.168.1.13"]
+        r_lab["router of lab, VM 113<br/>WAN 192.168.1.13<br/>not deployed"]
         r_workstation_lab["router of workstation-lab, VM 223<br/>WAN 192.168.1.3<br/>not deployed"]
     end
     gw <--> h_nats
@@ -22,7 +22,7 @@ flowchart TB
     gw <--> r_lab
     gw <--> r_workstation_lab
     classDef pending stroke-dasharray: 5 5
-    class r_workstation_lab pending
+    class r_lab,r_workstation_lab pending
 ```
 
 ## Hosts

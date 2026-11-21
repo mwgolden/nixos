@@ -79,4 +79,7 @@ hosts:
       #   - {name: alice, roles: [homelab-admin, home-operator], mfa: true}
       # Logins are made by hand; see roles/openbao/README.md,
       # "Adding an administrator".
-      admins: []
+      admins:
+        - name: admin
+          roles:
+            - homelab-admin
