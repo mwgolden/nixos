@@ -1,0 +1,131 @@
+# An SSH host certificate for this VM, from its network's SSH host CA
+# (administrative_identity.ssh_host_ca; docs/plans/NETWORK-SECURITY.md,
+# 4.3). Kept while it is for this host key, this CA and these names, with
+# more than nixos_base_host_cert_renew_days left; otherwise this machine
+# asks the CA for a new one. If the CA can't be reached, the old one stays
+# and the deploy goes on. Included from main.yml, after identity.yml gave
+# the VM its own host key. Runs on the VM with become: true. Sets
+# nixos_base_host_cert (whether the VM has one), for ssh-trust.nix.
+
+- name: Note the SSH host CA
+  ansible.builtin.set_fact:
+    nixos_base_host_ca: "{{ nixlab | openbao_endpoint(nixos_base_security.administrative_identity.instance) }}"
+    nixos_base_host_ca_pub: >-
+      {{ role_path }}/../../secrets/{{ nixos_base_security.administrative_identity.instance | replace('.', '/', 1) }}-ssh-host-ca.pub
+    nixos_base_host_principals: "{{ vm | ssh_host_principals }}"
+
+- name: Look for the SSH host CA's public key
+  ansible.builtin.stat:
+    path: "{{ nixos_base_host_ca_pub }}"
+  register: nixos_base_host_ca_pub_stat
+  delegate_to: localhost
+  become: false
+
+- name: Read the SSH host CA's fingerprint
+  ansible.builtin.command:
+    cmd: ssh-keygen -lf {{ nixos_base_host_ca_pub }}
+  register: nixos_base_host_ca_fp
+  changed_when: false
+  delegate_to: localhost
+  become: false
+  when: nixos_base_host_ca_pub_stat.stat.exists
+
+# Prints keep, or why it needs a new one.
+- name: Check the host certificate
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      c=/etc/ssh/ssh_host_ed25519_key-cert.pub
+      [ -f "$c" ] || { echo missing; exit 0; }
+      info=$(ssh-keygen -L -f "$c")
+      ca=$(printf '%s\n' "$info" | sed -n 's/^ *Signing CA: [^ ]* \([^ ]*\).*/\1/p')
+      key=$(printf '%s\n' "$info" | sed -n 's/^ *Public key: [^ ]* \([^ ]*\).*/\1/p')
+      host=$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')
+      to=$(printf '%s\n' "$info" | sed -n 's/^ *Valid: from [^ ]* to //p')
+      names=$(printf '%s\n' "$info" | awk '/Principals:/{p=1; next} /Critical Options:/{p=0} p{print $1}' | sort | paste -sd, -)
+      [ "$ca" = "{{ (nixos_base_host_ca_fp.stdout | default('')).split(' ')[1] | default('') }}" ] || { echo "another CA"; exit 0; }
+      [ "$key" = "$host" ] || { echo "another host key"; exit 0; }
+      [ "$names" = "{{ nixos_base_host_principals | sort | join(',') }}" ] || { echo "other names"; exit 0; }
+      [ "$to" = forever ] || [ "$(date -d "$to" +%s)" -gt $(( $(date +%s) + {{ nixos_base_host_cert_renew_days * 86400 }} )) ] || { echo "expiring"; exit 0; }
+      echo keep
+  register: nixos_base_host_cert_state
+  changed_when: false
+  when: nixos_base_host_ca_pub_stat.stat.exists
+
+- name: Get a new host certificate
+  when:
+    - nixos_base_host_ca_pub_stat.stat.exists
+    - nixos_base_host_cert_state.stdout != 'keep'
+  block:
+    - name: Read the host public key
+      ansible.builtin.slurp:
+        src: /etc/ssh/ssh_host_ed25519_key.pub
+      register: nixos_base_host_pub
+
+    # From this machine, which reaches the home OpenBao directly.
+    - name: Ask {{ nixos_base_security.administrative_identity.instance }} to sign it
+      ansible.builtin.uri:
+        url: "{{ nixos_base_host_ca.url }}/v1/ssh-host-signer/sign/hosts-{{ vm.network.name }}"
+        method: POST
+        headers:
+          X-Vault-Token: >-
+            {{ (lookup('ansible.builtin.file', role_path ~ '/../../' ~ nixos_base_host_ca.init_file) | from_json).root_token }}
+        body_format: json
+        body:
+          public_key: "{{ nixos_base_host_pub.content | b64decode | trim }}"
+          cert_type: host
+          valid_principals: "{{ nixos_base_host_principals | join(',') }}"
+        ca_path: "{{ (role_path ~ '/../../' ~ nixos_base_host_ca.ca_file) if nixos_base_host_ca.ca_file else omit }}"
+        status_code: [200]
+      register: nixos_base_host_signed
+      failed_when: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Say the host certificate couldn't be renewed
+      ansible.builtin.debug:
+        msg: >-
+          {{ vm.name }} needs a new SSH host certificate ({{ nixos_base_host_cert_state.stdout }}),
+          but {{ nixos_base_security.administrative_identity.instance }} answered
+          {{ 'nothing' if nixos_base_host_signed.status | default(-1) == -1
+             else 'HTTP ' ~ nixos_base_host_signed.status }}{{ ': ' ~ (nixos_base_host_signed.json.errors | default([]) | join('; '))
+             if nixos_base_host_signed.json is defined else '' }}.
+          It keeps the certificate it has, if any; deploy it again once the CA is up.
+      when: nixos_base_host_signed.status | default(-1) != 200
+
+    - name: Install the host certificate
+      ansible.builtin.copy:
+        content: "{{ nixos_base_host_signed.json.data.signed_key | trim }}\n"
+        dest: /etc/ssh/ssh_host_ed25519_key-cert.pub
+        owner: root
+        group: root
+        mode: "0644"
+      when: nixos_base_host_signed.status | default(-1) == 200
+      register: nixos_base_host_cert_new
+
+    # sshd reads it when it starts or reloads. The first time, the switch
+    # also adds HostCertificate and restarts it.
+    - name: Make sshd use the new certificate
+      ansible.builtin.systemd_service:
+        name: sshd
+        state: reloaded
+      when: nixos_base_host_cert_new is changed
+
+- name: Look for the host certificate
+  ansible.builtin.stat:
+    path: /etc/ssh/ssh_host_ed25519_key-cert.pub
+  register: nixos_base_host_cert_stat
+
+- name: Note whether the VM has a host certificate
+  ansible.builtin.set_fact:
+    nixos_base_host_cert: "{{ nixos_base_host_cert_stat.stat.exists }}"
+
+- name: Say the SSH host CA isn't deployed yet
+  ansible.builtin.debug:
+    msg: >-
+      Network {{ vm.network.name }} gets SSH host certificates from
+      {{ nixos_base_security.administrative_identity.instance }}, but
+      secrets/{{ nixos_base_security.administrative_identity.instance | replace('.', '/', 1) }}-ssh-host-ca.pub
+      doesn't exist yet. Deploy it (with settings.ssh_host_ca: true), then this host again.
+  when: not nixos_base_host_ca_pub_stat.stat.exists

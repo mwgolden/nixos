@@ -19,6 +19,8 @@ network:
     # Hosts here trust the SSH user CA of the openbao host below.
     administrative_identity:
       instance: home.openbao
+      # Hosts here also get SSH host certificates from it.
+      ssh_host_ca: true
     # Home's own secrets stay in secrets/home/
     # (docs/plans/NETWORK-SECURITY.md, decision 10).
     secrets:
@@ -73,6 +75,7 @@ hosts:
     settings:
       tls: self-signed           # certificate in secrets/home/openbao-tls.crt
       ssh_user_ca: true          # public key in secrets/home/openbao-ssh-user-ca.pub
+      ssh_host_ca: true          # public key in secrets/home/openbao-ssh-host-ca.pub
       ssh_cert_max_ttl: 24h
       admin_mfa: false
       # Who may ask for certificates, such as

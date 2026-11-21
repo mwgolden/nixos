@@ -12,7 +12,7 @@ In short: each network file gets an optional `security:` block. It says which au
 |---|---|---|
 | 1 | `security:` schema, presets, validation. No change in behaviour | **done** (2026-11-21) |
 | 2 | Home OpenBao with TLS, SSH user CA, password login with optional MFA, hosts trust the CA, desktop script | **done** (2026-11-21), except running `scripts/ssh-cert` itself |
-| 2b | Unique SSH host keys per VM, then an SSH host CA | not started |
+| 2b | Unique SSH host keys per VM, then an SSH host CA | **done** (2026-11-21) |
 | 3 | Network-local OpenBao hardening: deploy token, TLS, backups, isolation and outage checks | not started |
 | 4 | Offline root CA, per-network intermediates, the proxy gets certificates from OpenBao | not started |
 | 5 | `independent` strategy, switching authorities | not started |
@@ -36,6 +36,13 @@ Live checks (4.2.7), run with two throwaway admins on `home` (nats, ws) and on `
 7. `verify-network` on home and lab reports each host's CA as the network's.
 
 Differences from the plan, found while building it: admin certificates allow port forwarding (4.2.3); the audit log is configured, not enabled through the API (4.2.1); `userpass` can't make a login without a password, so new logins are made by hand with the root token and the deploy gives them their policies; TOTP enrolment uses the root token's `admin-generate`, since an admin with MFA on can't log in to enrol. **Not checked:** running `scripts/ssh-cert` itself, which needs the `bao` CLI on the desktop. Its `--list` and `--config` work; signing was checked with the same API calls through `curl`.
+
+Phase 2b is deployed on `home` (openbao, nats, ws):
+
+- **Own host keys** ([identity.yml](../../roles/nixos_base/tasks/identity.yml)): after the MAC check, a VM whose `/etc/ssh/nixlab-host-keys-vm` doesn't hold its VM ID gets new ed25519 and RSA host keys, sshd is restarted with them (the old ones come back if it doesn't start), and this machine's `known_hosts` entry for its address is replaced. That marker, rather than comparing with the template's fingerprint as 4.3 planned, needs no fingerprint in `proxmox/vars.yaml` and also covers VMs deployed before this change.
+- **Host CA** ([ssh-host-roles.yml](../../roles/openbao/tasks/ssh-host-roles.yml)): `ssh-host-signer/` with one role per network, `hosts-<network>`, allowed only that network's hosts' names and addresses (`openbao_ssh_host_roles`). `ssh-ca.yml` is now shared by both CAs; the user CA's roles moved to `ssh-user-roles.yml`.
+- **Host certificates** ([host-cert.yml](../../roles/nixos_base/tasks/host-cert.yml)): signed for a year, kept while they match the key, CA and names with 30 days left, `HostCertificate` in `ssh-trust.nix`. `scripts/ssh-cert --trust-hosts` prints the `@cert-authority` lines; `network_verify` checks the certificate.
+- **Checked live:** each VM reported a new host key; with only the `@cert-authority` line in `known_hosts` and `StrictHostKeyChecking=yes`, all three hosts are accepted and without it refused; nats's certificate is refused when presented as ws ("name is not a listed principal"); a redeploy keeps the certificate and the keys; `verify-network` on home is clean.
 
 ## 1. Where things stand
 

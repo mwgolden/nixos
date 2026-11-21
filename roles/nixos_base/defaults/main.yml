@@ -8,3 +8,6 @@ nixos_base_data_disk_serial: ""
 # The workstation's user, whose principals come from the network's
 # administrative_identity.principals.operator. '' on other host types.
 nixos_base_operator_user: ""
+
+# A host certificate with fewer days left than this is renewed on deploy.
+nixos_base_host_cert_renew_days: 30

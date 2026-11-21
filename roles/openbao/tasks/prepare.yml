@@ -95,8 +95,7 @@
   ansible.builtin.assert:
     that:
       - openbao_tls in ['none', 'self-signed']
-      - not (openbao_settings.ssh_host_ca | bool)
     fail_msg: >-
-      settings of {{ vm.name }}: tls: pki and ssh_host_ca: true aren't
-      deployed yet (phases 4 and 2b of docs/plans/NETWORK-SECURITY.md).
+      settings of {{ vm.name }}: tls: pki isn't deployed yet (phase 4 of
+      docs/plans/NETWORK-SECURITY.md).
     quiet: true

@@ -1,0 +1,31 @@
+# The SSH host CA's signing roles (docs/plans/NETWORK-SECURITY.md, 4.3):
+# hosts-<network> for every network whose administrative_identity is this
+# host with ssh_host_ca, allowed only that network's hosts' names and
+# addresses. The hosts' own deploys ask for the certificates
+# (roles/nixos_base, host-cert.yml). Included from configure.yml after
+# ssh-ca.yml. Runs on the VM.
+
+- name: Write the host signing roles
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_ssh_host_mount }}/roles/{{ item.name }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      key_type: ca
+      allow_host_certificates: true
+      allow_user_certificates: false
+      allowed_domains: "{{ item.principals | join(',') }}"
+      allow_bare_domains: true
+      allow_subdomains: false
+      ttl: "{{ openbao_ssh_host_cert_ttl }}"
+      max_ttl: "{{ openbao_ssh_host_cert_ttl }}"
+      key_id_format: !unsafe "host-{{role_name}}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_ssh_host_roles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  no_log: true

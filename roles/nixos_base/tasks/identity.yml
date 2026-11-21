@@ -24,3 +24,75 @@
       but VM {{ vm_id }}'s net0 is {{ vm_mac }}. It is a different VM.
       Nothing was changed on it.
     quiet: true
+
+# ---- Its own SSH host keys ----
+# Every clone starts with the template's host keys, so they can't tell VMs
+# apart (and host certificates would vouch for every clone at once). Make
+# this VM its own, once: /etc/ssh/nixlab-host-keys-vm says which VM the
+# keys were made for. The old keys are kept until sshd runs with the new
+# ones, and put back if it doesn't, so a failure can't lock the deploy out.
+
+- name: Read which VM the SSH host keys were made for
+  ansible.builtin.slurp:
+    src: /etc/ssh/nixlab-host-keys-vm
+  register: nixos_base_hostkey_marker
+  failed_when: false
+  become: true
+
+- name: Give {{ vm.name }} its own SSH host keys
+  when: >-
+    (nixos_base_hostkey_marker.content | default('') | b64decode | trim) != (vm_id | string)
+  block:
+    - name: Make new SSH host keys and restart sshd with them
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          cd /etc/ssh
+          mkdir -p nixlab-old-host-keys
+          rm -f new_ed25519 new_ed25519.pub new_rsa new_rsa.pub
+          ssh-keygen -q -t ed25519 -N "" -C "root@{{ vm.name }}" -f new_ed25519
+          ssh-keygen -q -t rsa -b 4096 -N "" -C "root@{{ vm.name }}" -f new_rsa
+          cp -p ssh_host_ed25519_key ssh_host_ed25519_key.pub ssh_host_rsa_key ssh_host_rsa_key.pub nixlab-old-host-keys/ 2>/dev/null || true
+          mv new_ed25519 ssh_host_ed25519_key; mv new_ed25519.pub ssh_host_ed25519_key.pub
+          mv new_rsa ssh_host_rsa_key; mv new_rsa.pub ssh_host_rsa_key.pub
+          rm -f ssh_host_ed25519_key-cert.pub
+          if ! systemctl restart sshd || ! systemctl is-active --quiet sshd; then
+            cp -p nixlab-old-host-keys/* . && systemctl restart sshd
+            echo "sshd didn't start with the new keys; the old ones are back" >&2
+            exit 1
+          fi
+          printf '%s\n' "{{ vm_id }}" > nixlab-host-keys-vm
+          rm -rf nixlab-old-host-keys
+      changed_when: true
+      become: true
+
+    # Open sessions keep working; new ones see the new key, which
+    # StrictHostKeyChecking=accept-new then records.
+    - name: Forget the template's host key for {{ ansible_host }}
+      ansible.builtin.known_hosts:
+        name: "{{ ansible_host }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+
+    - name: Reconnect with the new host key
+      ansible.builtin.meta: reset_connection
+
+    - name: Wait for login with the new host key
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+    - name: Read the new host key's fingerprint
+      ansible.builtin.command:
+        cmd: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+      register: nixos_base_hostkey_fp
+      changed_when: false
+
+    - name: Report the new host key
+      ansible.builtin.debug:
+        msg: >-
+          {{ vm.name }} has its own SSH host key now: {{ nixos_base_hostkey_fp.stdout }}.
+          This machine's known_hosts entry for {{ ansible_host }} was replaced.
+          Others that recorded the template's key for it (another machine, or
+          a DNS name) warn that it changed: remove them with
+          ssh-keygen -R <name or address>.

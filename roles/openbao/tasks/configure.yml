@@ -247,7 +247,31 @@
 
 - name: Set up the SSH user CA
   ansible.builtin.include_tasks: ssh-ca.yml
+  vars:
+    openbao_ca_kind: user
+    openbao_ca_mount: "{{ openbao_ssh_user_mount }}"
+    openbao_ca_file: "{{ openbao_ssh_user_ca_file }}"
+    openbao_ca_file_short: "{{ openbao_ssh_user_ca_file_short }}"
+    openbao_ca_trusted_by: hosts of every network that trusts it
   when: openbao_ssh_user_ca
+
+- name: Write the SSH user CA's signing roles
+  ansible.builtin.include_tasks: ssh-user-roles.yml
+  when: openbao_ssh_user_ca
+
+- name: Set up the SSH host CA
+  ansible.builtin.include_tasks: ssh-ca.yml
+  vars:
+    openbao_ca_kind: host
+    openbao_ca_mount: "{{ openbao_ssh_host_mount }}"
+    openbao_ca_file: "{{ openbao_ssh_host_ca_file }}"
+    openbao_ca_file_short: "{{ openbao_ssh_host_ca_file_short }}"
+    openbao_ca_trusted_by: the machines you SSH from (scripts/ssh-cert --trust-hosts)
+  when: openbao_ssh_host_ca
+
+- name: Write the SSH host CA's signing roles
+  ansible.builtin.include_tasks: ssh-host-roles.yml
+  when: openbao_ssh_host_ca
 
 - name: Set up the administrators
   ansible.builtin.include_tasks: admins.yml

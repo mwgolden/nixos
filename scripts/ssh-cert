@@ -7,6 +7,7 @@
 #   scripts/ssh-cert --list                  every certificate, its principal and expiry
 #   scripts/ssh-cert --clean                 delete expired certificates
 #   scripts/ssh-cert --config <network>...   print ~/.ssh/config blocks for networks
+#   scripts/ssh-cert --trust-hosts <network>...  print known_hosts lines trusting their host CA
 #
 # Options:
 #   --ttl <duration>   such as 2h or 30m; at most the role's maximum (24h by default)
@@ -43,7 +44,8 @@ while [ $# -gt 0 ]; do
     --list) mode="list"; shift ;;
     --clean) mode="clean"; shift ;;
     --config) mode="config"; shift ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --trust-hosts) mode="trust"; shift ;;
+    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option $1 (see --help)" ;;
     *) args+=("$1"); shift ;;
   esac
@@ -120,6 +122,36 @@ EOF
   done
 }
 
+# known_hosts lines (@cert-authority) for each network whose hosts get
+# certificates from an SSH host CA.
+trust_hosts() {
+  [ ${#args[@]} -gt 0 ] || die "--trust-hosts needs one or more network names"
+  for net in "${args[@]}"; do
+    [ -f "$repo/networks/$net.yaml" ] || die "no networks/$net.yaml"
+    python3 - "$repo" "$net" <<'EOF'
+import sys, pathlib
+try:
+    import yaml
+except ImportError:
+    sys.exit("python3 has no yaml module; install PyYAML")
+repo, name = pathlib.Path(sys.argv[1]), sys.argv[2]
+net = yaml.safe_load((repo / "networks" / f"{name}.yaml").read_text())["network"]
+ai = (net.get("security") or {}).get("administrative_identity") or {}
+if not ai.get("ssh_host_ca"):
+    print(f"# {name}: no SSH host CA (administrative_identity.ssh_host_ca isn't set)", file=sys.stderr)
+    sys.exit(0)
+ca_net, ca_host = ai["instance"].split(".", 1)
+pub = repo / "secrets" / ca_net / f"{ca_host}-ssh-host-ca.pub"
+if not pub.exists():
+    sys.exit(f"{pub} doesn't exist yet: deploy {ai['instance']} first")
+domain = net.get("domain") or f"{name}.home.arpa"
+prefix = ".".join(str(net["cidr"]).split("/")[0].split(".")[:3]) + ".*"
+patterns = [prefix] if net["type"] == "home" else [f"*.{domain}", prefix]
+print(f"@cert-authority {','.join(patterns)} {pub.read_text().strip()} nixlab {name} hosts")
+EOF
+  done
+}
+
 openbao_addr() {
   [ -n "$addr" ] && { echo "$addr"; return; }
   [ -n "${BAO_ADDR:-}" ] && { echo "$BAO_ADDR"; return; }
@@ -182,5 +214,6 @@ case "$mode" in
   list) list ;;
   clean) clean ;;
   config) config ;;
+  trust) trust_hosts ;;
   sign) sign ;;
 esac

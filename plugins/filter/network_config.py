@@ -111,7 +111,6 @@ OPENBAO_AUTHORITY_BOOLS = ("ssh_user_ca", "ssh_host_ca")
 # when they are set, so no one thinks they are in effect.
 NOT_DEPLOYED_YET = {
     "pki": "phase 4",
-    "ssh_host_ca": "phase 2b",
     "tls: pki": "phase 4",
     "openbao pki": "phase 4",
 }
@@ -696,18 +695,16 @@ class _Checker:
         if signs and tls == "none":
             self.error(where, f"settings.{' and '.join(signs)} needs settings.tls (self-signed or pki): "
                               "administrators' logins to a signing authority must not cross the network in clear.")
-        if settings.get("ssh_host_ca") is True:
-            self.warn(where, "settings.ssh_host_ca is checked but not deployed yet "
-                             f"({NOT_DEPLOYED_YET['ssh_host_ca']} of docs/plans/NETWORK-SECURITY.md).")
         if tls == "pki":
             self.error(where, "settings.tls: pki isn't available yet "
                               f"({NOT_DEPLOYED_YET['tls: pki']} of docs/plans/NETWORK-SECURITY.md); use self-signed.")
         for key in ("admin_mfa",):
             if key in settings and not isinstance(settings[key], bool):
                 self.error(where, f"settings.{key} must be true or false.")
-        ttl = settings.get("ssh_cert_max_ttl")
-        if ttl is not None and not (isinstance(ttl, str) and TTL_RE.match(ttl)):
-            self.error(where, f"settings.ssh_cert_max_ttl must be a duration such as 24h or 90m, not {ttl!r}.")
+        for key in ("ssh_cert_max_ttl", "ssh_host_cert_ttl"):
+            ttl = settings.get(key)
+            if ttl is not None and not (isinstance(ttl, str) and TTL_RE.match(ttl)):
+                self.error(where, f"settings.{key} must be a duration such as 24h or 90m, not {ttl!r}.")
         sources = settings.get("admin_sources", [])
         if not isinstance(sources, list) or not all(
                 _addr(x) is not None or _net(x) is not None for x in sources):
@@ -806,9 +803,6 @@ class _Checker:
                                   "secrets.provider files contradicts it. Use strategy centralized or current.")
 
         if admin["provider"] == "openbao":
-            if admin["ssh_host_ca"]:
-                self.warn(where, "administrative_identity.ssh_host_ca is checked but not deployed yet "
-                                 f"({NOT_DEPLOYED_YET['ssh_host_ca']} of docs/plans/NETWORK-SECURITY.md).")
             if not admin["instance"]:
                 self.error(where, "administrative_identity needs an instance: the openbao host whose SSH user CA "
                                   "this network's hosts trust, such as home.openbao.")
@@ -1595,6 +1589,48 @@ def openbao_ssh_admin_roles(inventory, instance):
     return sorted(names)
 
 
+def ssh_host_principals(vm):
+    """The names a host's SSH host certificate is valid for: its name, its
+    name in its network's domain, its address, and a router's upstream
+    address too (it is reached there)."""
+    names = [vm["name"], f"{vm['name']}.{vm['network']['domain']}", vm["ip"], vm["attach"]["ip"]]
+    return list(dict.fromkeys(names))
+
+
+def openbao_ssh_host_roles(inventory, instance):
+    """The SSH host CA's signing roles on an openbao host: one per network
+    whose administrative_identity is this host with ssh_host_ca, named
+    hosts-<network>, allowed only that network's hosts' principals. Sorted
+    by network."""
+    roles = []
+    for name, net in sorted(inventory["networks"].items()):
+        ai = net["security"]["administrative_identity"]
+        if ai["provider"] == "openbao" and ai["instance"] == instance and ai["ssh_host_ca"]:
+            principals = []
+            for vm in inventory["hosts"].values():
+                if vm["network"]["name"] == name:
+                    principals.extend(ssh_host_principals(vm))
+            roles.append({"name": f"hosts-{name}", "network": name,
+                          "principals": list(dict.fromkeys(principals))})
+    return roles
+
+
+def openbao_endpoint(inventory, host):
+    """How this machine reaches an openbao host's API, by host ID: url, the
+    certificate to trust ("" without TLS) and the init file with its root
+    token, both relative to the repository."""
+    bao = inventory["hosts"][host]
+    settings = bao.get("settings") or {}
+    tls = settings.get("tls", "none") != "none"
+    net, name = bao["network"]["name"], bao["name"]
+    return {
+        "url": f"{'https' if tls else 'http'}://{bao['ip']}:{int(settings.get('port', DEFAULT_OPENBAO_PORT))}",
+        "ca_file": f"secrets/{net}/{name}-tls.crt" if tls else "",
+        "init_file": f"secrets/{net}/{name}-init.json",
+        "via_router": bao["attach"]["via_router"],
+    }
+
+
 def ssh_trust_principals(security, operator_user=""):
     """Which principals each local user of a host accepts, for
     /etc/ssh/auth_principals/<user>: admin always, and operator_user (a
@@ -1900,6 +1936,9 @@ class FilterModule:
             "openbao_ssh_roles": openbao_ssh_roles,
             "openbao_ssh_admin_roles": openbao_ssh_admin_roles,
             "ssh_trust_principals": ssh_trust_principals,
+            "ssh_host_principals": ssh_host_principals,
+            "openbao_ssh_host_roles": openbao_ssh_host_roles,
+            "openbao_endpoint": openbao_endpoint,
             "nixlab_tags": nixlab_tags,
             "proxmox_tags_merge": proxmox_tags_merge,
             "proxmox_tags_list": _tags,

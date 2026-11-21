@@ -23,6 +23,8 @@ hosts:
       # An SSH user CA for administrators; see "SSH certificates" below.
       ssh_user_ca: false   # needs tls
       ssh_cert_max_ttl: 24h
+      ssh_host_ca: false   # an SSH host CA too; see "SSH host certificates"; needs tls
+      ssh_host_cert_ttl: 8760h
       admin_mfa: false     # true: every admin also enters a TOTP code
       admins: []           # [{name: alice, roles: [homelab-admin], mfa: true}]
 ```
@@ -173,6 +175,20 @@ ssh admin@192.168.1.18
 Certificates go to `~/.ssh/nixlab/<role>-cert.pub`, one per role, so asking for one doesn't replace another. The `--config` blocks set `IdentitiesOnly yes` and list only the network's certificates, because each one offered counts against sshd's 6 attempts. A home network's block matches its whole subnet (`192.168.1.*`), so it applies to every SSH connection to that range from your machine; trim it to the hosts you want if you use other keys there.
 
 To reach a host on an isolated network, jump through its router with an admin certificate: `ssh -J admin@<router wan_ip> admin@<host ip>`, or use its VPN.
+
+### SSH host certificates
+
+With `ssh_host_ca: true` as well, this host also runs an SSH host CA (`ssh-host-signer/`, its public key in `secrets/<network>/<host>-ssh-host-ca.pub`), with one signing role per network that sets `administrative_identity.ssh_host_ca: true`. That role, `hosts-<network>`, may only sign that network's hosts' names and addresses.
+
+Each such host's deploy then gets it a certificate for its own host key, valid for `ssh_host_cert_ttl` (a year), for its name, `<name>.<domain>` and its address (and a router's WAN address). The deploy keeps a certificate while it is for the same key, CA and names with more than 30 days left, and otherwise asks this host for a new one, from the machine you deploy from. If this host is down, it warns and keeps the old one.
+
+Your SSH client then trusts every such host without asking, and refuses one whose certificate doesn't name the address or name you used:
+
+```bash
+scripts/ssh-cert --trust-hosts home lab >> ~/.ssh/known_hosts
+```
+
+That adds one `@cert-authority` line per network. A host with a certificate is also still accepted by a `known_hosts` entry for its key. This CA deploys its own certificate only on its second deploy, since the CA doesn't exist yet during the first one.
 
 ## On an isolated network
 

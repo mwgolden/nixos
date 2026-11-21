@@ -218,3 +218,46 @@
                ('it trusts an SSH user CA, but its network uses static keys only; redeploy it.')
                  if not verify_ca_instance and verify_ca.rc == 0 else '' ]
              | select | list }}
+
+# With administrative_identity.ssh_host_ca, the host must have a host
+# certificate from that CA, for its own key, that sshd serves.
+- name: Check {{ vm.name }}'s SSH host certificate
+  when:
+    - verify_ssh is succeeded
+    - (nixlab | network_security(vm.network.name)).administrative_identity.ssh_host_ca | bool
+  vars:
+    verify_host_ca_file: >-
+      {{ playbook_dir }}/../secrets/{{ (nixlab | network_security(vm.network.name)).administrative_identity.instance
+         | replace('.', '/', 1) }}-ssh-host-ca.pub
+  block:
+    - name: Read the host CA's fingerprint
+      ansible.builtin.command:
+        cmd: ssh-keygen -lf {{ verify_host_ca_file }}
+      register: verify_host_ca_fp
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+
+    - name: Read the host certificate
+      ansible.builtin.shell:
+        cmd: |
+          c=/etc/ssh/ssh_host_ed25519_key-cert.pub
+          [ -f "$c" ] || { echo "no certificate"; exit 0; }
+          ca=$(ssh-keygen -L -f "$c" | sed -n 's/^ *Signing CA: [^ ]* \([^ ]*\).*/\1/p')
+          key=$(ssh-keygen -L -f "$c" | sed -n 's/^ *Public key: [^ ]* \([^ ]*\).*/\1/p')
+          [ "$key" = "$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')" ] || { echo "a certificate for another key"; exit 0; }
+          sshd -T 2>/dev/null | grep -qi "^hostcertificate $c" || { echo "a certificate sshd doesn't serve"; exit 0; }
+          echo "$ca"
+      register: verify_host_cert
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Note a missing or wrong host certificate
+      ansible.builtin.set_fact:
+        verify_problems: >-
+          {{ verify_problems + [
+               'its SSH host certificate: ' ~ (verify_host_cert.stdout | trim)
+               ~ ', not one from ' ~ verify_host_ca_file | basename ~ '; redeploy it.' ]
+             if (verify_host_cert.stdout | trim) != ((verify_host_ca_fp.stdout | default('')).split(' ')[1] | default('-'))
+             else verify_problems }}

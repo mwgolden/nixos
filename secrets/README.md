@@ -8,6 +8,7 @@ secrets/<network>/<host>-users.env     # postgres only: database user passwords
 secrets/<network>/<openbao>-init.json  # written by deploys: OpenBao's unseal keys and root token
 secrets/<network>/<openbao>-tls.crt    # written by deploys: the certificate OpenBao serves (tls: self-signed)
 secrets/<network>/<openbao>-ssh-user-ca.pub  # written by deploys: its SSH user CA's public key
+secrets/<network>/<openbao>-ssh-host-ca.pub  # written by deploys: its SSH host CA's public key
 secrets/<network>/<proxy>-ca.crt       # written by deploys: the proxy's root certificate
 secrets/<network>/vpn/                 # written by deploys: WireGuard keys and client files
 ```
@@ -31,6 +32,7 @@ These files are written by deploys, not by you:
 - `<openbao>-init.json`: an [OpenBao](../roles/openbao/README.md#unseal-keys-and-root-token) host's unseal keys and root token, made on its first deploy. Without it a sealed OpenBao can't be opened, so back it up elsewhere. Never overwritten.
 - `<openbao>-tls.crt`: the certificate of an [OpenBao](../roles/openbao/README.md#https) host with `tls: self-signed`, for clients to trust (`BAO_CACERT`). Not secret. Replaced when OpenBao makes a new one.
 - `<openbao>-ssh-user-ca.pub`: the public key of an OpenBao host's [SSH user CA](../roles/openbao/README.md#ssh-certificates). Not secret, but the deploys of every network that trusts the CA write it onto their hosts, so it is never overwritten: a deploy stops if the CA's key no longer matches it.
+- `<openbao>-ssh-host-ca.pub`: the public key of an OpenBao host's [SSH host CA](../roles/openbao/README.md#ssh-host-certificates), which your SSH client trusts through `scripts/ssh-cert --trust-hosts`. Guarded the same way.
 - `vpn/`: the router's [VPN](../roles/router/README.md#vpn) keys, made on the first deploy and kept after that. `<name>.key` files are private keys. `<peer>.conf` files are ready-to-use client configurations, and contain the peer's private key. Deleting `<router>.key` makes a new router key on the next deploy, and every client file has to be handed out again.
 
 Proxmox and SSH key settings are still in `proxmox/.env`.

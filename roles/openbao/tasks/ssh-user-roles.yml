@@ -1,0 +1,55 @@
+# The SSH user CA's signing roles (docs/plans/NETWORK-SECURITY.md, 4.2.3).
+# Included from configure.yml after ssh-ca.yml. Runs on the VM.
+
+# One per principal: homelab-admin, and <network>-admin and
+# <network>-operator for every network whose administrative_identity is
+# this host. Writing a role replaces it, so changes to the TTL apply.
+
+- name: Write the signing roles
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_ssh_user_mount }}/roles/{{ item }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      key_type: ca
+      allow_user_certificates: true
+      allowed_users: "{{ item }}"
+      default_user: "{{ item }}"
+      # Admin roles may also forward ports, for ssh -J through a router.
+      allowed_extensions: "{{ 'permit-pty,permit-port-forwarding' if item in openbao_ssh_admin_roles else 'permit-pty' }}"
+      default_extensions: >-
+        {{ {'permit-pty': '', 'permit-port-forwarding': ''} if item in openbao_ssh_admin_roles
+           else {'permit-pty': ''} }}
+      ttl: "{{ openbao_ssh_cert_max_ttl }}"
+      max_ttl: "{{ openbao_ssh_cert_max_ttl }}"
+      allow_user_key_ids: false
+      # The key ID names who asked and for which role; sshd logs it.
+      key_id_format: !unsafe "{{token_display_name}}-{{role_name}}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_ssh_roles }}"
+  changed_when: false
+  no_log: true
+
+- name: List the signing roles
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_ssh_user_mount }}/roles?list=true"
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    status_code: [200, 404]
+  register: openbao_ssh_role_list
+  no_log: true
+
+- name: Report signing roles no network uses any more
+  ansible.builtin.debug:
+    msg: >-
+      {{ vm.name }} still has signing roles that no network file needs:
+      {{ openbao_ssh_stale_roles | join(', ') }}. They were left as they are;
+      delete one with bao delete {{ openbao_ssh_user_mount }}/roles/<role>.
+  vars:
+    openbao_ssh_stale_roles: >-
+      {{ (openbao_ssh_role_list.json.data['keys'] | default([])) | difference(openbao_ssh_roles) }}
+  when: openbao_ssh_stale_roles | length > 0

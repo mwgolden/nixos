@@ -47,15 +47,24 @@
     host_gateway: "{{ final.gateway }}"
     host_nameserver: "{{ final.nameserver }}"
 
-# Which SSH user CA this host trusts, from its network's security: block.
-# Empty ({ }) with static keys only. common.nix imports it.
+- name: Note the network's security settings
+  ansible.builtin.set_fact:
+    nixos_base_security: "{{ nixlab | network_security(vm.network.name) }}"
+    nixos_base_host_cert: false
+
+- name: Get an SSH host certificate
+  ansible.builtin.include_tasks: host-cert.yml
+  when: nixos_base_security.administrative_identity.ssh_host_ca | bool
+
+# Which SSH user CA this host trusts, and its host certificate, from its
+# network's security: block. Empty ({ }) with static keys only. common.nix
+# imports it.
 - name: Install SSH certificate trust
   ansible.builtin.template:
     src: ssh-trust.nix.j2
     dest: /etc/nixos/ssh-trust.nix
     mode: "0644"
   vars:
-    nixos_base_security: "{{ nixlab | network_security(vm.network.name) }}"
     nixos_base_ca_instance: "{{ nixos_base_security.administrative_identity.instance }}"
     nixos_base_ca_file: >-
       {{ role_path }}/../../secrets/{{ nixos_base_ca_instance | replace('.', '/', 1) }}-ssh-user-ca.pub

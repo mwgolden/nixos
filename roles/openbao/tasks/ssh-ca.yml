@@ -1,13 +1,16 @@
-# The SSH user CA: an SSH secrets engine at ssh-client-signer/ whose key
-# never leaves OpenBao, its public key written to
-# secrets/<network>/<host>-ssh-user-ca.pub for the other deploys, and one
-# signing role per principal (docs/plans/NETWORK-SECURITY.md, 4.2.3).
-# Included from configure.yml when settings.ssh_user_ca is true, once
-# OpenBao is unsealed. Runs on the VM.
+# An SSH CA: an SSH secrets engine whose key never leaves OpenBao, and its
+# public key written to secrets/ for the other deploys
+# (docs/plans/NETWORK-SECURITY.md, 4.2.3 and 4.3). Included from
+# configure.yml once OpenBao is unsealed, with:
+#   openbao_ca_kind        user or host, for messages
+#   openbao_ca_mount       ssh-client-signer or ssh-host-signer
+#   openbao_ca_file        where the public key goes, and its _short name
+#   openbao_ca_trusted_by  who would stop trusting a new key, for messages
+# Sets openbao_ssh_ca_key. Runs on the VM.
 
-- name: Mount the SSH user CA's engine
+- name: Mount the SSH {{ openbao_ca_kind }} CA's engine
   ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/sys/mounts/{{ openbao_ssh_user_mount }}"
+    url: "{{ openbao_local_url }}/v1/sys/mounts/{{ openbao_ca_mount }}"
     method: POST
     headers:
       X-Vault-Token: "{{ openbao_init.root_token }}"
@@ -16,14 +19,14 @@
       type: ssh
     ca_path: "{{ openbao_uri_ca or omit }}"
     status_code: [200, 204]
-  when: (openbao_ssh_user_mount ~ '/') not in openbao_mounts.json.data
+  when: (openbao_ca_mount ~ '/') not in openbao_mounts.json.data
   changed_when: true
   no_log: true
 
 # 400 until a key is made.
-- name: Read the SSH user CA's public key
+- name: Read the SSH {{ openbao_ca_kind }} CA's public key
   ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/{{ openbao_ssh_user_mount }}/config/ca"
+    url: "{{ openbao_local_url }}/v1/{{ openbao_ca_mount }}/config/ca"
     headers:
       X-Vault-Token: "{{ openbao_init.root_token }}"
     ca_path: "{{ openbao_uri_ca or omit }}"
@@ -33,33 +36,33 @@
 
 - name: Look for the CA public key from an earlier deploy
   ansible.builtin.stat:
-    path: "{{ openbao_ssh_user_ca_file }}"
+    path: "{{ openbao_ca_file }}"
   register: openbao_ssh_ca_file_stat
   delegate_to: localhost
   become: false
 
 - name: Read the CA public key from an earlier deploy
   ansible.builtin.set_fact:
-    openbao_ssh_ca_saved: "{{ lookup('ansible.builtin.file', openbao_ssh_user_ca_file) | trim }}"
+    openbao_ssh_ca_saved: "{{ lookup('ansible.builtin.file', openbao_ca_file) | trim }}"
   when: openbao_ssh_ca_file_stat.stat.exists
 
-# Every host that trusts this CA has the key in the file. A new key would
-# make them all refuse certificates, so it is never made over an old one.
+# Everything that trusts this CA has the key in the file. A new key would
+# break that trust everywhere, so it is never made over an old one.
 - name: Refuse to make a new CA key while hosts trust the old one
   ansible.builtin.assert:
     that: not openbao_ssh_ca_file_stat.stat.exists
     fail_msg: >-
-      OpenBao on {{ vm.name }} has no SSH user CA key, but
-      {{ openbao_ssh_user_ca_file_short }} has the public key of one from an
-      earlier deploy, and hosts trust it. The key is gone with OpenBao's old
+      OpenBao on {{ vm.name }} has no SSH {{ openbao_ca_kind }} CA key, but
+      {{ openbao_ca_file_short }} has the public key of one from an
+      earlier deploy, and {{ openbao_ca_trusted_by }} trust it. The key is gone with OpenBao's old
       data. If that is expected, move the file away and redeploy: a new key
-      is made, and every host that trusted the old one must be redeployed.
+      is made, and {{ openbao_ca_trusted_by }} must be told about it again.
     quiet: true
   when: openbao_ssh_ca.status == 400
 
-- name: Make the SSH user CA's key inside OpenBao
+- name: Make the SSH {{ openbao_ca_kind }} CA's key inside OpenBao
   ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/{{ openbao_ssh_user_mount }}/config/ca"
+    url: "{{ openbao_local_url }}/v1/{{ openbao_ca_mount }}/config/ca"
     method: POST
     headers:
       X-Vault-Token: "{{ openbao_init.root_token }}"
@@ -76,7 +79,7 @@
 
 - name: Read the new public key
   ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/{{ openbao_ssh_user_mount }}/config/ca"
+    url: "{{ openbao_local_url }}/v1/{{ openbao_ca_mount }}/config/ca"
     headers:
       X-Vault-Token: "{{ openbao_init.root_token }}"
     ca_path: "{{ openbao_uri_ca or omit }}"
@@ -93,71 +96,17 @@
   ansible.builtin.assert:
     that: openbao_ssh_ca_saved == openbao_ssh_ca_key
     fail_msg: >-
-      The SSH user CA on {{ vm.name }} has a different key from the one in
-      {{ openbao_ssh_user_ca_file_short }}, which hosts trust. Nothing was
+      The SSH {{ openbao_ca_kind }} CA on {{ vm.name }} has a different key from the one in
+      {{ openbao_ca_file_short }}, which {{ openbao_ca_trusted_by }} trust. Nothing was
       changed. If the CA's key was replaced on purpose, move the file away
-      and redeploy, then redeploy every host that trusts it.
+      and redeploy; then {{ openbao_ca_trusted_by }} must be told about it again.
     quiet: true
   when: openbao_ssh_ca_file_stat.stat.exists
 
-- name: Write the CA public key to {{ openbao_ssh_user_ca_file_short }}
+- name: Write the CA public key to {{ openbao_ca_file_short }}
   ansible.builtin.copy:
     content: "{{ openbao_ssh_ca_key }}\n"
-    dest: "{{ openbao_ssh_user_ca_file }}"
+    dest: "{{ openbao_ca_file }}"
     mode: "0644"
   delegate_to: localhost
   become: false
-
-# ---- Signing roles ----
-# One per principal: homelab-admin, and <network>-admin and
-# <network>-operator for every network whose administrative_identity is
-# this host. Writing a role replaces it, so changes to the TTL apply.
-
-- name: Write the signing roles
-  ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/{{ openbao_ssh_user_mount }}/roles/{{ item }}"
-    method: POST
-    headers:
-      X-Vault-Token: "{{ openbao_init.root_token }}"
-    body_format: json
-    body:
-      key_type: ca
-      allow_user_certificates: true
-      allowed_users: "{{ item }}"
-      default_user: "{{ item }}"
-      # Admin roles may also forward ports, for ssh -J through a router.
-      allowed_extensions: "{{ 'permit-pty,permit-port-forwarding' if item in openbao_ssh_admin_roles else 'permit-pty' }}"
-      default_extensions: >-
-        {{ {'permit-pty': '', 'permit-port-forwarding': ''} if item in openbao_ssh_admin_roles
-           else {'permit-pty': ''} }}
-      ttl: "{{ openbao_ssh_cert_max_ttl }}"
-      max_ttl: "{{ openbao_ssh_cert_max_ttl }}"
-      allow_user_key_ids: false
-      # The key ID names who asked and for which role; sshd logs it.
-      key_id_format: !unsafe "{{token_display_name}}-{{role_name}}"
-    ca_path: "{{ openbao_uri_ca or omit }}"
-    status_code: [200, 204]
-  loop: "{{ openbao_ssh_roles }}"
-  changed_when: false
-  no_log: true
-
-- name: List the signing roles
-  ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/{{ openbao_ssh_user_mount }}/roles?list=true"
-    headers:
-      X-Vault-Token: "{{ openbao_init.root_token }}"
-    ca_path: "{{ openbao_uri_ca or omit }}"
-    status_code: [200, 404]
-  register: openbao_ssh_role_list
-  no_log: true
-
-- name: Report signing roles no network uses any more
-  ansible.builtin.debug:
-    msg: >-
-      {{ vm.name }} still has signing roles that no network file needs:
-      {{ openbao_ssh_stale_roles | join(', ') }}. They were left as they are;
-      delete one with bao delete {{ openbao_ssh_user_mount }}/roles/<role>.
-  vars:
-    openbao_ssh_stale_roles: >-
-      {{ (openbao_ssh_role_list.json.data['keys'] | default([])) | difference(openbao_ssh_roles) }}
-  when: openbao_ssh_stale_roles | length > 0

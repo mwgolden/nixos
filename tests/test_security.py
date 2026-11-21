@@ -443,5 +443,47 @@ class Filters(unittest.TestCase):
         self.assertEqual(nc.ssh_trust_principals(sec, "dev"), {})
 
 
+class HostCA(unittest.TestCase):
+    def files(self):
+        files = add_home_openbao(repo(), ssh_host_ca=True)
+        set_security(files, "home", {"strategy": "centralized", "secrets": {"provider": "files"},
+                                     "administrative_identity": {"instance": "home.openbao", "ssh_host_ca": True}})
+        set_security(files, "lab", {"strategy": "centralized",
+                                    "administrative_identity": {"instance": "home.openbao", "ssh_host_ca": True}})
+        return files
+
+    def test_valid_without_warnings(self):
+        files = self.files()
+        self.assertEqual(errors(files), [])
+        self.assertFalse([w for w in warnings(files) if "ssh_host_ca" in w])
+
+    def test_host_principals(self):
+        inv = inventory(self.files())
+        self.assertEqual(nc.ssh_host_principals(inv["hosts"]["home.nats"]),
+                         ["nats", "nats.home.home.arpa", "192.168.1.18"])
+        self.assertEqual(nc.ssh_host_principals(inv["hosts"]["lab.router"]),
+                         ["router", "router.lab.home.arpa", "10.1.0.1", "192.168.1.13"])
+
+    def test_host_roles(self):
+        roles = nc.openbao_ssh_host_roles(inventory(self.files()), "home.openbao")
+        self.assertEqual([r["name"] for r in roles], ["hosts-home", "hosts-lab"])
+        lab = roles[1]["principals"]
+        self.assertIn("192.168.1.13", lab)
+        self.assertNotIn("192.168.1.18", lab)
+
+    def test_no_host_roles_without_ssh_host_ca(self):
+        self.assertEqual(nc.openbao_ssh_host_roles(inventory(centralized(repo())), "home.openbao"), [])
+
+    def test_endpoint(self):
+        inv = inventory(self.files())
+        self.assertEqual(nc.openbao_endpoint(inv, "home.openbao"), {
+            "url": "https://192.168.1.20:8200", "ca_file": "secrets/home/openbao-tls.crt",
+            "init_file": "secrets/home/openbao-init.json", "via_router": ""})
+
+    def test_bad_host_ttl(self):
+        found = errors(add_home_openbao(repo(), ssh_host_cert_ttl="a year"))
+        self.assertTrue(any("ssh_host_cert_ttl must be a duration" in e for e in found))
+
+
 if __name__ == "__main__":
     unittest.main()

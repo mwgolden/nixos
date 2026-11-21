@@ -34,8 +34,12 @@ openbao_settings_defaults:
   # Every admin needs a TOTP code as well as the password. An admin's own
   # mfa: true or false overrides this.
   admin_mfa: false
-  # Not yet: phase 2b and 4 of docs/plans/NETWORK-SECURITY.md.
+  # Sign hosts' SSH host certificates (an SSH host CA). Needs tls. Hosts of
+  # networks with administrative_identity.ssh_host_ca get one from their
+  # deploy, valid for ssh_host_cert_ttl.
   ssh_host_ca: false
+  ssh_host_cert_ttl: 8760h
+  # Not yet: phase 4 of docs/plans/NETWORK-SECURITY.md.
   pki: false
 
 openbao_settings: "{{ openbao_settings_defaults | combine(vm.settings) }}"
@@ -100,6 +104,13 @@ openbao_ssh_user_ca_file_short: "secrets/{{ vm.network.name }}/{{ vm.name }}-ssh
 openbao_ssh_roles: "{{ nixlab | openbao_ssh_roles(vm.id) }}"
 # Those whose certificates may also forward ports (ssh -J through a router).
 openbao_ssh_admin_roles: "{{ nixlab | openbao_ssh_admin_roles(vm.id) }}"
+openbao_ssh_host_ca: "{{ openbao_settings.ssh_host_ca | bool }}"
+openbao_ssh_host_mount: ssh-host-signer
+openbao_ssh_host_cert_ttl: "{{ openbao_settings.ssh_host_cert_ttl }}"
+openbao_ssh_host_ca_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}-ssh-host-ca.pub"
+openbao_ssh_host_ca_file_short: "secrets/{{ vm.network.name }}/{{ vm.name }}-ssh-host-ca.pub"
+# hosts-<network>, with that network's hosts' names and addresses.
+openbao_ssh_host_roles: "{{ nixlab | openbao_ssh_host_roles(vm.id) }}"
 openbao_admins: "{{ openbao_settings.admins }}"
 openbao_admin_mfa: "{{ openbao_settings.admin_mfa | bool }}"
 openbao_userpass_mount: userpass
