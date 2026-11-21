@@ -105,3 +105,37 @@ hosts:
     vm_id: 306
     ip: 10.3.1.5
     data_disk: {size_gb: 10, storage: local-lvm}
+
+  # PostgreSQL with one app schema and a user who can work in it. See
+  # roles/postgres/README.md and roles/postgres/USERS.md.
+  #
+  # Secrets (imported into this network's OpenBao on the first deploy):
+  #   secrets/agent-developer/postgres.env        POSTGRES_ADMIN_USER, POSTGRES_ADMIN_PASSWORD
+  #   secrets/agent-developer/postgres-users.env  APP_USER_PASSWORD
+  #
+  # Deploy:        ansible-playbook playbooks/deploy-host.yaml -e network=agent-developer -e host=postgres
+  # Users only:    ansible-playbook playbooks/postgres-users.yaml -e network=agent-developer -e host=postgres
+  # Connect:       psql -h postgres.agent-developer.home.arpa -U app_user -d postgres
+  - name: postgres
+    type: postgres
+    vm_id: 307
+    ip: 10.3.1.6
+    data_disk:
+      size_gb: 20          # mounted at /var/lib/postgresql
+      storage: local-lvm
+    expose:
+      - port: 5432
+    settings:
+      version: 17
+      port: 5432
+      users_database: postgres
+      schemas:
+        - name: texas_power_plans
+      users:
+        - name: claude
+          schemas:
+            - schema: texas_power_plans
+              # create  = CREATE tables/views/functions in the schema, plus
+              #           SELECT, INSERT, UPDATE, DELETE (it includes write/read)
+              # execute = run functions and procedures in the schema
+              access: [create, execute]
