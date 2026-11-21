@@ -68,6 +68,25 @@ def _service_ports(host, net):
     return list(dict.fromkeys(ports))
 
 
+def _packages(host):
+    """settings.packages, as the network file lists them."""
+    return ", ".join(str(p) for p in (host.get("settings") or {}).get("packages") or [])
+
+
+def _tool(tool):
+    """A settings.tools entry: '<name>[@<version>] (<kind>)'. A curl tool
+    has no name, so it shows the path its script creates."""
+    if "curl" in tool:
+        return f"{tool.get('creates') or tool['curl']} (curl)"
+    kind = "npm" if "npm" in tool else "uv"
+    version = tool.get("version")
+    return f"{tool[kind]}{'@' + str(version) if version else ''} ({kind})"
+
+
+def _tools(host):
+    return ", ".join(_tool(t) for t in (host.get("settings") or {}).get("tools") or [])
+
+
 def _hosts(inventory, network):
     """The network's hosts, in file order (the inventory keeps it)."""
     return [h for h in inventory["hosts"].values() if h["network"]["name"] == network]
@@ -230,6 +249,13 @@ def network_diagram(inventory, network, deployed):
                     ", ".join(_service_ports(h, net)),
                     f"{h['data_disk']['size_gb']} GB on {h['data_disk']['storage']}" if h["data_disk"] else "",
                     "yes" if h["id"] in deployed else "no"] for h in hosts])
+
+    software = [[h["name"], _packages(h), _tools(h)] for h in hosts if _packages(h) or _tools(h)]
+    if software:
+        out += ["", "## Software", "",
+                "Packages and tools declared in the network file. "
+                "Each role's README lists what the role installs itself.", ""]
+        out += _table(["Host", "Packages", "Tools"], software)
 
     if net["port_forwards"]:
         out += ["", "## Port forwards", "", f"From the router's WAN address, {net['router_wan_ip']}.", ""]

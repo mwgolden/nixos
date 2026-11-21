@@ -29,3 +29,11 @@ flowchart TB
 |---|---|---|---|---|---|---|---|
 | nats | nats | 118 | lan | 192.168.1.18 | — | 20 GB on local-lvm | yes |
 | ws | workstation | 109 | lan | 192.168.1.19 | — | — | yes |
+
+## Software
+
+Packages and tools declared in the network file. Each role's README lists what the role installs itself.
+
+| Host | Packages | Tools |
+|---|---|---|
+| ws | python3Packages.ipython, uv, nodejs_22 | @anthropic-ai/claude-code (npm), ruff@0.8.4 (uv) |

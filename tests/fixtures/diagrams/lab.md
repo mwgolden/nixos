@@ -2,7 +2,7 @@
 
 Generated from [networks/lab.yaml](../../networks/lab.yaml) when the network is deployed or changed. Don't edit it: redeploy, or run `playbooks/diagram-network.yaml`, to update it.
 
-Isolated network 10.1.0.0/24 on vmbr1, behind router on home at 192.168.1.13. DNS domain lab.home.arpa. 4 of 4 hosts deployed.
+Isolated network 10.1.0.0/24 on vmbr1, behind router on home at 192.168.1.13. DNS domain lab.home.arpa. 5 of 5 hosts deployed.
 
 ```mermaid
 flowchart TB
@@ -11,6 +11,7 @@ flowchart TB
     subgraph lan["LAN 10.1.0.0/24 on vmbr1<br/>DHCP .100 to .199"]
         h_postgres["postgres, VM 112<br/>postgres, 10.1.0.12<br/>tcp 5432"]
         h_forge["forge, VM 140<br/>gitea, 10.1.0.14<br/>tcp 3000"]
+        h_ws["ws, VM 120<br/>workstation, 10.1.0.20"]
     end
     subgraph dmz["DMZ 10.1.1.0/24 on vmbr7<br/>no DHCP"]
         h_proxy["proxy, VM 116<br/>proxy, 10.1.1.10<br/>tcp 443, tcp 80"]
@@ -36,6 +37,15 @@ flowchart TB
 | postgres | postgres | 112 | lan | 10.1.0.12 | tcp 5432 | 20 GB on local-lvm | yes |
 | proxy | proxy | 116 | dmz | 10.1.1.10 | tcp 443, tcp 80 | — | yes |
 | forge | gitea | 140 | lan | 10.1.0.14 | tcp 3000 | 40 GB on local-lvm | yes |
+| ws | workstation | 120 | lan | 10.1.0.20 | — | — | yes |
+
+## Software
+
+Packages and tools declared in the network file. Each role's README lists what the role installs itself.
+
+| Host | Packages | Tools |
+|---|---|---|
+| ws | uv, nodejs_22 | @anthropic-ai/claude-code (npm), ruff@0.6.9 (uv), ~/.local/bin/thing (curl) |
 
 ## Port forwards
 

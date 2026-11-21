@@ -108,6 +108,8 @@ Each deploy prints every tool's version. A curl tool is installed once; `-e work
 
 A tool that updates itself, such as Claude Code, stays up to date between deploys when it isn't pinned. If you pin one, turn its updater off too (for Claude Code, `DISABLE_AUTOUPDATER: "1"` in `environment`), or every deploy puts the pin back.
 
+The network's diagram in [docs/network-diagrams/](../../docs/network-diagrams/) lists each workstation's `packages` and `tools` in its Software table. A curl tool is shown by its `creates` path.
+
 ### Removing a tool
 
 Take it out of the list and redeploy. npm and uv tools are uninstalled, but only ones the deploy installed: it keeps a list in `~/.local/state/nixlab/tools.json`. Tools the user installed by hand are left alone. A curl tool's files stay, since the deploy doesn't know what the script wrote; delete them by hand.

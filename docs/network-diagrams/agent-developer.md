@@ -41,6 +41,14 @@ flowchart TB
 | openbao | openbao | 306 | lan | 10.3.1.5 | — | 10 GB on local-lvm | yes |
 | postgres | postgres | 307 | lan | 10.3.1.6 | tcp 5432 | 20 GB on local-lvm | yes |
 
+## Software
+
+Packages and tools declared in the network file. Each role's README lists what the role installs itself.
+
+| Host | Packages | Tools |
+|---|---|---|
+| dev-workstation | uv, nodejs_22, openbao | @anthropic-ai/claude-code (npm), ruff (uv) |
+
 ## Port forwards
 
 From the router's WAN address, 192.168.1.31.

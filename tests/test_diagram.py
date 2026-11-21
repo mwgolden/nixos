@@ -30,6 +30,15 @@ def full(configs):
     add_dmz(configs)
     add_vpn(configs)
     host(configs, "lab", "proxy")["reach"] = [{"host": "postgres", "port": 5432}]
+    configs["lab"]["hosts"].append(WORKSTATION)
+
+
+WORKSTATION = {"name": "ws", "type": "workstation", "vm_id": 120, "ip": "10.1.0.20",
+               "settings": {"user": "dev", "packages": ["uv", "nodejs_22"],
+                            "tools": [{"npm": "@anthropic-ai/claude-code"},
+                                      {"uv": "ruff", "version": "0.6.9"},
+                                      {"curl": "https://example.com/install.sh",
+                                       "creates": "~/.local/bin/thing"}]}}
 
 
 def mermaid(text):
@@ -95,7 +104,7 @@ class Content(unittest.TestCase):
         self.assertIn("not deployed", text)
         self.assertIn("    class h_forge pending", text)
         self.assertIn("| forge | gitea | 140 | lan | 10.1.0.14 | tcp 3000 | 40 GB on local-lvm | no |", text)
-        self.assertIn("3 of 4 hosts deployed", text)
+        self.assertIn("4 of 5 hosts deployed", text)
 
     def test_router_not_deployed_on_home(self):
         text = nd.network_diagram(self.inv, "home", [h for h in self.all if h != "lab.router"])
@@ -159,6 +168,26 @@ class Deployed(unittest.TestCase):
         inv = inventory()
         self.assertEqual(nd.network_diagram_targets(inv, ["lab"]), ["lab", "home"])
         self.assertEqual(nd.network_diagram_targets(inv, ["home", "lab", "gone"]), ["home", "lab"])
+
+
+class Software(unittest.TestCase):
+    def test_tool_labels(self):
+        self.assertEqual(nd._tool({"npm": "typescript"}), "typescript (npm)")
+        self.assertEqual(nd._tool({"npm": "typescript", "version": "5.6.3"}), "typescript@5.6.3 (npm)")
+        self.assertEqual(nd._tool({"uv": "ruff", "version": "0.6.9"}), "ruff@0.6.9 (uv)")
+        self.assertEqual(nd._tool({"curl": "https://example.com/i.sh", "creates": "~/bin/x"}), "~/bin/x (curl)")
+
+    def test_only_hosts_with_software(self):
+        text = nd.network_diagram(inventory(full), "lab", nd.network_diagram_deployed(inventory(full)))
+        section = text.split("## Software", 1)[1].split("\n## ", 1)[0]
+        rows = [l for l in section.splitlines() if l.startswith("| ") and not l.startswith("| Host")]
+        self.assertEqual([r.split(" | ")[0] for r in rows], ["| ws"])
+        self.assertIn("uv, nodejs_22", rows[0])
+
+    def test_no_section_without_software(self):
+        inv = inventory()
+        self.assertNotIn("## Software", nd.network_diagram(inv, "home", nd.network_diagram_deployed(inv)))
+        self.assertNotIn("## Software", nd.network_diagram(inv, "lab", nd.network_diagram_deployed(inv)))
 
 
 if __name__ == "__main__":
