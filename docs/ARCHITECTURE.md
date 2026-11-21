@@ -11,6 +11,7 @@ The system supports multiple network configurations with different networking an
 - **Isolated networks:** Hosts connect to a dedicated Proxmox bridge and use a firewall VM as their gateway for routing and internet access.
 - **Home-network deployments:** Hosts connect to the home network without being placed behind an isolated-network firewall.
 - **Optional services:** Networks can select services such as a reverse proxy, VPN server, DNS server, Gitea, Garage (S3-compatible object storage), PostgreSQL, and LDAP.
+- **Optional security authorities:** Each network declares who signs its administrators' SSH certificates, where its secrets are kept and who issues its TLS certificates. OpenBao can fill these roles, but no network has to use it (see [§12](#12-identity-secrets-and-certificate-authorities)).
 
 The system should make it possible to create a network by defining its desired hosts and services in configuration rather than manually provisioning each VM and configuring its dependencies.
 
@@ -27,10 +28,12 @@ The system should make it possible to create a network by defining its desired h
 9. **Idempotency:** Repeated deployment should converge on the declared state without unnecessarily recreating existing resources.
 10. **Controlled destruction:** Removing a host from configuration can result in resource deletion. Destructive actions must be explicit, documented, and appropriately guarded.
 11. **Security by default:** Services and network access are restricted to their intended scope. Enabling a service must not implicitly expose it to the internet.
+12. **Configurable security authority:** The network configuration declares which authority handles administrative identity, secrets, and certificates. Ansible deploys what it declares. A network that declares nothing keeps its current behaviour.
+13. **Trust is not connectivity:** Trusting a certificate authority never opens a network path. Router and firewall rules alone decide what can reach what.
 
 ## 3. Conceptual model
 
-The project has four primary concepts.
+The project has five primary concepts.
 
 ### 3.1 Network
 
@@ -83,6 +86,12 @@ The network playbook reads a network configuration and reconciles the declared r
 It determines which hosts need to be created, which existing hosts need updating, and which previously managed hosts have been removed from the configuration.
 
 It delegates individual host creation and removal to their respective lifecycle playbooks rather than duplicating host provisioning logic.
+
+### 3.5 Security authority
+
+A security authority is a service that other hosts trust for one of three things: administrative identity (an SSH certificate authority), secrets, or TLS certificates.
+
+An authority is provided by a host, usually of type `openbao`, and declared in that host's settings. A network uses authorities by naming them in its own configuration. An authority may serve its own network, or, for administrative identity only, networks that trust the home network. See [§12](#12-identity-secrets-and-certificate-authorities).
 
 ## 4. Network types and topology
 
@@ -260,6 +269,10 @@ Dependencies must be explicit. For example, a reverse-proxy route requires a val
 
 Enabling a service must not implicitly enable unrelated services or broaden network access.
 
+### 5.4 Security configuration
+
+A network may declare an optional `security:` block: a `strategy` preset, and the `administrative_identity`, `secrets` and `pki` settings that the preset fills in and that may each be overridden. A network without the block uses the `current` strategy, which is how the project behaves today. The model is in [§12.5](#125-configuration).
+
 ## 6. Ansible responsibilities
 
 ### 6.1 Host lifecycle playbooks
@@ -313,7 +326,7 @@ The network playbook coordinates these operations. It should not duplicate the i
 
 ### 6.4 Repository organization
 
-The target layout, reached in stages (see [PLAN.md](PLAN.md)):
+The target layout, reached in stages (see [PLAN.md](plans/completed/PLAN.md)):
 
 ```text
 .
@@ -390,6 +403,11 @@ The following requirements apply regardless of network type:
 - Credentials and private keys must not be embedded in network configuration files.
 - Destructive operations must be identifiable and guarded.
 - The system must distinguish resources managed by this project from pre-existing resources.
+- No application receives infrastructure administration credentials.
+- No network receives another network's secrets, and no isolated network has unrestricted access to the home network's security authority.
+- Destroying infrastructure never destroys secrets, backups or recovery material. Deleting those is a separate, explicit operation.
+
+The requirements specific to identity, secrets and certificate authorities are in [§12.8](#128-security-requirements).
 
 ## 9. Lifecycle and reconciliation
 
@@ -427,12 +445,16 @@ Deployment validation should verify, where applicable:
 - DNS records resolve to the expected destinations.
 - Reverse-proxy routes reach their intended backends.
 - Optional services are present only when selected.
+- Hosts trust exactly the SSH certificate authority their network declares, and none on a network that declares none.
+- Isolated hosts can't reach another network's security authority.
+
+Configuration validation also rejects security settings that reference missing authorities, keep a network's secrets in another network, make one isolated network depend on another, or combine strategies that contradict each other (see [§12.5](#125-configuration)).
 
 Testing should include both isolated and home-network deployments, as well as adding, updating, and removing a host.
 
 ## 11. Architectural decisions
 
-These decisions were approved on 2026-10-28. The implementation steps are in [PLAN.md](PLAN.md).
+These decisions were approved on 2026-10-28. The implementation steps are in [PLAN.md](plans/completed/PLAN.md).
 
 1. **Network configuration schema:** One file per network, `networks/<name>.yaml`, with a `network:` block and a `hosts:` list. Each host type's defaults are in its role's `defaults/main.yml`.
 2. **Network identity:** Each network file spells out its bridge, CIDR, gateway and router. The router VM is a host in the list with `type: router`. Validation rejects two networks that share a bridge or a subnet.
@@ -450,8 +472,183 @@ These decisions were approved on 2026-10-28. The implementation steps are in [PL
 14. **Host names per network:** (approved 2026-11-08, see [plans/completed/HOST-NAMES.md](plans/completed/HOST-NAMES.md)) A host name is unique only within its network file. Across networks a host is identified as `<network>.<host>`, which is also its Ansible inventory name. VM IDs, addresses, bridges, subnets and domains stay unique across all networks. Proxmox VM names stay the short host name, so they may repeat; VMs are told apart by VM ID and the `net-<network>` tag.
 15. **Network diagrams:** (approved 2026-11-08, see [plans/completed/NETWORK-DIAGRAMS.md](plans/completed/NETWORK-DIAGRAMS.md)) Deploys and destroys write one Mermaid diagram per network, with tables of the same data, to `docs/network-diagrams/`, made from the network files and the VMs that exist in Proxmox. The playbooks never commit them. They carry no secrets or keys.
 16. **VM CPU type, cores and memory:** (approved 2026-11-13, see [plans/completed/CPU-TYPE.md](plans/completed/CPU-TYPE.md)) Every VM gets an explicit CPU type: `vm_cpu_type` in `proxmox/vars.yaml` (`x86-64-v2-AES`), or a host's `cpu:`. Only `x86-64-v2-AES`, `x86-64-v2` and `host` are allowed, since the node has no AVX2. Deploys set it on new and existing VMs, but restart a VM to apply it only with `-e proxmox_vm_restart=true`, with a clean shutdown and never a forced stop. Hosts may also set `cores` and `memory_mb`; unset, the VM keeps what it has. They are applied the same way, in one request and one restart.
+17. **Identity, secrets and certificate authorities:** (decided 2026-11-21; see [plans/NETWORK-SECURITY.md](plans/NETWORK-SECURITY.md)) Each network may declare a `security:` block, described in [§12](#12-identity-secrets-and-certificate-authorities). A network without the block keeps decision 12's behaviour. A home OpenBao is the SSH user CA, and later the SSH host CA once each VM has its own host key, for networks that choose it. Administrators log in to it with `userpass`, and with TOTP as well where MFA is turned on (off by default). Port 8200 is open only to `admin_sources`. It doesn't hold home's own secrets. Each network keeps its own OpenBao for secrets, unsealed with its own Shamir keys. Each host gets a read-only token for its own secrets, also kept root-only on the VM. TLS intermediates exist only on networks that set `pki.provider: openbao`, under an offline root kept by hand. Principals are `homelab-admin`, `<network>-admin` and `<network>-operator`. Ansible keeps its static SSH key. Access paths to isolated networks don't change.
 
-## 12. Guidance for implementation
+## 12. Identity, secrets and certificate authorities
+
+This section is the target architecture. How to get there, and its open decisions, are in [plans/NETWORK-SECURITY.md](plans/NETWORK-SECURITY.md).
+
+### 12.1 Responsibilities
+
+Three security responsibilities are kept apart, and each may have a different authority:
+
+1. **Human identity and administrative access:** who may log in to managed hosts, and as what.
+2. **Infrastructure provisioning:** how Ansible reaches and changes hosts and Proxmox.
+3. **Application and service secrets:** passwords, keys and tokens used by workloads.
+
+The home network may provide administrative identity to other networks without becoming the secrets authority for their workloads.
+
+Each isolated network is a separate security boundary. A compromised workload or OpenBao in one network must not give access to:
+
+- Home infrastructure credentials.
+- Other isolated networks.
+- Other networks' secrets.
+- The central administrative signing capability.
+
+### 12.2 Authorities
+
+#### Home OpenBao
+
+An optional `openbao` host on the home network. It is the central authority for administrative identity.
+
+- Issues short-lived SSH user certificates.
+- Optionally issues SSH host certificates.
+- May store infrastructure credentials, such as Proxmox API tokens.
+- Gives no workload access to its secrets. Access uses narrow policies, one per administrator.
+
+Compromising its SSH user CA would allow administrative impersonation on every network that trusts it. Its access, availability, backup and recovery protections must reflect that.
+
+#### Network-local OpenBao
+
+An optional `openbao` host on any network. It owns that network's workload secrets: application credentials, database passwords, API keys, NATS credentials. It may also hold the network's TLS intermediate CA.
+
+Each instance has its own storage, authentication, policies, tokens, unseal keys, and backups. No instance has access to another. A network-local OpenBao doesn't need the home OpenBao to start, unseal, or serve secrets.
+
+#### Certificate authority hierarchy
+
+The long-term hierarchy:
+
+```text
+Offline root CA (TLS)                Home OpenBao
+   │                                    ├── SSH user CA
+   ├── home intermediate                └── SSH host CA (optional)
+   ├── <network> intermediate
+   └── <network> intermediate
+        each in its own network's OpenBao,
+        limited to that network's domain
+```
+
+The offline root signs intermediates only. Day-to-day issuing is done by the online authority for each network. SSH identity and TLS workload identity are separate hierarchies. Until a network adopts an intermediate, its TLS certificates come from its proxy's internal CA, as in decision 9.
+
+### 12.3 Administrative access
+
+The workflow with SSH certificates:
+
+1. The administrator's desktop logs in to the home OpenBao, with a password, and a TOTP code where MFA is turned on. MFA is a setting on the authority, per administrator, and off by default.
+2. OpenBao checks which signing roles that administrator may use.
+3. The desktop sends its **public** key to be signed.
+4. OpenBao returns a certificate valid for up to 24 hours, with the principals of one role.
+5. Managed hosts trust the CA's public key, and each local user accepts a listed set of principals.
+
+The private key never leaves the desktop. No private key is handed out to VMs.
+
+Authentication and authorization are separate. Principals name roles, such as `homelab-admin`, `<network>-admin` and `<network>-operator`. Signing policies limit each role's principals, lifetime and extensions. Hosts accept only principals they list for each user.
+
+Hosts never contact the authority. Its public key is written into their configuration by Ansible at deploy time, so isolated networks don't need any path to the home network. A redeploy updates an existing host in place, like any other configuration change, and doesn't recreate it. Each change to trust, such as a new CA or new principals, reaches a host on its next deploy. A valid certificate gives no connectivity. Administrators reach hosts over the same paths as before: the home LAN, the router's WAN SSH, a port forward, or the network's VPN.
+
+Ansible keeps its own key for provisioning, so deploys don't depend on any authority being up, and so there is always a way back in.
+
+### 12.4 Strategies
+
+Each network chooses one. The strategy is a preset, not a limit: its parts can be chosen one by one.
+
+| Strategy | Administrative identity | Secrets | TLS |
+|---|---|---|---|
+| **A `current`** | Static SSH keys | The network's own OpenBao if it has one (decision 12), otherwise files | Proxy's internal CA |
+| **B `centralized`** | Home OpenBao's SSH user CA | As `current` | Proxy's internal CA |
+| **C `centralized-local`** | Home OpenBao's SSH user CA | The network's own OpenBao | The network's own intermediate, once it has one |
+| **D `independent`** | The network's own OpenBao's SSH user CA | The network's own OpenBao | The network's own intermediate, or the proxy's CA |
+
+C is the preferred strategy for isolated networks that should manage their own secrets. D fits networks that need administrative separation from home. A is the default, so existing networks keep working.
+
+### 12.5 Configuration
+
+What an authority **provides** is in its host's settings. What a network **uses** is in its `security:` block, by host identity (`<network>.<host>`):
+
+```yaml
+# networks/home.yaml
+network:
+  security:
+    strategy: centralized
+    administrative_identity: {instance: home.openbao}
+    secrets: {provider: files}
+hosts:
+  - name: openbao
+    type: openbao
+    settings: {tls: self-signed, ssh_user_ca: true}
+
+# networks/agent-developer.yaml
+network:
+  security:
+    strategy: centralized-local
+    administrative_identity: {instance: home.openbao}
+    secrets: {instance: agent-developer.openbao}
+    pki: {provider: openbao, instance: agent-developer.openbao}
+```
+
+`administrative_identity`, `secrets` and `pki` are each chosen independently: for example, a network can use the home SSH CA and keep its secrets in files.
+
+Validation rejects:
+
+- References to hosts that don't exist or aren't authorities of the needed kind.
+- Secrets or certificates kept on another network's authority.
+- Administrative identity from a network other than the network itself or a `home` network. One isolated network never depends on another.
+- Strategies that need a local OpenBao the network doesn't have.
+- Overrides that contradict their preset.
+- A signing authority without TLS.
+
+A network on `current` never gains an OpenBao dependency it didn't declare.
+
+### 12.6 Implementation in Ansible
+
+The project's convention is one role per host type, so the authority functions are task files of the existing [openbao](../roles/openbao/README.md) role, enabled by its settings, rather than separate roles:
+
+| Function | Where |
+|---|---|
+| Install, TLS listener, initialization, unsealing | `openbao` role (existing), plus `tls` |
+| Authentication, policies, administrators | `openbao` role, `auth.yml` |
+| Secrets engines | `openbao` role (existing network mount) and [host_secrets](../roles/host_secrets/tasks/main.yml) |
+| SSH user and host CA | `openbao` role, `ssh-ca.yml` |
+| PKI intermediate and roles | `openbao` role, `pki.yml` |
+| Hosts trusting a CA, principals | `nixos_base`, `ssh-trust.nix`, on every host |
+| Desktop certificate requests | `scripts/ssh-cert` |
+| Deciding what a network uses | `network_security` filter, beside `network_secrets_store` |
+
+The deploy order is unchanged: router, then the network's openbao host, then the other hosts. Deploys of a network that uses the home OpenBao read its CA public key from `secrets/`, so they don't need the home OpenBao to be up.
+
+Sensitive operations are explicit, never part of a routine redeploy: replacing a CA key, signing an intermediate with the offline root, dropping trust in a CA, and skipping a backup before deleting an OpenBao. OpenBao's first initialization stays automatic, because the existing guard refuses to initialize over existing keys.
+
+Destroying a host or network never deletes its secrets, its OpenBao backups or its recovery material in `secrets/`. Moving a network to another authority is a deliberate migration: both CAs are trusted during the changeover, and secrets are exported before a store is abandoned.
+
+### 12.7 Availability and failure isolation
+
+| Event | Expected behaviour |
+|---|---|
+| Home OpenBao unavailable | Existing SSH certificates work until they expire. Open sessions continue. |
+| Home OpenBao unavailable | No new certificates are issued. Ansible's key still works. |
+| Home OpenBao unavailable | Network-local secrets and deploys of other networks work. |
+| Network-local OpenBao unavailable | That network's deploys stop. Workloads reading secrets at runtime may fail. |
+| Home network unavailable | Isolated workloads keep running. |
+| One isolated network compromised | Others are unaffected: separate authorities, separate tokens, name-constrained intermediates, router rules. |
+
+Each OpenBao has its own backups and recovery. Network-local instances are unsealed with their own keys, never through the home OpenBao.
+
+### 12.8 Security requirements
+
+1. No application receives infrastructure administration credentials.
+2. No isolated network has unrestricted access to the home OpenBao. By default it has no access at all.
+3. No network has access to another network's secrets.
+4. SSH signing policies restrict principals, lifetimes and extensions.
+5. Certificate lifetimes are limited: SSH user certificates expire within 24 hours.
+6. Administrative certificate issuance requires a login per administrator, with optional MFA. Admin certificates give root, so MFA should be on before anyone else is given an admin role.
+7. TLS and SSH authorities are separate.
+8. Connectivity is controlled independently of trust.
+9. Recovery material is stored away from the systems it protects: unseal keys, root tokens, snapshots, and the offline root key all need copies off this machine.
+10. Destroying secrets is always an explicit operation.
+
+The Ansible controller holds every network's root token and unseal keys. Network isolation protects networks from each other's workloads, not from a compromise of the controller.
+
+## 13. Guidance for implementation
 
 Before modifying the project:
 
