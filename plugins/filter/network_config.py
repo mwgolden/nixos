@@ -109,11 +109,11 @@ OPENBAO_AUTHORITY_BOOLS = ("ssh_user_ca", "ssh_host_ca")
 # Settings validated now but not yet acted on by any deploy, with the phase
 # of docs/plans/NETWORK-SECURITY.md that implements them. Validation warns
 # when they are set, so no one thinks they are in effect.
-NOT_DEPLOYED_YET = {
-    "pki": "phase 4",
-    "tls: pki": "phase 4",
-    "openbao pki": "phase 4",
-}
+# A TLS hierarchy in OpenBao (pki.provider openbao, settings.pki, tls:
+# pki) was phase 4 of docs/plans/NETWORK-SECURITY.md, deferred on
+# 2026-11-21. The settings stay in the schema, so validation can say so.
+PKI_DEFERRED = ("isn't available: a TLS hierarchy in OpenBao (phase 4 of docs/plans/NETWORK-SECURITY.md) "
+                "is deferred")
 OPENBAO_ADMIN_KEYS = {"name", "roles", "mfa"}
 ADMIN_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 TTL_RE = re.compile(r"^[1-9][0-9]*[smh]$")
@@ -696,8 +696,7 @@ class _Checker:
             self.error(where, f"settings.{' and '.join(signs)} needs settings.tls (self-signed or pki): "
                               "administrators' logins to a signing authority must not cross the network in clear.")
         if tls == "pki":
-            self.error(where, "settings.tls: pki isn't available yet "
-                              f"({NOT_DEPLOYED_YET['tls: pki']} of docs/plans/NETWORK-SECURITY.md); use self-signed.")
+            self.error(where, f"settings.tls: pki {PKI_DEFERRED}; use self-signed.")
         for key in ("admin_mfa",):
             if key in settings and not isinstance(settings[key], bool):
                 self.error(where, f"settings.{key} must be true or false.")
@@ -737,8 +736,7 @@ class _Checker:
         if admins and settings.get("ssh_user_ca") is not True:
             self.error(where, "settings.admins needs settings.ssh_user_ca: true; admins ask its SSH user CA for certificates.")
         if settings.get("pki"):
-            self.warn(where, "settings.pki is checked but not deployed yet "
-                             f"({NOT_DEPLOYED_YET['openbao pki']} of docs/plans/NETWORK-SECURITY.md).")
+            self.error(where, f"settings.pki {PKI_DEFERRED}. Leave it out.")
 
     def check_security(self, net, config):
         """A network's security: block (docs/plans/NETWORK-SECURITY.md,
@@ -833,8 +831,9 @@ class _Checker:
                     self.error(where, f"{key}.instance only applies with {key}.provider openbao.")
                 continue
             if key == "pki":
-                self.warn(where, "pki is checked but not deployed yet "
-                                 f"({NOT_DEPLOYED_YET['pki']} of docs/plans/NETWORK-SECURITY.md).")
+                self.error(where, f"pki.provider openbao {PKI_DEFERRED}. Use proxy-internal, the "
+                                  "proxy's own CA, or leave pki out.")
+                continue
             if not block["instance"]:
                 self.error(where, f"{key}.provider openbao needs an openbao host on network {net['name']}.")
                 continue

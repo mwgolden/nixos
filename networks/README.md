@@ -144,7 +144,7 @@ Postgres's `settings.allowed_networks` takes network names as well as subnets. L
 
 An optional `security:` block in `network:` says which authorities the network uses. Without it, the network behaves as it always has: static SSH keys, its own `openbao` host for secrets if it has one (otherwise the `.env` files), and the proxy's internal CA. The design is in [docs/ARCHITECTURE.md §12](../docs/ARCHITECTURE.md#12-identity-secrets-and-certificate-authorities); the plan is [docs/plans/NETWORK-SECURITY.md](../docs/plans/NETWORK-SECURITY.md).
 
-**What deploys use today:** `secrets.provider` and `administrative_identity`: hosts trust the named SSH user CA, and with `ssh_host_ca` get host certificates from it (see [roles/openbao](../roles/openbao/README.md#ssh-certificates)). `pki` and `tls: pki` are validated, so files can be written ahead, but nothing is deployed from them yet; validation warns when they are set.
+**What deploys use today:** `secrets.provider` and `administrative_identity`: hosts trust the named SSH user CA, and with `ssh_host_ca` get host certificates from it (see [roles/openbao](../roles/openbao/README.md#ssh-certificates)). `pki` only takes `proxy-internal`: `pki.provider: openbao`, an openbao host's `pki` and `tls: pki` were phase 4 of the plan, which is deferred, and validation rejects them.
 
 ```yaml
 network:
@@ -167,8 +167,7 @@ network:
 | `administrative_identity.principals` | `admin:` and `operator:` lists | Which certificate principals the `admin` user and a workstation's user accept. Defaults: `admin` accepts `homelab-admin` and `<network>-admin`; the workstation user accepts `<network>-operator`. |
 | `secrets.provider` | `files`, `openbao` | Where the deploys keep the network's hosts' secrets. `files` keeps them in `secrets/<network>/` even when the network has an `openbao` host. |
 | `secrets.instance` | `<network>.<host>` | Must be on this network. Defaults to its `openbao` host. |
-| `pki.provider` | `proxy-internal` (default), `openbao` | Who issues the network's TLS certificates. |
-| `pki.instance` | `<network>.<host>` | Must be on this network, with `settings.pki` set. Defaults to its `openbao` host. |
+| `pki.provider` | `proxy-internal` (default) | Who issues the network's TLS certificates: the proxy's own CA. `openbao` is rejected for now (phase 4 deferred). |
 
 What each strategy fills in:
 
@@ -183,7 +182,7 @@ What an `openbao` host provides goes in its `settings:`:
 
 | Setting | Values | Meaning |
 |---|---|---|
-| `tls` | `none` (default), `self-signed`, `pki` | HTTPS on its listener. Required when it signs anything. |
+| `tls` | `none` (default), `self-signed` | HTTPS on its listener. Required when it signs anything. |
 | `admin_sources` | list of addresses or subnets | Who may reach its port. `[]` (default) is anyone. |
 | `ssh_user_ca` | `true`, `false` (default) | It signs administrators' SSH certificates. |
 | `ssh_cert_max_ttl` | duration, default `24h` | Longest certificate it signs. |
@@ -191,7 +190,6 @@ What an `openbao` host provides goes in its `settings:`:
 | `admin_mfa` | `true`, `false` (default) | Every admin also enters a TOTP code; an admin's `mfa:` overrides it. |
 | `ssh_host_ca` | `true`, `false` (default) | It signs hosts' SSH certificates. Needs `tls`. |
 | `ssh_host_cert_ttl` | duration, default `8760h` | How long host certificates last; deploys renew them with 30 days left. |
-| `pki` | `true`, `false` (default), or a mapping | It holds the network's TLS intermediate CA. |
 
 Validation rejects, among other things: an `instance` that isn't an `openbao` host; secrets or certificates kept on another network's OpenBao; an isolated network trusting another isolated network's CA; `centralized-local` or `independent` without an `openbao` host; a signing `openbao` host without `tls`; and overrides that contradict their strategy, such as `current` with `administrative_identity.provider: openbao` (use `centralized`).
 

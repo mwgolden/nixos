@@ -96,6 +96,6 @@
     that:
       - openbao_tls in ['none', 'self-signed']
     fail_msg: >-
-      settings of {{ vm.name }}: tls: pki isn't deployed yet (phase 4 of
-      docs/plans/NETWORK-SECURITY.md).
+      settings of {{ vm.name }}: tls: pki isn't available; phase 4 of
+      docs/plans/NETWORK-SECURITY.md is deferred. Use self-signed.
     quiet: true

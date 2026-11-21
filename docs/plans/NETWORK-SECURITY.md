@@ -6,7 +6,7 @@ In short: each network file gets an optional `security:` block. It says which au
 
 ## Progress
 
-**Proposed on 2026-11-21. Not approved yet.** Every decision in [section 7](#7-decisions) was made on 2026-11-21: 1 to 3 and 5 to 13 as recommended, 4 as optional MFA, off by default, and 14 as one certificate file per role.
+**Stopped after phase 3 on 2026-11-21:** phases 4 and 5 are deferred as more than a lab needs (see the note below the table). Every decision in [section 7](#7-decisions) was made on 2026-11-21: 1 to 3 and 5 to 13 as recommended, 4 as optional MFA, off by default, and 14 as one certificate file per role.
 
 | Phase | What it delivers | Status |
 |---|---|---|
@@ -14,8 +14,10 @@ In short: each network file gets an optional `security:` block. It says which au
 | 2 | Home OpenBao with TLS, SSH user CA, password login with optional MFA, hosts trust the CA, desktop script | **done** (2026-11-21), except running `scripts/ssh-cert` itself |
 | 2b | Unique SSH host keys per VM, then an SSH host CA | **done** (2026-11-21) |
 | 3 | Network-local OpenBao hardening: deploy token, TLS, backups, isolation and outage checks | **done** (2026-11-21), except AppRole |
-| 4 | Offline root CA, per-network intermediates, the proxy gets certificates from OpenBao | not started |
-| 5 | `independent` strategy, switching authorities | not started |
+| 4 | Offline root CA, per-network intermediates, the proxy gets certificates from OpenBao | **deferred** |
+| 5 | `independent` strategy, switching authorities | **deferred** |
+
+**Why 4 and 5 are deferred.** Phase 4 would give one root for your machines to trust instead of a proxy CA and an OpenBao certificate per network, and keep a compromised network OpenBao from issuing certificates other networks accept; the offline root protects that root even from a compromised home OpenBao. In a lab run by one person, each network already being its own TLS trust domain is enough, and the offline signing ceremony isn't worth it. If one root becomes worth having, the cheaper middle way is an online root in the home OpenBao's PKI engine signing the network OpenBaos' intermediates. Phase 5's `independent` strategy can already be declared (its own OpenBao as SSH user CA); what's deferred is the two-step CA switchover and the guards when a network changes authority. Until then, validation rejects `pki.provider: openbao`, an openbao host's `pki` and `tls: pki`, so no one sets them expecting them to work.
 
 Phase 1 is in [network_config.py](../../plugins/filter/network_config.py): `check_security`, `check_openbao_authority`, `_resolve_security`, the `network_security` filter and the inventory's `network.security`. `network_secrets_store` now follows `secrets.provider`, so `secrets: {provider: files}` turns OpenBao off for a network's secrets. The tests are in `tests/test_security.py` (39 tests): every rule of section 2.4, the presets, and a check that every file in `networks/` resolves to what it did before. `validate-network.yaml` passes on the repository's files, and on a copy with the section 2.1 example. The settings that nothing deploys yet (`administrative_identity`, `pki`, and the openbao host's `tls`, `ssh_user_ca`, `ssh_host_ca` and `pki`) are validated and print a "not deployed yet" warning. Remove each warning in `NOT_DEPLOYED_YET` as its phase lands. The schema is in [networks/README.md](../../networks/README.md#security).
 
@@ -364,7 +366,7 @@ This builds on [OPENBAO-SECRETS.md](OPENBAO-SECRETS.md) and finishes its phase 5
 - **Isolation checks** in [network_verify](../../roles/network_verify/README.md): from a host on an isolated network, the home OpenBao's port and other networks' OpenBao ports are blocked. One network's deploy token is refused by another network's OpenBao.
 - **Outage check:** with the home OpenBao and all of home's VMs stopped, the agent-developer workloads keep their secrets and keep running.
 
-### 4.5 Phase 4: PKI
+### 4.5 Phase 4: PKI (deferred)
 
 - **Offline root (decision 2):** made once on an offline machine with `step` or `openssl`. The key goes on encrypted removable media and never on this machine. `scripts/pki-root` holds the commands, for the first time and for signing intermediates. The root certificate isn't secret, so it is committed as `pki/root.crt`. It uses ECDSA P-384 and is valid for 10 years.
 - **An intermediate per network that sets `pki.provider: openbao`** (decision 7), in that network's OpenBao at `pki_int/`. Getting it signed is two explicit steps, because the root key is offline:
@@ -377,7 +379,7 @@ This builds on [OPENBAO-SECRETS.md](OPENBAO-SECRETS.md) and finishes its phase 5
 - **Revocation:** OpenBao serves the intermediate's CRL. A live check revokes a certificate and makes sure clients refuse it.
 - OpenBao listeners move from `self-signed` to `pki`.
 
-### 4.6 Phase 5: other strategies and switching
+### 4.6 Phase 5: other strategies and switching (deferred)
 
 - **`independent`:** the network's own OpenBao has `ssh_user_ca: true`, its hosts trust only that CA, and `scripts/ssh-cert` takes `--instance`. After phase 2 this is mostly configuration. Try it on a copy of [examples/test.yaml](../../networks/examples/test.yaml).
 - **Changing `administrative_identity.instance`** happens in two deploys. The first trusts both CA keys (`TrustedUserCAKeys` takes several). The second, run with `-e security_drop_old_ca=true`, removes the old one. The same applies to replacing a CA key (4.2.3).

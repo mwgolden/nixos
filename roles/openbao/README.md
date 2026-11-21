@@ -121,7 +121,7 @@ export BAO_ADDR=https://192.168.1.20:8200
 export BAO_CACERT=secrets/home/openbao-tls.crt
 ```
 
-A new certificate is made when fewer than 30 days are left or the names change (another address), and OpenBao is restarted and unsealed to use it. Clients then need the new file. `tls: pki`, a certificate from the network's TLS intermediate, comes with phase 4 of [docs/plans/NETWORK-SECURITY.md](../../docs/plans/NETWORK-SECURITY.md).
+A new certificate is made when fewer than 30 days are left or the names change (another address), and OpenBao is restarted and unsealed to use it. Clients then need the new file. There's no `tls: pki`: a TLS hierarchy in OpenBao was phase 4 of [docs/plans/NETWORK-SECURITY.md](../../docs/plans/NETWORK-SECURITY.md), which is deferred.
 
 `admin_sources` limits who can reach the port, such as `[192.168.1.50]` for one desktop. Include the machine you deploy from: the deploy's own check of the port runs there (from the router on an isolated network, which is already in the network's subnet).
 

@@ -17,8 +17,9 @@ openbao_settings_defaults:
     - secret
   # HTTPS on the listener: none (plain HTTP), self-signed (a key and
   # certificate made on the VM; the certificate is copied to
-  # secrets/<network>/<host>-tls.crt for clients), or pki (phase 4 of
-  # docs/plans/NETWORK-SECURITY.md, not yet).
+  # secrets/<network>/<host>-tls.crt for clients). pki, a certificate from
+  # a TLS hierarchy, was phase 4 of docs/plans/NETWORK-SECURITY.md, which is
+  # deferred.
   tls: none
   # Addresses or subnets allowed to reach the port. [] means anyone who can
   # reach the VM, as before.
@@ -39,7 +40,8 @@ openbao_settings_defaults:
   # deploy, valid for ssh_host_cert_ttl.
   ssh_host_ca: false
   ssh_host_cert_ttl: 8760h
-  # Not yet: phase 4 of docs/plans/NETWORK-SECURITY.md.
+  # A TLS intermediate CA: phase 4 of docs/plans/NETWORK-SECURITY.md,
+  # deferred. Validation rejects it.
   pki: false
 
 openbao_settings: "{{ openbao_settings_defaults | combine(vm.settings) }}"

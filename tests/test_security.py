@@ -190,25 +190,13 @@ class Presets(unittest.TestCase):
         self.assertEqual(sec["administrative_identity"]["principals"], {
             "admin": ["agent-developer-admin"], "operator": ["agent-developer-operator"]})
 
-    def test_pki_from_own_openbao(self):
+    def test_pki_openbao_is_deferred(self):
         files = centralized(repo())
-        bao = next(h for h in config(files, "agent-developer")["hosts"] if h["type"] == "openbao")
-        bao["settings"] = {"pki": True}
         config(files, "agent-developer")["network"]["security"]["pki"] = {"provider": "openbao"}
-        self.assertEqual(errors(files), [])
-        sec = nc.network_security(inventory(files), "agent-developer")
-        self.assertEqual(sec["pki"], {"provider": "openbao", "instance": "agent-developer.openbao"})
-
-    def test_not_deployed_settings_warn(self):
-        files = centralized(repo())
-        self.assertFalse([w for w in warnings(files) if "not deployed yet" in w])
-        config(files, "agent-developer")["network"]["security"]["pki"] = {"provider": "openbao"}
-        bao = next(h for h in config(files, "agent-developer")["hosts"] if h["type"] == "openbao")
-        bao["settings"] = {"pki": True}
-        found = warnings(files)
-        self.assertTrue(any("pki is checked but not deployed yet" in w for w in found))
-        self.assertTrue(any("settings.pki is checked but not deployed yet" in w for w in found))
-
+        found = errors(files)
+        self.assertTrue(any("pki.provider openbao isn't available" in e for e in found), found)
+    def test_no_not_deployed_warnings(self):
+        self.assertFalse([w for w in warnings(centralized(repo())) if "not deployed yet" in w])
 
 class Rejected(unittest.TestCase):
     """Each rule of section 2.4 of the plan."""
@@ -266,11 +254,8 @@ class Rejected(unittest.TestCase):
         set_security(files, "lab", {"secrets": {"provider": "openbao", "instance": "home.openbao"}})
         self.assertError(files, "secrets.instance home.openbao is on network home")
 
-    def test_pki_on_another_network(self):
-        files = add_home_openbao(repo(), pki=True)
-        set_security(files, "agent-developer", {"pki": {"provider": "openbao", "instance": "home.openbao"}})
-        self.assertError(files, "pki.instance home.openbao is on network home")
-
+    def test_openbao_pki_setting_is_deferred(self):
+        self.assertError(add_home_openbao(repo(), pki=True), "settings.pki isn't available")
     def test_secrets_openbao_without_a_host(self):
         files = set_security(without_openbao(repo(), "lab"), "lab", {"secrets": {"provider": "openbao"}})
         self.assertError(files, "secrets.provider openbao needs an openbao host on network lab")
@@ -298,10 +283,8 @@ class Rejected(unittest.TestCase):
                                         "administrative_identity": {"instance": "home.openbao", "ssh_host_ca": True}}),
                          "needs home.openbao to have settings.ssh_host_ca: true")
 
-    def test_pki_instance_without_pki(self):
-        self.assertError(self.with_dev({"pki": {"provider": "openbao"}}),
-                         "doesn't have settings.pki set")
-
+    def test_pki_proxy_internal_is_fine(self):
+        self.assertEqual(errors(self.with_dev({"pki": {"provider": "proxy-internal"}})), [])
     def test_centralized_without_instance(self):
         self.assertError(self.with_dev({"strategy": "centralized"}), "administrative_identity needs an instance")
 
@@ -413,7 +396,7 @@ class OpenbaoAuthority(unittest.TestCase):
         self.assertError(add_home_openbao(repo(), ssh_cert_max_ttl="1 day"), "ssh_cert_max_ttl must be a duration")
 
     def test_tls_pki_not_yet(self):
-        self.assertError(add_home_openbao(repo(), tls="pki"), "settings.tls: pki isn't available yet")
+        self.assertError(add_home_openbao(repo(), tls="pki"), "settings.tls: pki isn't available")
 
 
 class Filters(unittest.TestCase):
