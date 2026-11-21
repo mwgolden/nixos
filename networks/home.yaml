@@ -86,3 +86,4 @@ hosts:
         - name: admin
           roles:
             - homelab-admin
+            - agent-developer-operator

@@ -21,6 +21,11 @@ network:
     bridge: vmbr11
     cidr: 10.3.2.0/24
     gateway: 10.3.2.1
+  
+  security:
+    strategy: centralized-local
+    administrative_identity:
+      instance: home.openbao
 
 hosts: 
   - name: router
