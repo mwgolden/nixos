@@ -31,7 +31,7 @@ def host_id(network, name):
     return f"{network}.{name}"
 
 NETWORK_KEYS = {"name", "type", "bridge", "cidr", "gateway", "nameserver",
-                "upstream", "dhcp", "reserved", "domain", "dmz"}
+                "upstream", "dhcp", "reserved", "domain", "dmz", "security"}
 DMZ_KEYS = {"bridge", "cidr", "gateway", "dhcp", "reserved"}
 # Proxmox CPU types a VM may have (cpu: on a host, vm_cpu_type in
 # proxmox/vars.yaml). The node com has SSE4.2 and AES but no AVX2, so
@@ -86,6 +86,37 @@ DEFAULT_VPN_PORT = 51820
 OPENBAO_RESERVED_MOUNTS = ("sys", "auth", "identity", "cubbyhole")
 DEFAULT_OPENBAO_PORT = 8200
 DEFAULT_OPENBAO_KV_MOUNTS = ("secret",)
+
+# A network's security: block says which authorities it uses; an openbao
+# host's settings say what it provides. See network_security and
+# docs/plans/NETWORK-SECURITY.md, section 2.
+SECURITY_KEYS = {"strategy", "administrative_identity", "secrets", "pki"}
+SECURITY_STRATEGIES = ("current", "centralized", "centralized-local", "independent")
+ADMIN_IDENTITY_KEYS = {"provider", "instance", "ssh_host_ca", "principals"}
+ADMIN_IDENTITY_PROVIDERS = ("keys", "openbao")
+SECRETS_KEYS = {"provider", "instance"}
+SECRETS_PROVIDERS = ("files", "openbao")
+PKI_KEYS = {"provider", "instance"}
+PKI_PROVIDERS = ("proxy-internal", "openbao")
+# Local users a network's principals can be set for: admin, on every VM,
+# and operator, the user of a workstation host.
+PRINCIPAL_USERS = ("admin", "operator")
+PRINCIPAL_RE = re.compile(r"^[a-z][a-z0-9-]{0,127}$")
+INSTANCE_RE = re.compile(r"^([a-z][a-z0-9-]{0,62})\.([a-z][a-z0-9-]{0,62})$")
+# What an openbao host can provide, under its settings:.
+OPENBAO_TLS = ("none", "self-signed", "pki")
+OPENBAO_AUTHORITY_BOOLS = ("ssh_user_ca", "ssh_host_ca")
+# Settings validated now but not yet acted on by any deploy, with the phase
+# of docs/plans/NETWORK-SECURITY.md that implements them. Validation warns
+# when they are set, so no one thinks they are in effect.
+NOT_DEPLOYED_YET = {
+    "administrative_identity": "phase 2",
+    "pki": "phase 4",
+    "ssh_user_ca": "phase 2",
+    "ssh_host_ca": "phase 2b",
+    "tls": "phase 2",
+    "openbao pki": "phase 4",
+}
 
 
 def network_domain(net):
@@ -216,7 +247,9 @@ class _Checker:
         parsed = {"name": name, "type": kind, "bridge": bridge, "cidr": cidr,
                   "domain": network_domain(net),
                   "where": where, "reserved": set(), "dhcp": None,
-                  "upstream": net.get("upstream")}
+                  "upstream": net.get("upstream"),
+                  # Checked in run(), once every network's hosts are known.
+                  "security": net.get("security")}
 
         for key in ("gateway", "nameserver"):
             addr = _addr(net.get(key))
@@ -438,6 +471,8 @@ class _Checker:
             self.error(where, "settings must be a mapping.")
         elif kind == "postgres":
             self.check_allowed_networks(where, host.get("settings") or {})
+        elif kind == "openbao":
+            self.check_openbao_authority(where, host.get("settings") or {})
 
         if "expose" in host:
             self.check_expose(net, where, host, kind)
@@ -645,6 +680,169 @@ class _Checker:
             self.error(where, f"settings.kv_mounts lists '{net['name']}', the network's own mount, which every deploy "
                               "of this host makes for the network's secrets. Remove it from kv_mounts.")
 
+    def check_openbao_authority(self, where, settings):
+        """What an openbao host provides: TLS on its listener, an SSH user
+        or host CA, a PKI intermediate."""
+        tls = settings.get("tls", "none")
+        if tls not in OPENBAO_TLS:
+            self.error(where, f"settings.tls must be one of {', '.join(OPENBAO_TLS)}, not '{tls}'.")
+        for key in OPENBAO_AUTHORITY_BOOLS:
+            if key in settings and not isinstance(settings[key], bool):
+                self.error(where, f"settings.{key} must be true or false.")
+        if "pki" in settings and not isinstance(settings["pki"], (bool, dict)):
+            self.error(where, "settings.pki must be true, false or a mapping.")
+        signs = [k for k in OPENBAO_AUTHORITY_BOOLS if settings.get(k) is True]
+        if signs and tls == "none":
+            self.error(where, f"settings.{' and '.join(signs)} needs settings.tls (self-signed or pki): "
+                              "administrators' logins to a signing authority must not cross the network in clear.")
+        for key in OPENBAO_AUTHORITY_BOOLS + ("tls",):
+            if settings.get(key) not in (None, False, "none"):
+                self.warn(where, f"settings.{key} is checked but not deployed yet "
+                                 f"({NOT_DEPLOYED_YET[key]} of docs/plans/NETWORK-SECURITY.md).")
+        if settings.get("pki"):
+            self.warn(where, "settings.pki is checked but not deployed yet "
+                             f"({NOT_DEPLOYED_YET['openbao pki']} of docs/plans/NETWORK-SECURITY.md).")
+
+    def check_security(self, net, config):
+        """A network's security: block (docs/plans/NETWORK-SECURITY.md,
+        section 2.4). Runs once every network's hosts are known, since
+        administrative_identity may name a host on the home network."""
+        sec = net["security"]
+        where = f"{net['where']} security"
+        if sec is None:
+            return
+        if not isinstance(sec, dict):
+            self.error(where, "must be a mapping.")
+            return
+        for key in sorted(set(sec) - SECURITY_KEYS):
+            self.error(where, f"unknown setting {key}.")
+        strategy = sec.get("strategy", "current")
+        if strategy not in SECURITY_STRATEGIES:
+            self.error(where, f"strategy must be one of {', '.join(SECURITY_STRATEGIES)}, not '{strategy}'.")
+            return
+        blocks = {}
+        for key, allowed, providers in (("administrative_identity", ADMIN_IDENTITY_KEYS, ADMIN_IDENTITY_PROVIDERS),
+                                        ("secrets", SECRETS_KEYS, SECRETS_PROVIDERS),
+                                        ("pki", PKI_KEYS, PKI_PROVIDERS)):
+            block = sec.get(key, {})
+            if not isinstance(block, dict):
+                self.error(where, f"{key} must be a mapping.")
+                return
+            for k in sorted(set(block) - allowed):
+                self.error(where, f"{key}: unknown setting {k}.")
+            if "provider" in block and block["provider"] not in providers:
+                self.error(where, f"{key}.provider must be one of {', '.join(providers)}, not '{block['provider']}'.")
+                return
+            if "instance" in block and not (isinstance(block["instance"], str) and INSTANCE_RE.match(block["instance"])):
+                self.error(where, f"{key}.instance must be a host as <network>.<host>, such as home.openbao, "
+                                  f"not '{block['instance']}'.")
+                return
+            blocks[key] = block
+
+        ai = blocks["administrative_identity"]
+        if "ssh_host_ca" in ai and not isinstance(ai["ssh_host_ca"], bool):
+            self.error(where, "administrative_identity.ssh_host_ca must be true or false.")
+        if "principals" in ai:
+            self.check_principals(where, ai["principals"])
+
+        hosts = self.hosts_by_network.get(net["name"], [])
+        own = next((h.get("name") for h in hosts if h.get("type") == "openbao"), None)
+        resolved = _resolve_security(net["name"], sec, own)
+        admin, secrets, pki = resolved["administrative_identity"], resolved["secrets"], resolved["pki"]
+
+        # Presets can be overridden, but not into their opposite (rule 8).
+        if strategy == "current" and ai.get("provider") == "openbao":
+            self.error(where, "strategy current uses static SSH keys; for administrative_identity.provider openbao, "
+                              "use strategy centralized (or centralized-local, independent).")
+        if strategy != "current" and ai.get("provider") == "keys":
+            self.error(where, f"strategy {strategy} means hosts trust an SSH user CA; "
+                              "administrative_identity.provider keys contradicts it. Use strategy current.")
+        if strategy in ("centralized-local", "independent"):
+            if own is None:
+                self.error(where, f"strategy {strategy} needs an openbao host on network {net['name']} "
+                                  "for the network's secrets.")
+            if blocks["secrets"].get("provider") == "files":
+                self.error(where, f"strategy {strategy} keeps secrets in the network's own OpenBao; "
+                                  "secrets.provider files contradicts it. Use strategy centralized or current.")
+
+        if admin["provider"] == "openbao":
+            self.warn(where, "administrative_identity is checked but not deployed yet "
+                             f"({NOT_DEPLOYED_YET['administrative_identity']} of docs/plans/NETWORK-SECURITY.md).")
+            if not admin["instance"]:
+                self.error(where, "administrative_identity needs an instance: the openbao host whose SSH user CA "
+                                  "this network's hosts trust, such as home.openbao.")
+            else:
+                bao = self.authority(where, "administrative_identity.instance", admin["instance"])
+                if bao is not None:
+                    other_net, settings = bao
+                    if strategy == "independent" and other_net != net["name"]:
+                        self.error(where, f"strategy independent uses the network's own SSH user CA, not "
+                                          f"{admin['instance']} on network {other_net}.")
+                    elif other_net != net["name"] and self.networks[other_net]["type"] != "home":
+                        self.error(where, f"administrative_identity.instance {admin['instance']} is on network "
+                                          f"{other_net}, which isn't a home network. A network may only trust its "
+                                          "own CA or the home network's; one isolated network never depends on another.")
+                    if settings.get("ssh_user_ca") is not True:
+                        self.error(where, f"administrative_identity.instance {admin['instance']} doesn't have "
+                                          "settings.ssh_user_ca: true.")
+                    if admin["ssh_host_ca"] and settings.get("ssh_host_ca") is not True:
+                        self.error(where, f"administrative_identity.ssh_host_ca needs {admin['instance']} to have "
+                                          "settings.ssh_host_ca: true.")
+        elif "instance" in ai or "ssh_host_ca" in ai or "principals" in ai:
+            self.error(where, "administrative_identity.instance, ssh_host_ca and principals only apply with "
+                              "provider openbao (strategy centralized, centralized-local or independent).")
+
+        for key, block in (("secrets", secrets), ("pki", pki)):
+            if block["provider"] != "openbao":
+                if "instance" in blocks[key]:
+                    self.error(where, f"{key}.instance only applies with {key}.provider openbao.")
+                continue
+            if key == "pki":
+                self.warn(where, "pki is checked but not deployed yet "
+                                 f"({NOT_DEPLOYED_YET['pki']} of docs/plans/NETWORK-SECURITY.md).")
+            if not block["instance"]:
+                self.error(where, f"{key}.provider openbao needs an openbao host on network {net['name']}.")
+                continue
+            bao = self.authority(where, f"{key}.instance", block["instance"])
+            if bao is None:
+                continue
+            other_net, settings = bao
+            if other_net != net["name"]:
+                self.error(where, f"{key}.instance {block['instance']} is on network {other_net}. A network keeps "
+                                  f"its {'secrets' if key == 'secrets' else 'certificates'} in its own OpenBao, "
+                                  "never another network's.")
+            if key == "pki" and not settings.get("pki"):
+                self.error(where, f"pki.instance {block['instance']} doesn't have settings.pki set.")
+
+    def check_principals(self, where, principals):
+        if not isinstance(principals, dict):
+            self.error(where, "administrative_identity.principals must map admin and/or operator to lists of principals.")
+            return
+        for user, names in principals.items():
+            if user not in PRINCIPAL_USERS:
+                self.error(where, f"administrative_identity.principals: '{user}' isn't one of "
+                                  f"{', '.join(PRINCIPAL_USERS)} (operator is a workstation's user).")
+            elif not isinstance(names, list) or not all(isinstance(n, str) and PRINCIPAL_RE.match(n) for n in names):
+                self.error(where, f"administrative_identity.principals.{user} must be a list of names of lowercase "
+                                  "letters, digits and '-', starting with a letter.")
+
+    def authority(self, where, label, instance):
+        """(network, settings) of the openbao host named <network>.<host>,
+        or None after reporting why it can't be one."""
+        net_name, name = INSTANCE_RE.match(instance).groups()
+        if net_name not in self.networks:
+            self.error(where, f"{label} {instance}: there's no network {net_name} in networks/.")
+            return None
+        host = next((h for h in self.hosts_by_network.get(net_name, []) if h.get("name") == name), None)
+        if host is None:
+            self.error(where, f"{label} {instance}: network {net_name} has no host {name}.")
+            return None
+        if host.get("type") != "openbao":
+            self.error(where, f"{label} {instance} is a {host.get('type')} host, not an openbao host.")
+            return None
+        settings = host.get("settings")
+        return net_name, settings if isinstance(settings, dict) else {}
+
     def check_allowed_networks(self, where, settings):
         allowed = settings.get("allowed_networks")
         if allowed is None:
@@ -716,6 +914,8 @@ class _Checker:
             elif other.get("zone", "lan") != "lan" or other.get("type") == "router":
                 self.error(where, f"{label}: {target} isn't a LAN host. reach only opens DMZ → LAN; "
                                   "DMZ hosts already reach each other.")
+        for net, config in parsed:
+            self.check_security(net, config)
         for net, where, port in self.pending_vpn_ports:
             owner = self.forward_ports.get(net["name"], {}).get(("udp", port))
             if owner:
@@ -957,6 +1157,8 @@ def network_config_inventory(network_configs):
       proxy_internal_sources
                      subnets allowed to use routes that aren't external:
                      the network's, its VPN's and the proxy's own loopback
+      security       its security: block with the strategy's preset filled
+                     in; read it with network_security
     """
     networks = {}
     for name, config in network_configs.items():
@@ -987,6 +1189,9 @@ def network_config_inventory(network_configs):
             "vpn": {},
             "dmz": _dmz(net.get("dmz")),
             "dmz_rules": [],
+            "security": _resolve_security(
+                name, net.get("security"),
+                next((h["name"] for h in config.get("hosts") or [] if h["type"] == "openbao"), None)),
         }
     for name, config in network_configs.items():
         for h in config.get("hosts") or []:
@@ -1264,6 +1469,62 @@ def network_config_deploy_order(inventory, network):
             + [h["id"] for h in hosts if h["type"] not in ("router", "openbao")])
 
 
+def _resolve_security(network, sec, own_openbao):
+    """A network's security: block with its strategy's preset filled in
+    (docs/plans/NETWORK-SECURITY.md, section 2.3). own_openbao is the name of
+    the network's openbao host, or None. Tolerates invalid blocks, which
+    the checker reports separately. No block at all is strategy current:
+    exactly how the project behaved before security: existed."""
+    sec = sec if isinstance(sec, dict) else {}
+    strategy = sec.get("strategy", "current")
+    own = host_id(network, own_openbao) if own_openbao else ""
+
+    def block(key):
+        value = sec.get(key)
+        return value if isinstance(value, dict) else {}
+
+    ai, s, p = block("administrative_identity"), block("secrets"), block("pki")
+
+    admin_provider = ai.get("provider", "keys" if strategy == "current" else "openbao")
+    admin_instance = ""
+    if admin_provider == "openbao":
+        admin_instance = ai.get("instance", own if strategy == "independent" else "")
+    principals = {"admin": ["homelab-admin", f"{network}-admin"], "operator": [f"{network}-operator"]}
+    if isinstance(ai.get("principals"), dict):
+        principals.update({k: list(v) for k, v in ai["principals"].items() if isinstance(v, list)})
+
+    # current and centralized keep the rule from docs/plans/OPENBAO-SECRETS.md:
+    # a network's own openbao host, if it has one, holds its secrets.
+    secrets_provider = s.get("provider", "openbao" if own else "files")
+    pki_provider = p.get("provider", "proxy-internal")
+    return {
+        "strategy": strategy,
+        "administrative_identity": {
+            "provider": admin_provider,
+            "instance": admin_instance,
+            "ssh_host_ca": admin_provider == "openbao" and ai.get("ssh_host_ca") is True,
+            "principals": principals if admin_provider == "openbao" else {},
+        },
+        "secrets": {
+            "provider": secrets_provider,
+            "instance": s.get("instance", own) if secrets_provider == "openbao" else "",
+        },
+        "pki": {
+            "provider": pki_provider,
+            "instance": p.get("instance", own) if pki_provider == "openbao" else "",
+        },
+    }
+
+
+def network_security(inventory, network):
+    """Which authorities a network uses, with its strategy's preset filled
+    in: {strategy, administrative_identity: {provider, instance,
+    ssh_host_ca, principals}, secrets: {provider, instance}, pki: {provider,
+    instance}}. Instances are host IDs such as home.openbao, or "". The one
+    place that decides; roles read this, never the raw security: block."""
+    return inventory["networks"][network]["security"]
+
+
 def network_secrets_store(inventory, network):
     """Where a network's hosts' secrets are kept when it has an openbao
     host, or {} when it has none (then they are only in files, see
@@ -1280,11 +1541,12 @@ def network_secrets_store(inventory, network):
       init_file   secrets/<network>/<host>-init.json, relative to the
                   repository: the root token the deploys use
     """
-    hosts = [h for h in inventory["hosts"].values()
-             if h["network"]["name"] == network and h["type"] == "openbao"]
-    if not hosts:
+    secrets = network_security(inventory, network)["secrets"]
+    # secrets: {provider: files} keeps a network's secrets in files even
+    # when it has an openbao host.
+    if secrets["provider"] != "openbao" or secrets["instance"] not in inventory["hosts"]:
         return {}
-    bao = hosts[0]
+    bao = inventory["hosts"][secrets["instance"]]
     port = int((bao.get("settings") or {}).get("port", DEFAULT_OPENBAO_PORT))
     return {
         "host_id": bao["id"],
@@ -1550,6 +1812,7 @@ class FilterModule:
             "recorded_dns_name": recorded_dns_name,
             "network_config_deploy_order": network_config_deploy_order,
             "network_secrets_store": network_secrets_store,
+            "network_security": network_security,
             "nixlab_tags": nixlab_tags,
             "proxmox_tags_merge": proxmox_tags_merge,
             "proxmox_tags_list": _tags,

@@ -10,12 +10,14 @@ In short: each network file gets an optional `security:` block. It says which au
 
 | Phase | What it delivers | Status |
 |---|---|---|
-| 1 | `security:` schema, presets, validation. No change in behaviour | not started |
+| 1 | `security:` schema, presets, validation. No change in behaviour | **done** (2026-11-21) |
 | 2 | Home OpenBao with TLS, SSH user CA, password login with optional MFA, hosts trust the CA, desktop script | not started |
 | 2b | Unique SSH host keys per VM, then an SSH host CA | not started |
 | 3 | Network-local OpenBao hardening: deploy token, TLS, backups, isolation and outage checks | not started |
 | 4 | Offline root CA, per-network intermediates, the proxy gets certificates from OpenBao | not started |
 | 5 | `independent` strategy, switching authorities | not started |
+
+Phase 1 is in [network_config.py](../../plugins/filter/network_config.py): `check_security`, `check_openbao_authority`, `_resolve_security`, the `network_security` filter and the inventory's `network.security`. `network_secrets_store` now follows `secrets.provider`, so `secrets: {provider: files}` turns OpenBao off for a network's secrets. The tests are in `tests/test_security.py` (39 tests): every rule of section 2.4, the presets, and a check that every file in `networks/` resolves to what it did before. `validate-network.yaml` passes on the repository's files, and on a copy with the section 2.1 example. The settings that nothing deploys yet (`administrative_identity`, `pki`, and the openbao host's `tls`, `ssh_user_ca`, `ssh_host_ca` and `pki`) are validated and print a "not deployed yet" warning. Remove each warning in `NOT_DEPLOYED_YET` as its phase lands. The schema is in [networks/README.md](../../networks/README.md#security).
 
 ## 1. Where things stand
 

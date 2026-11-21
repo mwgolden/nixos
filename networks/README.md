@@ -34,6 +34,7 @@ ansible-playbook playbooks/validate-network.yaml -e network_config_check_proxmox
 | `dhcp` | isolated: yes. home: optional | `start`, `end` and `lease_time` (such as `12h`). On an isolated network the router serves this range. On a home network it records the home router's pool, so that no host is given an address from it. |
 | `reserved` | no | Addresses no host may use. The gateway and the template's address (`template_ip` in `proxmox/vars.yaml`) are always reserved. |
 | `dmz` | no, isolated only | A second bridge behind the router, for hosts that are published. See [DMZ](#dmz). |
+| `security` | no | Which authorities the network uses for administrators' SSH certificates, its hosts' secrets and its TLS certificates. Leave it out to keep today's behaviour. See [Security](#security). |
 | `domain` | no | DNS domain, unique across networks. Defaults to `<name>.home.arpa`. `home.arpa` is reserved for home networks by [RFC 8375](https://www.rfc-editor.org/rfc/rfc8375), so it never clashes with a public domain. On an isolated network, the router's DNS server answers for each host as `<host>` and `<host>.<domain>`. A home network's DNS is the home router's, so there it is only recorded. |
 
 ## `hosts:`
@@ -139,6 +140,56 @@ Validation warns, without stopping, about a host that is published but still on 
 
 Postgres's `settings.allowed_networks` takes network names as well as subnets. Left unset, it is the host's own network, plus the upstream network when the host has `expose:` entries.
 
+## Security
+
+An optional `security:` block in `network:` says which authorities the network uses. Without it, the network behaves as it always has: static SSH keys, its own `openbao` host for secrets if it has one (otherwise the `.env` files), and the proxy's internal CA. The design is in [docs/ARCHITECTURE.md §12](../docs/ARCHITECTURE.md#12-identity-secrets-and-certificate-authorities); the plan is [docs/plans/NETWORK-SECURITY.md](../docs/plans/NETWORK-SECURITY.md).
+
+**What deploys use today:** only `secrets.provider`. `administrative_identity`, `pki` and the openbao settings below are validated now, so files can be written ahead, but nothing is deployed from them yet. Validation warns when they are set.
+
+```yaml
+network:
+  name: agent-developer
+  ...
+  security:
+    strategy: centralized-local
+    administrative_identity:
+      instance: home.openbao      # a host as <network>.<host>
+    secrets:
+      instance: agent-developer.openbao
+```
+
+| Setting | Values | Meaning |
+|---|---|---|
+| `strategy` | `current` (default), `centralized`, `centralized-local`, `independent` | A preset for the settings below. Each of them can be set to override it. |
+| `administrative_identity.provider` | `keys`, `openbao` | `keys`: static `authorized_keys` only. `openbao`: hosts also trust the SSH user CA of `instance`. |
+| `administrative_identity.instance` | `<network>.<host>` | An `openbao` host with `ssh_user_ca: true`, on this network or a `home` network. |
+| `administrative_identity.ssh_host_ca` | `true`, `false` (default) | The network's hosts get SSH host certificates from `instance`, which needs `ssh_host_ca: true`. |
+| `administrative_identity.principals` | `admin:` and `operator:` lists | Which certificate principals the `admin` user and a workstation's user accept. Defaults: `admin` accepts `homelab-admin` and `<network>-admin`; the workstation user accepts `<network>-operator`. |
+| `secrets.provider` | `files`, `openbao` | Where the deploys keep the network's hosts' secrets. `files` keeps them in `secrets/<network>/` even when the network has an `openbao` host. |
+| `secrets.instance` | `<network>.<host>` | Must be on this network. Defaults to its `openbao` host. |
+| `pki.provider` | `proxy-internal` (default), `openbao` | Who issues the network's TLS certificates. |
+| `pki.instance` | `<network>.<host>` | Must be on this network, with `settings.pki` set. Defaults to its `openbao` host. |
+
+What each strategy fills in:
+
+| `strategy` | `administrative_identity` | `secrets` | `pki` |
+|---|---|---|---|
+| `current` | `keys` | the network's `openbao` host if it has one, else `files` | `proxy-internal` |
+| `centralized` | `openbao`; `instance` is required | as `current` | `proxy-internal` |
+| `centralized-local` | `openbao`; `instance` is required | the network's `openbao` host, which it must have | `proxy-internal` |
+| `independent` | `openbao`, the network's own `openbao` host | the network's `openbao` host, which it must have | `proxy-internal` |
+
+What an `openbao` host provides goes in its `settings:`:
+
+| Setting | Values | Meaning |
+|---|---|---|
+| `tls` | `none` (default), `self-signed`, `pki` | HTTPS on its listener. Required when it signs anything. |
+| `ssh_user_ca` | `true`, `false` (default) | It signs administrators' SSH certificates. |
+| `ssh_host_ca` | `true`, `false` (default) | It signs hosts' SSH certificates. |
+| `pki` | `true`, `false` (default), or a mapping | It holds the network's TLS intermediate CA. |
+
+Validation rejects, among other things: an `instance` that isn't an `openbao` host; secrets or certificates kept on another network's OpenBao; an isolated network trusting another isolated network's CA; `centralized-local` or `independent` without an `openbao` host; a signing `openbao` host without `tls`; and overrides that contradict their strategy, such as `current` with `administrative_identity.provider: openbao` (use `centralized`).
+
 ## What is derived from the files
 
 | What | From |
@@ -157,6 +208,7 @@ Checked in the files, by [plugins/filter/network_config.py](../plugins/filter/ne
 - Every setting above, including `expose:`, `proxy:`, `domain`, `dmz`, `zone` and `reach:`.
 - A DMZ's bridge and subnet are unique like a network's, and each host's `ip` is in its zone's subnet.
 - A network with `proxy:` routes has exactly one `proxy` host, and no route has a host's name.
+- A network's `security:` block, as in [Security](#security).
 - A network has at most one `openbao` host. With one, the network's name is also its secrets mount in OpenBao, so it can't be `sys`, `auth`, `identity` or `cubbyhole`, or appear in that host's `kv_mounts`.
 - Host names are unique within each network.
 - VM IDs, addresses (including routers' `wan_ip`) and bridges are unique across all networks.
