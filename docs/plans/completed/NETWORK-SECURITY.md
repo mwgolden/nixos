@@ -11,7 +11,7 @@ In short: each network file gets an optional `security:` block. It says which au
 | Phase | What it delivers | Status |
 |---|---|---|
 | 1 | `security:` schema, presets, validation. No change in behaviour | **done** (2026-11-21) |
-| 2 | Home OpenBao with TLS, SSH user CA, password login with optional MFA, hosts trust the CA, desktop script | **done** (2026-11-21), except running `scripts/ssh-cert` itself |
+| 2 | Home OpenBao with TLS, SSH user CA, password login with optional MFA, hosts trust the CA, desktop script | **done** (2026-11-21) |
 | 2b | Unique SSH host keys per VM, then an SSH host CA | **done** (2026-11-21) |
 | 3 | Network-local OpenBao hardening: deploy token, TLS, backups, isolation and outage checks | **done** (2026-11-21), except AppRole |
 | 4 | Offline root CA, per-network intermediates, the proxy gets certificates from OpenBao | **deferred** |
