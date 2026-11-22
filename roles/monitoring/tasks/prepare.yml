@@ -37,18 +37,39 @@
     that:
       - monitoring_http_port | string is match('^[0-9]+$')
       - monitoring_http_port | int >= 1 and monitoring_http_port | int <= 65535
-      - monitoring_http_port | int not in [monitoring_prometheus_port, monitoring_node_exporter_port]
+      - monitoring_http_port | int not in monitoring_loopback_ports
       - monitoring_retention | string is match('^[0-9]+(ms|s|m|h|d|w|y)$')
       - monitoring_scrape_interval | string is match('^[0-9]+(ms|s|m|h)$')
       - monitoring_settings.root_url | string is match('^(https?://[A-Za-z0-9.:-]+(/[A-Za-z0-9._/-]*)?)?$')
       - monitoring_scrape is sequence and monitoring_scrape is not string
+      - monitoring_pushgateway is boolean
+      - monitoring_pushgateway_port | string is match('^[0-9]+$')
+      - monitoring_pushgateway_port | int >= 1 and monitoring_pushgateway_port | int <= 65535
+      - monitoring_pushgateway_port | int not in monitoring_loopback_ports + [monitoring_http_port | int]
+      - monitoring_loki is boolean
+      - monitoring_loki_port | string is match('^[0-9]+$')
+      - monitoring_loki_port | int >= 1 and monitoring_loki_port | int <= 65535
+      - monitoring_loki_port | int not in monitoring_loopback_ports + [monitoring_http_port | int, monitoring_pushgateway_port | int]
+      - monitoring_loki_retention | string is match('^[1-9][0-9]*(d|w|y)$')
     fail_msg: >-
       Check settings of {{ vm.name }} in networks/{{ vm.network.name }}.yaml:
-      http_port must be 1 to 65535 (not {{ monitoring_prometheus_port }} or
-      {{ monitoring_node_exporter_port }}), retention a duration like 30d or
+      http_port, pushgateway_port and loki_port must be different, 1 to 65535,
+      and not {{ monitoring_loopback_ports | join(', ') }}; retention a duration like 30d or
       1y, scrape_interval one like 30s or 1m, root_url empty or an http(s)://
-      address, and scrape a list.
+      address, scrape a list, pushgateway and loki true or false, and loki_retention
+      whole days, such as 30d, 8w or 1y.
     quiet: true
+
+- name: Check the Pushgateway isn't also a scrape job
+  ansible.builtin.assert:
+    that:
+      - monitoring_scrape | selectattr('job', 'defined') | selectattr('job', 'equalto', 'pushgateway') | list | length == 0
+    fail_msg: >-
+      Remove the pushgateway entry from settings.scrape of {{ vm.name }} in
+      networks/{{ vm.network.name }}.yaml. With pushgateway: true, Prometheus
+      already scrapes it, with honor_labels, as the pushgateway job.
+    quiet: true
+  when: monitoring_pushgateway
 
 # Checked strictly, since they are written into the Nix configuration.
 - name: Check the scrape jobs

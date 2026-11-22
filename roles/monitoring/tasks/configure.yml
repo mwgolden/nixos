@@ -70,6 +70,25 @@
   delay: 3
   until: monitoring_prometheus_ready is succeeded
 
+- name: Wait for the Pushgateway to be ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ monitoring_pushgateway_port }}/-/ready"
+  register: monitoring_pushgateway_ready
+  retries: 20
+  delay: 3
+  until: monitoring_pushgateway_ready is succeeded
+  when: monitoring_pushgateway
+
+# Loki says it isn't ready for about 15 seconds after it starts.
+- name: Wait for Loki to be ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ monitoring_loki_port }}/ready"
+  register: monitoring_loki_ready
+  retries: 30
+  delay: 3
+  until: monitoring_loki_ready is succeeded
+  when: monitoring_loki
+
 - name: Wait for Grafana to be ready
   ansible.builtin.uri:
     url: "{{ monitoring_local_url }}/api/health"

@@ -34,8 +34,39 @@
         static_configs = [ { targets = [ {% for t in job.targets %}"{{ t }}" {% endfor %}]; } ];
       }
 {% endfor %}
+{% if monitoring_pushgateway %}
+      {
+        # honor_labels keeps the job and instance labels the pushers set,
+        # instead of replacing them with the Pushgateway's own.
+        job_name = "pushgateway";
+        honor_labels = true;
+        static_configs = [ { targets = [ "127.0.0.1:{{ monitoring_pushgateway_port }}" ]; } ];
+      }
+{% endif %}
     ];
   };
 
-  networking.firewall.allowedTCPPorts = [ {{ monitoring_http_port }} ];
+{% if monitoring_pushgateway %}
+  # Listens on every address, since other machines push to it. It keeps
+  # what was pushed across restarts in /var/lib/private/pushgateway, on the
+  # root disk (the module runs it as a DynamicUser).
+  services.prometheus.pushgateway = {
+    enable = true;
+    web.listen-address = ":{{ monitoring_pushgateway_port }}";
+    persistMetrics = true;
+  };
+
+{% endif %}
+{% if monitoring_loki %}
+  # The rest of Loki's settings, and Alloy, are in configuration.nix.
+  services.loki = {
+    enable = true;
+    configuration = {
+      server.http_listen_port = {{ monitoring_loki_port }};
+      limits_config.retention_period = "{{ monitoring_loki_retention }}";
+    };
+  };
+
+{% endif %}
+  networking.firewall.allowedTCPPorts = [ {{ monitoring_http_port }}{% if monitoring_pushgateway %} {{ monitoring_pushgateway_port }}{% endif %}{% if monitoring_loki %} {{ monitoring_loki_port }}{% endif %} ];
 }

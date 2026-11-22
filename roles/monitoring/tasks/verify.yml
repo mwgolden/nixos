@@ -11,6 +11,26 @@
   until: monitoring_check is succeeded
   delegate_to: "{{ final.via_router or 'localhost' }}"
 
+- name: Check the Pushgateway answers
+  ansible.builtin.uri:
+    url: "{{ monitoring_pushgateway_url }}/-/ready"
+  register: monitoring_pushgateway_check
+  retries: 10
+  delay: 3
+  until: monitoring_pushgateway_check is succeeded
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+  when: monitoring_pushgateway
+
+- name: Check Loki answers
+  ansible.builtin.uri:
+    url: "{{ monitoring_loki_url }}/ready"
+  register: monitoring_loki_check
+  retries: 10
+  delay: 3
+  until: monitoring_loki_check is succeeded
+  delegate_to: "{{ final.via_router or 'localhost' }}"
+  when: monitoring_loki
+
 - name: Show where Grafana is
   ansible.builtin.debug:
     msg: >-
@@ -34,3 +54,11 @@
       Grafana is up at {{ monitoring_url }}.
       {%- endif %}
       Log in as admin (password in {{ host_secrets_where }}).
+      {% if monitoring_pushgateway -%}
+      Push metrics to {{ monitoring_pushgateway_url }}
+      (http://{{ vm.name }}.{{ vm.network.domain }}:{{ monitoring_pushgateway_port }}).
+      {% endif -%}
+      {% if monitoring_loki -%}
+      Push logs to {{ monitoring_loki_url }}/loki/api/v1/push
+      (http://{{ vm.name }}.{{ vm.network.domain }}:{{ monitoring_loki_port }}).
+      {%- endif %}

@@ -94,6 +94,8 @@ hosts:
       tools: 
         - npm: "@anthropic-ai/claude-code"
         - uv: ruff
+      environment:
+        TPP_METRICS_PUSH_URL: http://10.3.1.7:9091
 
   - name: garage
     type: garage
@@ -151,3 +153,24 @@ hosts:
               #           SELECT, INSERT, UPDATE, DELETE (it includes write/read)
               # execute = run functions and procedures in the schema
               access: [create, execute]
+
+  - name: monitoring
+    type: monitoring
+    vm_id: 308
+    ip: 10.3.1.7
+    data_disk:
+      size_gb: 20
+      storage: local-lvm
+    settings:
+      http_port: 3000      # Grafana
+      pushgateway: true
+      loki: true
+      scrape:
+        - job: git
+          targets: 
+            - git.agent-developer.home.arpa:9100
+            - 10.3.1.2:9100
+    proxy: 
+      - name: grafana
+        port: 3000
+        external: true

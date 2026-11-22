@@ -1,7 +1,12 @@
 # Ports a monitoring host may listen on, besides SSH (22). Used by
 # roles/network_verify to find unexpected services. Prometheus and
-# node_exporter are on loopback, which the check leaves out.
+# node_exporter are on loopback, which the check leaves out. The Pushgateway
+# and Loki listen on every address when they are on; Loki's gRPC port and
+# Alloy are on loopback.
 
 - name: Note the ports monitoring listens on
   ansible.builtin.set_fact:
-    verify_expected_ports: ["{{ monitoring_http_port | int }}"]
+    verify_expected_ports: >-
+      {{ [monitoring_http_port | int]
+         + ([monitoring_pushgateway_port | int] if monitoring_pushgateway else [])
+         + ([monitoring_loki_port | int] if monitoring_loki else []) }}
