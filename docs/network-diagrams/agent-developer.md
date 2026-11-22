@@ -2,7 +2,7 @@
 
 Generated from [networks/agent-developer.yaml](../../networks/agent-developer.yaml) when the network is deployed or changed. Don't edit it: redeploy, or run `playbooks/diagram-network.yaml`, to update it.
 
-Isolated network 10.3.1.0/24 on vmbr10, behind router on home at 192.168.1.31. DNS domain agent-developer.home.arpa. 7 of 7 hosts deployed.
+Isolated network 10.3.1.0/24 on vmbr10, behind router on home at 192.168.1.31. DNS domain agent-developer.home.arpa. 7 of 7 hosts deployed. TLS certificates from the home.openbao root.
 
 ```mermaid
 flowchart TB
@@ -18,6 +18,7 @@ flowchart TB
     subgraph dmz["DMZ 10.3.2.0/24 on vmbr11<br/>no DHCP"]
         h_web_proxy["web-proxy, VM 302<br/>proxy, 10.3.2.3<br/>tcp 443, tcp 80"]
     end
+    ca(["TLS root home.openbao<br/>intermediate pki-agent-developer, agent-developer.home.arpa"])
     up <-->|"ens18 WAN 192.168.1.31"| h_router
     h_router <-->|"ens19 LAN 10.3.1.1"| lan
     h_router <-->|"ens20 DMZ 10.3.2.1"| dmz
@@ -25,6 +26,8 @@ flowchart TB
     up -.->|"port forward tcp 192.168.1.31:2222"| h_dev_workstation
     up -.->|"port forward tcp 192.168.1.31:5432"| h_postgres
     h_web_proxy -.->|"route git (external), tcp 3000"| h_gitea
+    ca -.->|"certificates, issued at deploy"| lan
+    ca -.->|"certificates, issued at deploy"| dmz
     lan -.->|"outbound, NAT through 192.168.1.31"| up
     lan -.-x|"blocked: 192.168.0.0/15, 172.16.0.0/12, 10.0.0.0/8"| up
 ```
@@ -48,6 +51,14 @@ Packages and tools declared in the network file. Each role's README lists what t
 | Host | Packages | Tools |
 |---|---|---|
 | dev-workstation | uv, nodejs_22, openbao | @anthropic-ai/claude-code (npm), ruff (uv) |
+
+## TLS certificates
+
+Every host here gets a certificate from home.openbao (on network home) when it is deployed. Machines that trust secrets/home/openbao-pki-root.crt trust them all.
+
+| Issued by | Intermediate | Names | Root to trust |
+|---|---|---|---|
+| home.openbao | pki-agent-developer | *.agent-developer.home.arpa | secrets/home/openbao-pki-root.crt |
 
 ## Port forwards
 

@@ -2,7 +2,7 @@
 
 Generated from [networks/lab.yaml](../../networks/lab.yaml) when the network is deployed or changed. Don't edit it: redeploy, or run `playbooks/diagram-network.yaml`, to update it.
 
-Isolated network 10.1.0.0/24 on vmbr1, behind router on home at 192.168.1.13. DNS domain lab.home.arpa. 5 of 5 hosts deployed.
+Isolated network 10.1.0.0/24 on vmbr1, behind router on home at 192.168.1.13. DNS domain lab.home.arpa. 5 of 5 hosts deployed. TLS certificates from the proxy's own CA (proxy).
 
 ```mermaid
 flowchart TB

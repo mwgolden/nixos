@@ -336,7 +336,7 @@ Only names of external routes work this way. Internal routes, like `www`, refuse
 
 ### Network diagrams
 
-Every deploy writes a diagram of its network to [docs/network-diagrams/](docs/network-diagrams/), such as [lab.md](docs/network-diagrams/lab.md). Each one shows the bridges, the router's addresses, the hosts by zone, and the port forwards, proxy routes, DMZ rules and VPN, with tables of the same data. A Software table lists each host's declared `packages` and `tools`. They are made from the network files, so don't edit them; `destroy-host.yaml` and `destroy-network.yaml` update them too. To redraw them without deploying:
+Every deploy writes a diagram of its network to [docs/network-diagrams/](docs/network-diagrams/), such as [lab.md](docs/network-diagrams/lab.md). Each one shows the bridges, the router's addresses, the hosts by zone, and the port forwards, proxy routes, DMZ rules and VPN, with tables of the same data. Where the network gets its TLS certificates from an OpenBao root, the diagram shows that root and a TLS certificates table names the file to trust. A Software table lists each host's declared `packages` and `tools`. They are made from the network files, so don't edit them; `destroy-host.yaml` and `destroy-network.yaml` update them too. To redraw them without deploying:
 
 ```bash
 ansible-playbook playbooks/diagram-network.yaml               # every network

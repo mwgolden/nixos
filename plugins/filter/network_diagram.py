@@ -87,6 +87,45 @@ def _tools(host):
     return ", ".join(_tool(t) for t in (host.get("settings") or {}).get("tools") or [])
 
 
+def _is_pki_root(host):
+    """Whether an openbao host is a TLS root (settings.pki: true or a
+    mapping; docs/plans/completed/INTERNAL-CA.md)."""
+    pki = (host.get("settings") or {}).get("pki")
+    return host["type"] == "openbao" and (pki is True or isinstance(pki, dict))
+
+
+def _pki(inventory, network):
+    """Where a network's TLS certificates come from when it uses an
+    OpenBao root (security.pki.provider openbao), or {}: the authority's
+    host ID, its host (None if not declared), whether it is on this
+    network, the intermediate's mount and the root file to trust."""
+    net = inventory["networks"][network]
+    pki = (net.get("security") or {}).get("pki") or {}
+    if pki.get("provider") != "openbao" or not pki.get("instance"):
+        return {}
+    instance = pki["instance"]
+    auth_net, _, auth_name = instance.partition(".")
+    return {"instance": instance, "host": inventory["hosts"].get(instance),
+            "local": auth_net == network, "mount": f"pki-{network}",
+            "root_file": f"secrets/{auth_net}/{auth_name}-pki-root.crt"}
+
+
+def _pki_networks(inventory, instance):
+    """Networks whose certificates an openbao host signs, sorted."""
+    return sorted(name for name, n in inventory["networks"].items()
+                  if ((n.get("security") or {}).get("pki") or {}).get("provider") == "openbao"
+                  and n["security"]["pki"].get("instance") == instance)
+
+
+def _tls_source(inventory, network):
+    """A few words on who issues a network's TLS certificates."""
+    pki = _pki(inventory, network)
+    if pki:
+        return f"{pki['instance']} root"
+    proxy = inventory["networks"][network]["proxy"]
+    return f"proxy's own CA ({proxy})" if proxy else ""
+
+
 def _hosts(inventory, network):
     """The network's hosts, in file order (the inventory keeps it)."""
     return [h for h in inventory["hosts"].values() if h["network"]["name"] == network]
@@ -118,6 +157,10 @@ def _host_node(h, net, deployed, indent):
     ports = _service_ports(h, net)
     if ports:
         lines.append(", ".join(ports))
+    if _is_pki_root(h):
+        pki = (net.get("security") or {}).get("pki") or {}
+        lines.append("TLS root, signs this network's certificates"
+                     if pki.get("provider") == "openbao" and pki.get("instance") == h["id"] else "TLS root")
     if h["id"] not in deployed:
         lines.append("not deployed")
     return f"{indent}{_node(h['name'])}[{_label(*lines)}]"
@@ -177,6 +220,14 @@ def _flowchart(inventory, network, deployed):
             vpn = net["vpn"]
             peers = ", ".join(p["name"] for p in vpn["peers"])
             out.append(f"    vpn(({_label('VPN clients', vpn['cidr'], peers)}))")
+        # A TLS root on another network: no connection, the deploys carry
+        # the requests (docs/plans/completed/INTERNAL-CA.md).
+        pki = _pki(inventory, network)
+        if pki and not pki["local"]:
+            lines = [f"TLS root {pki['instance']}", f"intermediate {pki['mount']}, {net['domain']}"]
+            if pki["host"] is None or pki["instance"] not in deployed:
+                lines.append("not deployed")
+            out.append(f"    ca([{_label(*lines)}])")
 
         if router:
             r = _node(router["name"])
@@ -205,6 +256,10 @@ def _flowchart(inventory, network, deployed):
             out.append(f"    {_node(rule['src_host'])} -.->|{_label(f'reach {rule['proto']} {rule['port']}')}| {_node(rule['dst_host'])}")
         if net["vpn"]:
             out.append(f"    vpn -.->|{_label(f'udp {net['vpn']['endpoint']}')}| {_node(net['router']) if router else 'lan'}")
+        if pki and not pki["local"]:
+            out.append(f"    ca -.->|{_label('certificates, issued at deploy')}| lan")
+            if net["dmz"]:
+                out.append(f"    ca -.->|{_label('certificates, issued at deploy')}| dmz")
         out.append(f"    lan -.->|{_label('outbound, NAT through ' + wan)}| up")
         blocked = (router or {}).get("settings", {}).get("blocked_networks") or []
         if blocked:
@@ -239,7 +294,11 @@ def network_diagram(inventory, network, deployed):
         summary += f", behind {net['router'] or 'no router'} on {net['upstream']} at {net['router_wan_ip']}"
         summary += f". DNS domain {net['domain']}"
     count = sum(1 for h in hosts if h["id"] in deployed)
-    out += [summary + f". {count} of {len(hosts)} host{'' if len(hosts) == 1 else 's'} deployed.", ""]
+    summary += f". {count} of {len(hosts)} host{'' if len(hosts) == 1 else 's'} deployed."
+    tls = _tls_source(inventory, network)
+    if tls:
+        summary += f" TLS certificates from the {tls}."
+    out += [summary, ""]
     out += _flowchart(inventory, network, deployed)
 
     out += ["", "## Hosts", ""]
@@ -257,6 +316,22 @@ def network_diagram(inventory, network, deployed):
                 "Each role's README lists what the role installs itself.", ""]
         out += _table(["Host", "Packages", "Tools"], software)
 
+    pki = _pki(inventory, network)
+    roots = [h for h in hosts if _is_pki_root(h)]
+    if pki or roots:
+        out += ["", "## TLS certificates", ""]
+        if pki:
+            where = "on this network" if pki["local"] else f"on network {pki['instance'].partition('.')[0]}"
+            out += [f"Every host here gets a certificate from {pki['instance']} ({where}) when it is deployed. "
+                    f"Machines that trust {pki['root_file']} trust them all.", ""]
+            out += _table(["Issued by", "Intermediate", "Names", "Root to trust"],
+                          [[pki["instance"], pki["mount"], f"*.{net['domain']}", pki["root_file"]]])
+        for h in roots:
+            signs = _pki_networks(inventory, h["id"])
+            if pki:
+                out.append("")
+            out += [f"{h['name']} is a TLS root. It signs certificates for "
+                    f"{', '.join(signs) if signs else 'no network yet'}."]
     if net["port_forwards"]:
         out += ["", "## Port forwards", "", f"From the router's WAN address, {net['router_wan_ip']}.", ""]
         out += _table(["Name", "Protocol", "WAN port", "To"],
@@ -314,8 +389,9 @@ def network_diagram_index(inventory, networks, deployed):
         hosts = _hosts(inventory, n["name"])
         rows.append([f"[{n['name']}]({n['name']}.md)", n["type"], n["cidr"], n["bridge"],
                      n["router_wan_ip"] if n["type"] == "isolated" else "",
+                     _tls_source(inventory, n["name"]),
                      f"{sum(1 for h in hosts if h['id'] in deployed)} of {len(hosts)}"])
-    out += _table(["Network", "Type", "Subnet", "Bridge", "Router WAN", "Hosts deployed"], rows)
+    out += _table(["Network", "Type", "Subnet", "Bridge", "Router WAN", "TLS certificates", "Hosts deployed"], rows)
     out += ["", "```mermaid", "flowchart TB"]
     for n in nets:
         node = "n_" + n["name"].replace("-", "_")

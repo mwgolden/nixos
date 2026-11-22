@@ -2,7 +2,7 @@
 
 Generated from [networks/home.yaml](../../networks/home.yaml) when the network is deployed or changed. Don't edit it: redeploy, or run `playbooks/diagram-network.yaml`, to update it.
 
-Home network 192.168.1.0/24 on vmbr0. 3 of 3 hosts deployed.
+Home network 192.168.1.0/24 on vmbr0. 3 of 3 hosts deployed. TLS certificates from the home.openbao root.
 
 ```mermaid
 flowchart TB
@@ -10,7 +10,7 @@ flowchart TB
         gw["home gateway and DNS<br/>192.168.1.1"]
         h_nats["nats, VM 118<br/>nats, 192.168.1.18"]
         h_ws["ws, VM 109<br/>workstation, 192.168.1.19"]
-        h_openbao["openbao, VM 120<br/>openbao, 192.168.1.20"]
+        h_openbao["openbao, VM 120<br/>openbao, 192.168.1.20<br/>TLS root, signs this network's certificates"]
         r_agent_developer["router of agent-developer, VM 301<br/>WAN 192.168.1.31"]
         r_lab["router of lab, VM 113<br/>WAN 192.168.1.13<br/>not deployed"]
         r_workstation_lab["router of workstation-lab, VM 223<br/>WAN 192.168.1.3<br/>not deployed"]
@@ -40,3 +40,13 @@ Packages and tools declared in the network file. Each role's README lists what t
 | Host | Packages | Tools |
 |---|---|---|
 | ws | python3Packages.ipython, uv, nodejs_22 | @anthropic-ai/claude-code (npm), ruff@0.8.4 (uv) |
+
+## TLS certificates
+
+Every host here gets a certificate from home.openbao (on this network) when it is deployed. Machines that trust secrets/home/openbao-pki-root.crt trust them all.
+
+| Issued by | Intermediate | Names | Root to trust |
+|---|---|---|---|
+| home.openbao | pki-home | *.home.home.arpa | secrets/home/openbao-pki-root.crt |
+
+openbao is a TLS root. It signs certificates for agent-developer, home, lab, workstation-lab.

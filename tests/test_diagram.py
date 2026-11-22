@@ -41,6 +41,17 @@ WORKSTATION = {"name": "ws", "type": "workstation", "vm_id": 120, "ip": "10.1.0.
                                        "creates": "~/.local/bin/thing"}]}}
 
 
+def with_pki(configs):
+    """full, plus a home OpenBao that is the TLS root for home and lab
+    (docs/plans/completed/INTERNAL-CA.md)."""
+    full(configs)
+    configs["home"]["hosts"].append({"name": "openbao", "type": "openbao", "vm_id": 121, "ip": "192.168.1.20",
+                                     "data_disk": {"size_gb": 10, "storage": "local-lvm"},
+                                     "settings": {"tls": "pki", "pki": True}})
+    for name in ("home", "lab"):
+        configs[name]["network"]["security"] = {"pki": {"provider": "openbao", "instance": "home.openbao"}}
+
+
 def mermaid(text):
     return text.split("```mermaid\n", 1)[1].split("```", 1)[0]
 
@@ -64,6 +75,63 @@ class Golden(unittest.TestCase):
     def test_index(self):
         inv = inventory(full)
         self.check("README.md", nd.network_diagram_index(inv, ["home", "lab"], nd.network_diagram_deployed(inv)))
+
+    def test_lab_with_pki(self):
+        inv = inventory(with_pki)
+        self.check("lab-pki.md", nd.network_diagram(inv, "lab", nd.network_diagram_deployed(inv)))
+
+    def test_home_with_pki(self):
+        inv = inventory(with_pki)
+        self.check("home-pki.md", nd.network_diagram(inv, "home", nd.network_diagram_deployed(inv)))
+
+    def test_index_with_pki(self):
+        inv = inventory(with_pki)
+        self.check("README-pki.md",
+                   nd.network_diagram_index(inv, ["home", "lab"], nd.network_diagram_deployed(inv)))
+
+
+class Pki(unittest.TestCase):
+    """The TLS root, where a network uses one."""
+
+    def setUp(self):
+        self.inv = inventory(with_pki)
+        self.all = nd.network_diagram_deployed(self.inv)
+
+    def test_validates(self):
+        from test_network_config import network_config
+        configs = {}
+        def keep(c):
+            with_pki(c)
+            configs.update(c)
+        inventory(keep)
+        self.assertEqual(network_config.network_config_errors(
+            [{"file": k, "config": v} for k, v in configs.items()], 110, "192.168.1.10"), [])
+
+    def test_isolated_network_draws_its_root(self):
+        chart = mermaid(nd.network_diagram(self.inv, "lab", self.all))
+        self.assertIn('ca(["TLS root home.openbao<br/>intermediate pki-lab, lab.home.arpa"])', chart)
+        self.assertIn('ca -.->|"certificates, issued at deploy"| lan', chart)
+        self.assertIn('ca -.->|"certificates, issued at deploy"| dmz', chart)
+
+    def test_root_not_deployed(self):
+        chart = mermaid(nd.network_diagram(self.inv, "lab", [h for h in self.all if h != "home.openbao"]))
+        self.assertIn('intermediate pki-lab, lab.home.arpa<br/>not deployed"])', chart)
+
+    def test_home_marks_the_root_host(self):
+        text = nd.network_diagram(self.inv, "home", self.all)
+        self.assertIn("TLS root, signs this network's certificates", mermaid(text))
+        self.assertNotIn("ca([", mermaid(text))
+        self.assertIn("openbao is a TLS root. It signs certificates for home, lab.", text)
+
+    def test_section_and_summary(self):
+        text = nd.network_diagram(self.inv, "lab", self.all)
+        self.assertIn("TLS certificates from the home.openbao root.", text)
+        self.assertIn("| home.openbao | pki-lab | *.lab.home.arpa | secrets/home/openbao-pki-root.crt |", text)
+
+    def test_without_pki_nothing_changes(self):
+        chart = mermaid(nd.network_diagram(inventory(full), "lab", self.all))
+        self.assertNotIn("ca(", chart)
+        self.assertNotIn("## TLS certificates", nd.network_diagram(inventory(full), "lab", self.all))
 
 
 class Content(unittest.TestCase):
