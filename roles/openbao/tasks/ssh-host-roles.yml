@@ -1,4 +1,4 @@
-# The SSH host CA's signing roles (docs/plans/NETWORK-SECURITY.md, 4.3):
+# The SSH host CA's signing roles (docs/plans/completed/NETWORK-SECURITY.md, 4.3):
 # hosts-<network> for every network whose administrative_identity is this
 # host with ssh_host_ca, allowed only that network's hosts' names and
 # addresses. The hosts' own deploys ask for the certificates

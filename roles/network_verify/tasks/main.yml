@@ -187,7 +187,7 @@
           {{ p }}
 
 # The SSH user CA the host trusts must be the one its network's security:
-# block names (docs/plans/NETWORK-SECURITY.md, 4.2.5), and none with static
+# block names (docs/plans/completed/NETWORK-SECURITY.md, 4.2.5), and none with static
 # keys only.
 - name: Check which SSH user CA {{ vm.name }} trusts
   when: verify_ssh is succeeded
@@ -261,3 +261,55 @@
                ~ ', not one from ' ~ verify_host_ca_file | basename ~ '; redeploy it.' ]
              if (verify_host_cert.stdout | trim) != ((verify_host_ca_fp.stdout | default('')).split(' ')[1] | default('-'))
              else verify_problems }}
+
+# With security.pki from an OpenBao, the host must have a TLS certificate
+# from its network's intermediate, for its names, not expired
+# (docs/plans/completed/INTERNAL-CA.md). One that expires within 30 days, or comes
+# from an older intermediate (still valid), is only a warning.
+- name: Check {{ vm.name }}'s TLS certificate
+  when:
+    - verify_ssh is succeeded
+    - (nixlab | host_pki(vm)) | length > 0
+  vars:
+    verify_pki: "{{ nixlab | host_pki(vm) }}"
+    verify_intermediate: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../' ~ verify_pki.intermediate_file, errors='ignore') or '' }}
+  block:
+    - name: Read the TLS certificate
+      ansible.builtin.slurp:
+        src: /etc/nixlab/tls/cert.pem
+      register: verify_tls_cert
+      failed_when: false
+      become: true
+
+    - name: Note the TLS certificate's state
+      ansible.builtin.set_fact:
+        verify_tls_pem: "{{ verify_tls_cert.content | default('') | b64decode }}"
+        verify_tls_state: >-
+          {{ (verify_tls_cert.content | default('') | b64decode)
+             | tls_cert_state(verify_intermediate, vm | tls_cert_names, 30) }}
+
+    - name: Note a missing, wrong or expired TLS certificate
+      ansible.builtin.set_fact:
+        verify_problems: >-
+          {{ verify_problems + [
+               'its TLS certificate is ' ~
+               ('missing' if verify_tls_state == 'missing'
+                else 'for other names than ' ~ (vm | tls_cert_names).dns | join(', ')
+                     ~ ' and ' ~ (vm | tls_cert_names).ip | join(', ') if verify_tls_state == 'other names'
+                else 'expired')
+               ~ '; redeploy it (or deploy ' ~ verify_pki.instance ~ ' first if it has no intermediate for '
+               ~ vm.network.name ~ ').' ]
+             if verify_tls_state in ['missing', 'other names'] or (verify_tls_pem | x509_days_left) < 0
+             else verify_problems }}
+
+    - name: Warn about a TLS certificate to renew soon
+      ansible.builtin.debug:
+        msg: >-
+          {{ vm.name }}'s TLS certificate
+          {{ 'expires in ' ~ (verify_tls_pem | x509_days_left) ~ ' days'
+             if verify_tls_state == 'expiring'
+             else 'is from an older intermediate of ' ~ verify_pki.instance ~ ' (it keeps working until it expires)' }}.
+          Renew it with
+          ansible-playbook playbooks/deploy-host.yaml -e network={{ vm.network.name }} -e host={{ vm.name }}
+      when: verify_tls_state in ['expiring', 'another CA'] and (verify_tls_pem | x509_days_left) >= 0

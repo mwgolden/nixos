@@ -33,6 +33,13 @@ network:
     cidr: 10.9.1.0/24
     gateway: 10.9.1.1
 
+  # With a home openbao host that has settings.pki, the network's
+  # certificates can come from its root instead of the proxy's own CA, so
+  # the one root file you already trust covers this network too
+  # (roles/openbao/README.md, "TLS certificates"):
+  # security:
+  #   pki: {provider: openbao, instance: home.openbao}
+
 hosts:
   - name: test-router
     type: router

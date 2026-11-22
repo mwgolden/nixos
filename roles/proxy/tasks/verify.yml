@@ -44,8 +44,14 @@
       DNS Resolver > Host Overrides). Other routes refuse connections from
       outside {{ proxy_internal_sources[:-1] | join(' and ') }}.
       {% endif -%}
+      {% if proxy_pki -%}
+      Certificates come from {{ nixos_base_pki.instance }}. Browsers that
+      trust {{ proxy_root_file_short }} accept them; it's the same file for
+      every network that uses it.
+      {%- else -%}
       Certificates come from the proxy's own authority. To stop browsers
       warning, trust its root certificate, saved at
       secrets/{{ vm.network.name }}/{{ vm.name }}-ca.crt. A new proxy VM
       makes a new authority, which has to be trusted again.
+      {%- endif %}
   when: proxy_routes | length > 0

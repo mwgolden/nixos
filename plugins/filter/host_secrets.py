@@ -5,7 +5,7 @@ Used from roles/host_secrets:
 
     {{ file_values | host_secrets_decide(store_values, file_exists, store_exists, push) }}
 
-The rules (docs/plans/OPENBAO-SECRETS.md, section 1): once a secret is in
+The rules (docs/plans/completed/OPENBAO-SECRETS.md, section 1): once a secret is in
 OpenBao, that is where it is read from. A file is imported when OpenBao
 has nothing yet. A file that differs from OpenBao stops the deploy, unless
 push is set (-e secrets_push=true); then the file overwrites OpenBao.

@@ -465,19 +465,20 @@ These decisions were approved on 2026-10-28. The implementation steps are in [PL
 6. **Deletion policy:** Removing a host from a network file never deletes it. A deploy reports VMs that the project owns but the file no longer lists. Deleting them needs `-e prune=true` and typing the network name. `destroy-network.yaml` deletes in reverse order: hosts, then the router, then (optionally) the bridge.
 7. **Shared services:** Internal DNS runs on the router's dnsmasq. The reverse proxy is its own host type.
 8. **Service dependencies:** The order is implied: bridge, router, then the openbao host if there is one, then hosts in list order. Validation checks that every reverse-proxy backend and port forward points at a declared host. Explicit `depends_on` is added only if it becomes necessary.
-9. **Internal DNS and TLS:** dnsmasq `address=` records built from the host list. Internal HTTP is plain at first. TLS comes with the reverse proxy, using Caddy's internal CA.
-10. **State tracking:** Managed VMs carry Proxmox tags: `nixlab`, `net-<name>` and `type-<type>`. VMs that existed before tagging are adopted once, only when both their ID and name match the configuration. Every deploy also records the VM's current address in Proxmox. That's how a VM is found after its entry moves to another network file, since the files only hold where it should be. Before changing a VM, the playbook checks that the guest's `ens18` MAC matches `net0` in Proxmox. Clones start with the template's SSH host key, so without this check a reused address could lead to reconfiguring the wrong VM. (Since phase 2b of [plans/NETWORK-SECURITY.md](plans/NETWORK-SECURITY.md), each VM's first deploy gives it its own host key; the check stays, since it runs before that.) Reading addresses through the QEMU guest agent is a possible later improvement.
+9. **Internal DNS and TLS:** dnsmasq `address=` records built from the host list. Internal HTTP is plain at first. TLS comes with the reverse proxy, using Caddy's internal CA, or a root in OpenBao for networks that choose one (decision 18).
+10. **State tracking:** Managed VMs carry Proxmox tags: `nixlab`, `net-<name>` and `type-<type>`. VMs that existed before tagging are adopted once, only when both their ID and name match the configuration. Every deploy also records the VM's current address in Proxmox. That's how a VM is found after its entry moves to another network file, since the files only hold where it should be. Before changing a VM, the playbook checks that the guest's `ens18` MAC matches `net0` in Proxmox. Clones start with the template's SSH host key, so without this check a reused address could lead to reconfiguring the wrong VM. (Since phase 2b of [plans/completed/NETWORK-SECURITY.md](plans/completed/NETWORK-SECURITY.md), each VM's first deploy gives it its own host key; the check stays, since it runs before that.) Reading addresses through the QEMU guest agent is a possible later improvement.
 11. **Proxmox resource ownership:** The project creates and manages isolated bridges. It uses the home bridge (`vmbr0`) as it is. Nothing without the project's tags is ever deleted.
-12. **Secrets management:** Per-host files at `secrets/<network>/<host>.env`, kept out of git. (Extended 2026-11-16, see [plans/OPENBAO-SECRETS.md](plans/OPENBAO-SECRETS.md).) A network with an `openbao` host keeps its hosts' secrets there, at `<network>/<host>` in a KV mount named after the network: the files are imported on the next deploy, OpenBao is then the truth, and a file that differs stops the deploy unless `-e secrets_push=true`. The deploys use a `deploy-<network>` token limited to the network's secrets, made by the openbao host (the root token from `<openbao>-init.json` only until it exists), through the router on an isolated network. Each host also gets a read-only token for its own secrets. Networks without an openbao host keep using the files.
+12. **Secrets management:** Per-host files at `secrets/<network>/<host>.env`, kept out of git. (Extended 2026-11-16, see [plans/completed/OPENBAO-SECRETS.md](plans/completed/OPENBAO-SECRETS.md).) A network with an `openbao` host keeps its hosts' secrets there, at `<network>/<host>` in a KV mount named after the network: the files are imported on the next deploy, OpenBao is then the truth, and a file that differs stops the deploy unless `-e secrets_push=true`. The deploys use a `deploy-<network>` token limited to the network's secrets, made by the openbao host (the root token from `<openbao>-init.json` only until it exists), through the router on an isolated network. Each host also gets a read-only token for its own secrets. Networks without an openbao host keep using the files.
 13. **DMZ:** (approved 2026-10-30, see [plans/completed/DMZ.md](plans/completed/DMZ.md)) An optional `dmz:` block in an isolated network's file adds a second bridge behind the same router. Hosts join it with `zone: dmz`. DMZ → LAN access is derived from proxy routes (a DMZ proxy to its LAN backends) plus explicit `reach:` entries. Validation warns, but doesn't stop, when a published host stays on the LAN of a network with a DMZ. The DMZ has no DHCP unless asked for, and it shares the network's domain and DNS server.
 14. **Host names per network:** (approved 2026-11-08, see [plans/completed/HOST-NAMES.md](plans/completed/HOST-NAMES.md)) A host name is unique only within its network file. Across networks a host is identified as `<network>.<host>`, which is also its Ansible inventory name. VM IDs, addresses, bridges, subnets and domains stay unique across all networks. Proxmox VM names stay the short host name, so they may repeat; VMs are told apart by VM ID and the `net-<network>` tag.
 15. **Network diagrams:** (approved 2026-11-08, see [plans/completed/NETWORK-DIAGRAMS.md](plans/completed/NETWORK-DIAGRAMS.md)) Deploys and destroys write one Mermaid diagram per network, with tables of the same data, to `docs/network-diagrams/`, made from the network files and the VMs that exist in Proxmox. The playbooks never commit them. They carry no secrets or keys.
 16. **VM CPU type, cores and memory:** (approved 2026-11-13, see [plans/completed/CPU-TYPE.md](plans/completed/CPU-TYPE.md)) Every VM gets an explicit CPU type: `vm_cpu_type` in `proxmox/vars.yaml` (`x86-64-v2-AES`), or a host's `cpu:`. Only `x86-64-v2-AES`, `x86-64-v2` and `host` are allowed, since the node has no AVX2. Deploys set it on new and existing VMs, but restart a VM to apply it only with `-e proxmox_vm_restart=true`, with a clean shutdown and never a forced stop. Hosts may also set `cores` and `memory_mb`; unset, the VM keeps what it has. They are applied the same way, in one request and one restart.
-17. **Identity, secrets and certificate authorities:** (decided 2026-11-21; see [plans/NETWORK-SECURITY.md](plans/NETWORK-SECURITY.md)) Each network may declare a `security:` block, described in [§12](#12-identity-secrets-and-certificate-authorities). A network without the block keeps decision 12's behaviour. A home OpenBao is the SSH user CA, and later the SSH host CA once each VM has its own host key, for networks that choose it. Administrators log in to it with `userpass`, and with TOTP as well where MFA is turned on (off by default). Port 8200 is open only to `admin_sources`. It doesn't hold home's own secrets. Each network keeps its own OpenBao for secrets, unsealed with its own Shamir keys. Each host gets a read-only token for its own secrets, also kept root-only on the VM. TLS stays with each proxy's internal CA and each OpenBao's self-signed certificate: the TLS hierarchy (an offline root and per-network intermediates, phase 4) and the extra strategies' tooling (phase 5) were deferred on 2026-11-21 as more than a lab needs. Principals are `homelab-admin`, `<network>-admin` and `<network>-operator`. Ansible keeps its static SSH key. Access paths to isolated networks don't change.
+17. **Identity, secrets and certificate authorities:** (decided 2026-11-21; see [plans/completed/NETWORK-SECURITY.md](plans/completed/NETWORK-SECURITY.md)) Each network may declare a `security:` block, described in [§12](#12-identity-secrets-and-certificate-authorities). A network without the block keeps decision 12's behaviour. A home OpenBao is the SSH user CA, and later the SSH host CA once each VM has its own host key, for networks that choose it. Administrators log in to it with `userpass`, and with TOTP as well where MFA is turned on (off by default). Port 8200 is open only to `admin_sources`. It doesn't hold home's own secrets. Each network keeps its own OpenBao for secrets, unsealed with its own Shamir keys. Each host gets a read-only token for its own secrets, also kept root-only on the VM. The extra strategies' tooling (phase 5) was deferred on 2026-11-21 as more than a lab needs. TLS was first left with each proxy's internal CA; decision 18 replaced that. Principals are `homelab-admin`, `<network>-admin` and `<network>-operator`. Ansible keeps its static SSH key. Access paths to isolated networks don't change.
+18. **One TLS root for every network:** (decided 2026-11-21, see [plans/completed/INTERNAL-CA.md](plans/completed/INTERNAL-CA.md)) A network may set `security.pki: {provider: openbao, instance: home.openbao}`. The home OpenBao then holds an online root (its key never exported, name-constrained to `home.arpa`) and one intermediate per such network, limited to that network's domain. Each host's deploy gets it a one-year certificate, its key made on the VM and its request carried by the Ansible controller, so isolated networks still never connect to home; deploys renew it with 30 days left. The proxy serves it instead of Caddy's internal CA. Your machines trust one root. This replaces the deferred phase 4 of NETWORK-SECURITY.md (an offline root, intermediates in each network's OpenBao, ACME), and networks without `security.pki` keep the proxy's internal CA.
 
 ## 12. Identity, secrets and certificate authorities
 
-This section is the target architecture. How to get there, and its open decisions, are in [plans/NETWORK-SECURITY.md](plans/NETWORK-SECURITY.md).
+This section is the target architecture. How to get there, and its open decisions, are in [plans/completed/NETWORK-SECURITY.md](plans/completed/NETWORK-SECURITY.md).
 
 ### 12.1 Responsibilities
 
@@ -504,6 +505,7 @@ An optional `openbao` host on the home network. It is the central authority for 
 
 - Issues short-lived SSH user certificates.
 - Optionally issues SSH host certificates.
+- Optionally is the TLS root for every network that chooses it (`pki`), with one intermediate per network.
 - May store infrastructure credentials, such as Proxmox API tokens.
 - Gives no workload access to its secrets. Access uses narrow policies, one per administrator.
 
@@ -511,25 +513,27 @@ Compromising its SSH user CA would allow administrative impersonation on every n
 
 #### Network-local OpenBao
 
-An optional `openbao` host on any network. It owns that network's workload secrets: application credentials, database passwords, API keys, NATS credentials. It may also hold the network's TLS intermediate CA.
+An optional `openbao` host on any network. It owns that network's workload secrets: application credentials, database passwords, API keys, NATS credentials. It may also be the network's own TLS root (`pki`), for a network that doesn't use the home one.
 
 Each instance has its own storage, authentication, policies, tokens, unseal keys, and backups. No instance has access to another. A network-local OpenBao doesn't need the home OpenBao to start, unseal, or serve secrets.
 
 #### Certificate authority hierarchy
 
-**Deferred (2026-11-21).** Today each network's TLS certificates come from its proxy's internal CA (decision 9), and each OpenBao serves a self-signed certificate; each network is its own TLS trust domain, and clients trust one file per network. The hierarchy below was phase 4 of the plan and is kept as the direction if one root becomes worth having:
+A network with `security.pki: {provider: openbao}` gets its TLS certificates from an OpenBao's root, normally the home OpenBao's ([plans/completed/INTERNAL-CA.md](plans/completed/INTERNAL-CA.md)). Others keep the proxy's internal CA, and are each their own TLS trust domain.
 
 ```text
-Offline root CA (TLS)                Home OpenBao
-   │                                    ├── SSH user CA
-   ├── home intermediate                └── SSH host CA (optional)
-   ├── <network> intermediate
-   └── <network> intermediate
-        each in its own network's OpenBao,
-        limited to that network's domain
+Home OpenBao
+ ├── ssh-client-signer/      SSH user CA
+ ├── ssh-host-signer/        SSH host CA (optional)
+ ├── pki/                    TLS root, online, key never exported,
+ │                           name-constrained to home.arpa
+ ├── pki-home/               intermediate, limited to home.home.arpa
+ └── pki-<network>/          intermediate, limited to <network>.home.arpa
+       signs the network's hosts' certificates (one year), whose keys
+       are made on the VMs; the deploys carry the requests
 ```
 
-The offline root would sign intermediates only, and day-to-day issuing would be done by the online authority for each network. SSH identity and TLS workload identity stay separate hierarchies either way.
+The root signs intermediates only. A misused intermediate can't sign for another network or for anything outside `home.arpa`, in a client that checks name constraints. SSH identity and TLS stay separate hierarchies. Clients trust one file, `secrets/home/openbao-pki-root.crt`.
 
 ### 12.3 Administrative access
 
@@ -555,12 +559,12 @@ Each network chooses one. The strategy is a preset, not a limit: its parts can b
 
 | Strategy | Administrative identity | Secrets | TLS |
 |---|---|---|---|
-| **A `current`** | Static SSH keys | The network's own OpenBao if it has one (decision 12), otherwise files | Proxy's internal CA |
-| **B `centralized`** | Home OpenBao's SSH user CA | As `current` | Proxy's internal CA |
-| **C `centralized-local`** | Home OpenBao's SSH user CA | The network's own OpenBao | Proxy's internal CA |
-| **D `independent`** | The network's own OpenBao's SSH user CA | The network's own OpenBao | Proxy's internal CA |
+| **A `current`** | Static SSH keys | The network's own OpenBao if it has one (decision 12), otherwise files | Proxy's internal CA, or an OpenBao root with `pki` |
+| **B `centralized`** | Home OpenBao's SSH user CA | As `current` | Proxy's internal CA, or an OpenBao root with `pki` |
+| **C `centralized-local`** | Home OpenBao's SSH user CA | The network's own OpenBao | Proxy's internal CA, or an OpenBao root with `pki` |
+| **D `independent`** | The network's own OpenBao's SSH user CA | The network's own OpenBao | Proxy's internal CA, or an OpenBao root with `pki` |
 
-C is the preferred strategy for isolated networks that should manage their own secrets. D fits networks that need administrative separation from home. A is the default, so existing networks keep working.
+No strategy turns `pki` on; each network sets it. C is the preferred strategy for isolated networks that should manage their own secrets. D fits networks that need administrative separation from home. A is the default, so existing networks keep working.
 
 ### 12.5 Configuration
 
@@ -573,10 +577,11 @@ network:
     strategy: centralized
     administrative_identity: {instance: home.openbao}
     secrets: {provider: files}
+    pki: {provider: openbao, instance: home.openbao}
 hosts:
   - name: openbao
     type: openbao
-    settings: {tls: self-signed, ssh_user_ca: true}
+    settings: {tls: pki, ssh_user_ca: true, pki: true}
 
 # networks/agent-developer.yaml
 network:
@@ -584,6 +589,7 @@ network:
     strategy: centralized-local
     administrative_identity: {instance: home.openbao}
     secrets: {instance: agent-developer.openbao}
+    pki: {provider: openbao, instance: home.openbao}
 ```
 
 `administrative_identity`, `secrets` and `pki` are each chosen independently: for example, a network can use the home SSH CA and keep its secrets in files.
@@ -591,8 +597,9 @@ network:
 Validation rejects:
 
 - References to hosts that don't exist or aren't authorities of the needed kind.
-- Secrets or certificates kept on another network's authority.
-- Administrative identity from a network other than the network itself or a `home` network. One isolated network never depends on another.
+- Secrets kept on another network's authority.
+- Administrative identity or certificates from a network other than the network itself or a `home` network. One isolated network never depends on another.
+- A network whose domain isn't under its PKI root's permitted domains.
 - Strategies that need a local OpenBao the network doesn't have.
 - Overrides that contradict their preset.
 - A signing authority without TLS.
@@ -609,6 +616,8 @@ The project's convention is one role per host type, so the authority functions a
 | Authentication, policies, administrators | `openbao` role, `auth.yml` |
 | Secrets engines | `openbao` role (existing network mount) and [host_secrets](../roles/host_secrets/tasks/main.yml) |
 | SSH user and host CA | `openbao` role, `ssh-ca.yml` |
+| TLS root and intermediates | `openbao` role, `pki.yml` |
+| Hosts' TLS certificates and trusting the root | `nixos_base`, `tls-cert.yml` and `pki-trust.nix`, on every host of a network with `pki` |
 | Hosts trusting a CA, principals | `nixos_base`, `ssh-trust.nix`, on every host |
 | Desktop certificate requests | `scripts/ssh-cert` |
 | Deciding what a network uses | `network_security` filter, beside `network_secrets_store` |
@@ -626,6 +635,7 @@ Destroying a host or network never deletes its secrets, its OpenBao backups or i
 | Home OpenBao unavailable | Existing SSH certificates work until they expire. Open sessions continue. |
 | Home OpenBao unavailable | No new certificates are issued. Ansible's key still works. |
 | Home OpenBao unavailable | Network-local secrets and deploys of other networks work. |
+| Home OpenBao unavailable | TLS certificates keep working until they expire (a year); deploys can't renew them and say so. |
 | Network-local OpenBao unavailable | That network's deploys stop. Workloads reading secrets at runtime may fail. |
 | Home network unavailable | Isolated workloads keep running. |
 | One isolated network compromised | Others are unaffected: separate authorities, separate tokens, router rules. |

@@ -16,10 +16,10 @@ openbao_settings_defaults:
   kv_mounts:
     - secret
   # HTTPS on the listener: none (plain HTTP), self-signed (a key and
-  # certificate made on the VM; the certificate is copied to
-  # secrets/<network>/<host>-tls.crt for clients). pki, a certificate from
-  # a TLS hierarchy, was phase 4 of docs/plans/NETWORK-SECURITY.md, which is
-  # deferred.
+  # certificate made on the VM), or pki (the host's certificate from its
+  # network's PKI, security.pki; docs/plans/completed/INTERNAL-CA.md). What clients
+  # trust is copied to secrets/<network>/<host>-tls.crt: the self-signed
+  # certificate, or the PKI's root.
   tls: none
   # Addresses or subnets allowed to reach the port. [] means anyone who can
   # reach the VM, as before.
@@ -40,9 +40,22 @@ openbao_settings_defaults:
   # deploy, valid for ssh_host_cert_ttl.
   ssh_host_ca: false
   ssh_host_cert_ttl: 8760h
-  # A TLS intermediate CA: phase 4 of docs/plans/NETWORK-SECURITY.md,
-  # deferred. Validation rejects it.
+  # A TLS root CA, and an intermediate for every network whose
+  # security.pki names this host (docs/plans/completed/INTERNAL-CA.md). Needs tls.
+  # true, or a mapping overriding openbao_pki_defaults below.
   pki: false
+
+# settings.pki: true means these; a mapping there overrides any of them.
+# They mirror PKI_SETTINGS_DEFAULTS in plugins/filter/network_config.py.
+openbao_pki_defaults:
+  # The root's name constraint: it can only vouch for names under these,
+  # so every network that uses it needs its domain under one. Only read
+  # when the root is made; a different list needs a new root.
+  permitted_domains:
+    - home.arpa
+  root_ttl: 87600h          # 10 years
+  intermediate_ttl: 43800h  # 5 years, re-signed with openbao_pki_resign_days left
+  cert_ttl: 8760h           # hosts' certificates; renewed by deploys with 30 days left
 
 openbao_settings: "{{ openbao_settings_defaults | combine(vm.settings) }}"
 
@@ -91,9 +104,31 @@ openbao_tls_cert_file_short: "secrets/{{ vm.network.name }}/{{ vm.name }}-tls.cr
 openbao_tls_names: >-
   {{ ['IP:' ~ final.ip, 'IP:127.0.0.1', 'DNS:' ~ vm.name, 'DNS:localhost']
      + (['DNS:' ~ vm.dns_name] if vm.dns_name else []) }}
-# What the deploy's own requests on the VM trust: the certificate, or
-# nothing (omit) with plain HTTP.
-openbao_uri_ca: "{{ openbao_tls_cert if openbao_tls != 'none' else '' }}"
+# What the deploy's own requests on the VM trust, kept by tls.yml: a copy
+# of the self-signed certificate, or the PKI's root; nothing (omit) with
+# plain HTTP.
+openbao_uri_ca: "{{ (openbao_tls_dir ~ '/ca.pem') if openbao_tls != 'none' else '' }}"
+
+# ---- TLS root and intermediates (tasks/pki.yml) ----
+openbao_pki: "{{ openbao_settings.pki is mapping or openbao_settings.pki | bool }}"
+openbao_pki_settings: >-
+  {{ openbao_pki_defaults | combine(openbao_settings.pki if openbao_settings.pki is mapping else {}) }}
+openbao_pki_root_mount: pki
+# Names with spaces, so no client mistakes them for host names to check
+# against the name constraints.
+openbao_pki_root_name: "nixlab root on {{ vm.id }}"
+openbao_pki_intermediate_name: "nixlab NETWORK intermediate"
+# {network, mount, domain, ip_cidrs, file} for each network using this host.
+openbao_pki_networks: "{{ nixlab | pki_networks(vm.id) }}"
+openbao_pki_root_file_short: "{{ vm.id | pki_root_file }}"
+openbao_pki_root_file: "{{ role_path }}/../../{{ openbao_pki_root_file_short }}"
+# An intermediate with fewer days left is signed again: more than a host
+# certificate's year, so one always fits under it.
+openbao_pki_resign_days: 400
+# -e openbao_pki_rotate=<network>: a new intermediate for that network now.
+openbao_pki_rotate: ""
+# -e openbao_pki_prune=true: remove intermediates no network uses.
+openbao_pki_prune: false
 
 # ---- SSH user CA (tasks/ssh-ca.yml) and administrators (tasks/admins.yml) ----
 openbao_ssh_user_ca: "{{ openbao_settings.ssh_user_ca | bool }}"

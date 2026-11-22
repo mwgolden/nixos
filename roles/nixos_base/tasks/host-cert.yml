@@ -1,5 +1,5 @@
 # An SSH host certificate for this VM, from its network's SSH host CA
-# (administrative_identity.ssh_host_ca; docs/plans/NETWORK-SECURITY.md,
+# (administrative_identity.ssh_host_ca; docs/plans/completed/NETWORK-SECURITY.md,
 # 4.3). Kept while it is for this host key, this CA and these names, with
 # more than nixos_base_host_cert_renew_days left; otherwise this machine
 # asks the CA for a new one. If the CA can't be reached, the old one stays

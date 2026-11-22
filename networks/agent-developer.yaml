@@ -26,6 +26,11 @@ network:
     strategy: centralized-local
     administrative_identity:
       instance: home.openbao
+    # TLS certificates from the home OpenBao's root
+    # (docs/plans/completed/INTERNAL-CA.md).
+    pki:
+      provider: openbao
+      instance: home.openbao
 
 hosts: 
   - name: router
@@ -110,6 +115,8 @@ hosts:
     vm_id: 306
     ip: 10.3.1.5
     data_disk: {size_gb: 10, storage: local-lvm}
+    settings:
+      tls: pki       # HTTPS with a certificate from home.openbao's root
 
   # PostgreSQL with one app schema and a user who can work in it. See
   # roles/postgres/README.md and roles/postgres/USERS.md.

@@ -22,9 +22,14 @@ network:
       # Hosts here also get SSH host certificates from it.
       ssh_host_ca: true
     # Home's own secrets stay in secrets/home/
-    # (docs/plans/NETWORK-SECURITY.md, decision 10).
+    # (docs/plans/completed/NETWORK-SECURITY.md, decision 10).
     secrets:
       provider: files
+    # TLS certificates for hosts here come from the openbao host below
+    # (docs/plans/completed/INTERNAL-CA.md).
+    pki:
+      provider: openbao
+      instance: home.openbao
 
 hosts:
   - name: nats
@@ -63,8 +68,10 @@ hosts:
         - uv: ruff
           version: "0.8.4"
 
-  # The SSH user CA for administrators (docs/plans/NETWORK-SECURITY.md).
-  # Its unseal keys and root token: secrets/home/openbao-init.json.
+  # The SSH user CA for administrators (docs/plans/completed/NETWORK-SECURITY.md),
+  # and the TLS root for every network's certificates
+  # (docs/plans/completed/INTERNAL-CA.md). Its unseal keys and root token:
+  # secrets/home/openbao-init.json.
   - name: openbao
     type: openbao
     vm_id: 120
@@ -73,9 +80,13 @@ hosts:
       size_gb: 10
       storage: local-lvm
     settings:
-      tls: self-signed           # certificate in secrets/home/openbao-tls.crt
+      tls: pki                   # its own certificate from pki: below; clients trust secrets/home/openbao-tls.crt (the root)
       ssh_user_ca: true          # public key in secrets/home/openbao-ssh-user-ca.pub
       ssh_host_ca: true          # public key in secrets/home/openbao-ssh-host-ca.pub
+      # TLS root (pki/, limited to *.home.arpa) and one intermediate per
+      # network whose security.pki names this host. Trust
+      # secrets/home/openbao-pki-root.crt once on your machines.
+      pki: true
       ssh_cert_max_ttl: 24h
       admin_mfa: false
       # Who may ask for certificates, such as

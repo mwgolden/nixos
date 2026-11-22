@@ -57,7 +57,7 @@ You need a Proxmox host, and Docker and [uv](https://docs.astral.sh/uv/) on your
 
    This creates the bridges, the router, then each VM, and ends with the network checks.
 
-6. **Open the site.** Point the name at the router's `wan_ip` in `/etc/hosts`, then browse to `https://web.test.home.arpa/`. To avoid the browser's certificate warning, trust `secrets/test/test-proxy-ca.crt`.
+6. **Open the site.** Point the name at the router's `wan_ip` in `/etc/hosts`, then browse to `https://web.test.home.arpa/`. To avoid the browser's certificate warning, trust `secrets/test/test-proxy-ca.crt`. (Once you have a home OpenBao with a TLS root, one file covers every network instead; see [roles/openbao](roles/openbao/README.md#tls-certificates).)
 
    ```text
    192.168.1.90  web.test.home.arpa
@@ -245,7 +245,7 @@ Each host type is a role in [roles/](roles/), with a README that explains its se
 - [proxy](roles/proxy/README.md): Caddy reverse proxy that serves other hosts' web services under HTTPS names, built from their `proxy:` entries
 - [ldap](roles/ldap/README.md): lldap, a small LDAP server for user accounts and groups, with a web interface
 - [nats](roles/nats/README.md): NATS messaging server with JetStream persistence on a separate data disk
-- [openbao](roles/openbao/README.md): OpenBao secrets manager (an open-source Vault) on a separate data disk, initialized and unsealed by the deploy
+- [openbao](roles/openbao/README.md): OpenBao secrets manager (an open-source Vault) on a separate data disk, initialized and unsealed by the deploy. It can also be the SSH certificate authority for administrators and hosts, and the TLS root for every network
 - [monitoring](roles/monitoring/README.md): Prometheus and Grafana, with Prometheus as Grafana's data source, on a separate data disk
 - [workstation](roles/workstation/README.md): a headless machine to SSH into, with a non-root user account
 
@@ -332,7 +332,7 @@ Proxy routes are picked by name, so `https://192.168.1.13/` doesn't work. Home m
 192.168.1.13  git.lab.home.arpa  other.lab.home.arpa
 ```
 
-Only names of external routes work this way. Internal routes, like `www`, refuse connections from home addresses, and from DMZ hosts; use the VPN for those. VPN clients use the lab router's DNS, so they need no overrides. Either way, trust the proxy's certificate, `secrets/lab/proxy-ca.crt`, to avoid browser warnings (see [roles/proxy](roles/proxy/README.md#https)).
+Only names of external routes work this way. Internal routes, like `www`, refuse connections from home addresses, and from DMZ hosts; use the VPN for those. VPN clients use the lab router's DNS, so they need no overrides. Either way, to avoid browser warnings, trust `secrets/home/openbao-pki-root.crt`, the home OpenBao's TLS root. `lab` gets its certificates from it (`security.pki`), as every network in this repository does, so that one file covers them all (see [roles/openbao](roles/openbao/README.md#tls-certificates)). A network without `security.pki` has its proxy's own certificate instead, `secrets/<network>/<proxy>-ca.crt` (see [roles/proxy](roles/proxy/README.md#https)).
 
 ### Network diagrams
 

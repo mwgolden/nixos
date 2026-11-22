@@ -11,3 +11,11 @@ nixos_base_operator_user: ""
 
 # A host certificate with fewer days left than this is renewed on deploy.
 nixos_base_host_cert_renew_days: 30
+
+# ---- TLS certificates from the network's PKI (tls-cert.yml) ----
+# Where the key, certificate and chain go on the VM, root-only.
+nixos_base_tls_dir: /etc/nixlab/tls
+# A certificate with fewer days left than this is renewed on deploy.
+nixos_base_tls_renew_days: 30
+# -e pki_renew=true: a new key and certificate even if the old one is fine.
+nixos_base_pki_renew: "{{ pki_renew | default(false) }}"

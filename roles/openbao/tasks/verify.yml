@@ -53,3 +53,6 @@
       {{ openbao_tls_cert_file_short }} (BAO_CACERT).{% endif %}
       {%- if openbao_ssh_user_ca %} Its SSH user CA's public key is in
       {{ openbao_ssh_user_ca_file_short }}; get certificates with scripts/ssh-cert.{% endif %}
+      {%- if openbao_pki | bool %} Its TLS root is {{ openbao_pki_root_file_short }}:
+      trust that file once on your machines. It signs certificates for
+      {{ (openbao_pki_networks | map(attribute='network') | join(', ')) or 'no network yet (set security.pki on one)' }}.{% endif %}

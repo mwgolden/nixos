@@ -1,4 +1,4 @@
-# The SSH user CA's signing roles (docs/plans/NETWORK-SECURITY.md, 4.2.3).
+# The SSH user CA's signing roles (docs/plans/completed/NETWORK-SECURITY.md, 4.2.3).
 # Included from configure.yml after ssh-ca.yml. Runs on the VM.
 
 # One per principal: homelab-admin, and <network>-admin and

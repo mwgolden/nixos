@@ -99,14 +99,15 @@
         dest: /mnt/etc/nixos/common.nix
         mode: "0644"
 
-    # common.nix imports them. The template trusts no SSH CA and has no
-    # OpenBao token; each VM's deploy writes its own (roles/nixos_base).
-    - name: Install empty SSH trust and OpenBao client settings
+    # common.nix imports them. The template trusts no SSH CA or TLS root
+    # and has no OpenBao token; each VM's deploy writes its own
+    # (roles/nixos_base).
+    - name: Install empty SSH trust, OpenBao client and TLS trust settings
       ansible.builtin.copy:
         dest: "/mnt/etc/nixos/{{ item }}"
         content: "# Written by proxmox/scripts/install-nix.yaml; replaced by each VM's deploy.\n{ }\n"
         mode: "0644"
-      loop: [ssh-trust.nix, openbao-client.nix]
+      loop: [ssh-trust.nix, openbao-client.nix, pki-trust.nix]
 
     - name: Create NixOS configuration
       ansible.builtin.copy:

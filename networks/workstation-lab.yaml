@@ -22,6 +22,14 @@ network:
     cidr: 10.2.1.0/24
     gateway: 10.2.1.1
 
+  # TLS certificates from the home OpenBao's root
+  # (docs/plans/completed/INTERNAL-CA.md); otherwise static SSH keys and files, as
+  # before (strategy current).
+  security:
+    pki:
+      provider: openbao
+      instance: home.openbao
+
 hosts:
   - name: router
     type: router

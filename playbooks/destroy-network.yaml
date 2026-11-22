@@ -86,7 +86,7 @@
           {{ destroy_owned.moved | map(attribute='name') | join(', ') }}.{% endif %}
 
     # Deleting the network's OpenBao deletes everything it stores, so save
-    # a snapshot first (docs/plans/NETWORK-SECURITY.md, 4.4). -e
+    # a snapshot first (docs/plans/completed/NETWORK-SECURITY.md, 4.4). -e
     # openbao_skip_backup=true deletes it without (a VM that won't start).
     # The network's tokens and backups in secrets/<network>/ are kept.
     - name: Note the network's OpenBao host, if it is being deleted

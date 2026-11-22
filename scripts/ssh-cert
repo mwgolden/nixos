@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Gets short-lived SSH certificates from an OpenBao SSH user CA, one file per
-# role. See docs/plans/NETWORK-SECURITY.md, section 4.2.6, and
+# role. See docs/plans/completed/NETWORK-SECURITY.md, section 4.2.6, and
 # roles/openbao/README.md ("SSH certificates").
 #
 #   scripts/ssh-cert [options] <role>...     sign one certificate per role

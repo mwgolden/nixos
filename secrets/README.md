@@ -6,13 +6,15 @@ Credentials for each host, one folder per network:
 secrets/<network>/<host>.env           # read by the host's deploy, or imported into the network's OpenBao (below)
 secrets/<network>/<host>-users.env     # postgres only: database user passwords
 secrets/<network>/<openbao>-init.json  # written by deploys: OpenBao's unseal keys and root token
-secrets/<network>/<openbao>-tls.crt    # written by deploys: the certificate OpenBao serves (tls: self-signed)
+secrets/<network>/<openbao>-tls.crt    # written by deploys: what clients trust to reach OpenBao (tls: self-signed or pki)
+secrets/<network>/<openbao>-pki-root.crt       # written by deploys: its TLS root (settings.pki), the one file your machines trust
+secrets/<network>/<openbao>-pki-<net>.crt      # written by deploys: its intermediate for network <net>
 secrets/<network>/<openbao>-ssh-user-ca.pub  # written by deploys: its SSH user CA's public key
 secrets/<network>/<openbao>-ssh-host-ca.pub  # written by deploys: its SSH host CA's public key
 secrets/<network>/<openbao>-deploy-token     # written by deploys: the token other deploys read secrets with
 secrets/<network>/<host>-read-token          # written by deploys: a host's read-only token, also on the VM
 secrets/<network>/backups/                   # written by backups: OpenBao snapshots
-secrets/<network>/<proxy>-ca.crt       # written by deploys: the proxy's root certificate
+secrets/<network>/<proxy>-ca.crt       # written by deploys: the proxy's own root certificate (pki: proxy-internal)
 secrets/<network>/vpn/                 # written by deploys: WireGuard keys and client files
 ```
 
@@ -31,9 +33,11 @@ Everything here except this README is gitignored. Each file holds `KEY=value` li
 
 These files are written by deploys, not by you:
 
-- `<proxy>-ca.crt`: the root certificate of a [proxy](../roles/proxy/README.md#https), for your machines to trust. Not secret.
+- `<proxy>-ca.crt`: the root certificate of a [proxy](../roles/proxy/README.md#https) on a network without `security.pki` from an OpenBao, for your machines to trust. Not secret. No longer written, nor needed, once the network uses an OpenBao root.
 - `<openbao>-init.json`: an [OpenBao](../roles/openbao/README.md#unseal-keys-and-root-token) host's unseal keys and root token, made on its first deploy. Without it a sealed OpenBao can't be opened, so back it up elsewhere. Never overwritten.
-- `<openbao>-tls.crt`: the certificate of an [OpenBao](../roles/openbao/README.md#https) host with `tls: self-signed`, for clients to trust (`BAO_CACERT`). Not secret. Replaced when OpenBao makes a new one.
+- `<openbao>-tls.crt`: what clients trust to reach an [OpenBao](../roles/openbao/README.md#https) host over HTTPS (`BAO_CACERT`): its certificate with `tls: self-signed`, replaced when it makes a new one; a copy of its network's TLS root with `tls: pki`. Not secret.
+- `<openbao>-pki-root.crt`: the [TLS root](../roles/openbao/README.md#tls-certificates) of an OpenBao host with `settings.pki`. Trust it once on your machines; it covers every network that uses it. Not secret, but guarded like the SSH CA keys: a deploy stops if OpenBao's root no longer matches it.
+- `<openbao>-pki-<net>.crt`: that root's intermediate for network `<net>`. Hosts' deploys check their certificates against it. Rewritten when the intermediate is signed again.
 - `<openbao>-ssh-user-ca.pub`: the public key of an OpenBao host's [SSH user CA](../roles/openbao/README.md#ssh-certificates). Not secret, but the deploys of every network that trusts the CA write it onto their hosts, so it is never overwritten: a deploy stops if the CA's key no longer matches it.
 - `<openbao>-ssh-host-ca.pub`: the public key of an OpenBao host's [SSH host CA](../roles/openbao/README.md#ssh-host-certificates), which your SSH client trusts through `scripts/ssh-cert --trust-hosts`. Guarded the same way.
 - `<openbao>-deploy-token` and `<host>-read-token`: an OpenBao host's [tokens](../roles/openbao/README.md#the-networks-tokens) for its network's deploys, and for each host to read its own secrets. Secret. Made again when missing or revoked.
@@ -66,6 +70,6 @@ The deploy reaches OpenBao with the network's deploy token (`<openbao>-deploy-to
 | `-init.json` exists, but OpenBao is unreachable or sealed (it comes up sealed after a reboot) | Stops: deploy the openbao host first, which unseals it. There is no fallback to the file, which might be stale. |
 | The root token was revoked | Stops, with the hint to make a new one (`bao operator generate-root`) |
 
-What stays a file, on purpose: `<openbao>-init.json` (it unlocks OpenBao, so it can't live in it), `<proxy>-ca.crt` and `vpn/` (written by deploys, handed to your own machines), and `proxmox/.env`.
+What stays a file, on purpose: `<openbao>-init.json` (it unlocks OpenBao, so it can't live in it), `<proxy>-ca.crt`, the `-pki-` certificates and `vpn/` (written by deploys, handed to your own machines), and `proxmox/.env`.
 
 Destroying the openbao host deletes every secret in it: any host whose `.env` file you deleted after the import then has no secrets anywhere. Destroying a host leaves its `<network>/<host>` secret, as it leaves the file. Moving a host to another network, or renaming a network, means its secrets are looked up in the new network's store, as with files; see [MOVING-HOSTS.md](../docs/MOVING-HOSTS.md#secrets-are-found-by-name).

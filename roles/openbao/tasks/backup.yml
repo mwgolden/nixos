@@ -1,6 +1,6 @@
 # Saves a raft snapshot of this OpenBao (everything it stores, encrypted)
 # to secrets/<network>/backups/<host>-<time>.snap on this machine
-# (docs/plans/NETWORK-SECURITY.md, 4.4). Restoring it needs the same unseal
+# (docs/plans/completed/NETWORK-SECURITY.md, 4.4). Restoring it needs the same unseal
 # keys, so keep it with <host>-init.json, and copy both off this machine.
 # Used by playbooks/openbao-backup.yaml and, before deleting an openbao
 # host, playbooks/destroy-host.yaml. Runs on the VM with become: true;

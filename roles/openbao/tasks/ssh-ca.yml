@@ -1,6 +1,6 @@
 # An SSH CA: an SSH secrets engine whose key never leaves OpenBao, and its
 # public key written to secrets/ for the other deploys
-# (docs/plans/NETWORK-SECURITY.md, 4.2.3 and 4.3). Included from
+# (docs/plans/completed/NETWORK-SECURITY.md, 4.2.3 and 4.3). Included from
 # configure.yml once OpenBao is unsealed, with:
 #   openbao_ca_kind        user or host, for messages
 #   openbao_ca_mount       ssh-client-signer or ssh-host-signer

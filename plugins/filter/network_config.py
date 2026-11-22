@@ -80,7 +80,7 @@ WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 DEFAULT_VPN_PORT = 51820
 # A network with an openbao host keeps its hosts' secrets in a KV mount
 # named after the network (see network_secrets_store and
-# docs/plans/OPENBAO-SECRETS.md). These mount paths are OpenBao's own, so a
+# docs/plans/completed/OPENBAO-SECRETS.md). These mount paths are OpenBao's own, so a
 # network can't have one of them as its name. The port and kv_mounts
 # defaults mirror roles/openbao/defaults/main.yml.
 OPENBAO_RESERVED_MOUNTS = ("sys", "auth", "identity", "cubbyhole")
@@ -89,7 +89,7 @@ DEFAULT_OPENBAO_KV_MOUNTS = ("secret",)
 
 # A network's security: block says which authorities it uses; an openbao
 # host's settings say what it provides. See network_security and
-# docs/plans/NETWORK-SECURITY.md, section 2.
+# docs/plans/completed/NETWORK-SECURITY.md, section 2.
 SECURITY_KEYS = {"strategy", "administrative_identity", "secrets", "pki"}
 SECURITY_STRATEGIES = ("current", "centralized", "centralized-local", "independent")
 ADMIN_IDENTITY_KEYS = {"provider", "instance", "ssh_host_ca", "principals"}
@@ -106,17 +106,37 @@ INSTANCE_RE = re.compile(r"^([a-z][a-z0-9-]{0,62})\.([a-z][a-z0-9-]{0,62})$")
 # What an openbao host can provide, under its settings:.
 OPENBAO_TLS = ("none", "self-signed", "pki")
 OPENBAO_AUTHORITY_BOOLS = ("ssh_user_ca", "ssh_host_ca")
-# Settings validated now but not yet acted on by any deploy, with the phase
-# of docs/plans/NETWORK-SECURITY.md that implements them. Validation warns
-# when they are set, so no one thinks they are in effect.
-# A TLS hierarchy in OpenBao (pki.provider openbao, settings.pki, tls:
-# pki) was phase 4 of docs/plans/NETWORK-SECURITY.md, deferred on
-# 2026-11-21. The settings stay in the schema, so validation can say so.
-PKI_DEFERRED = ("isn't available: a TLS hierarchy in OpenBao (phase 4 of docs/plans/NETWORK-SECURITY.md) "
-                "is deferred")
+# An openbao host's settings.pki: a root CA and one intermediate per
+# network that uses it (docs/plans/completed/INTERNAL-CA.md). true means all of
+# these defaults; they mirror roles/openbao/defaults/main.yml.
+PKI_SETTINGS_DEFAULTS = {
+    # The root's DNS name constraint; every network using the root must
+    # have its domain under one of these. Only read when the root is made.
+    "permitted_domains": ["home.arpa"],
+    "root_ttl": "87600h",
+    "intermediate_ttl": "43800h",
+    "cert_ttl": "8760h",
+}
 OPENBAO_ADMIN_KEYS = {"name", "roles", "mfa"}
 ADMIN_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 TTL_RE = re.compile(r"^[1-9][0-9]*[smh]$")
+
+
+def pki_settings(settings):
+    """An openbao host's settings.pki with the defaults filled in, or {}
+    when it isn't a PKI authority. Tolerates invalid values, which the
+    checker reports."""
+    pki = (settings or {}).get("pki", False)
+    if pki is True:
+        return dict(PKI_SETTINGS_DEFAULTS)
+    if isinstance(pki, dict):
+        return {**PKI_SETTINGS_DEFAULTS, **pki}
+    return {}
+
+
+def domain_under(domain, parent):
+    """Whether a DNS name is parent or one of its subdomains."""
+    return domain == parent or domain.endswith("." + parent)
 
 
 def network_domain(net):
@@ -689,14 +709,14 @@ class _Checker:
         for key in OPENBAO_AUTHORITY_BOOLS:
             if key in settings and not isinstance(settings[key], bool):
                 self.error(where, f"settings.{key} must be true or false.")
-        if "pki" in settings and not isinstance(settings["pki"], (bool, dict)):
-            self.error(where, "settings.pki must be true, false or a mapping.")
+        if "pki" in settings:
+            self.check_pki_settings(where, settings["pki"])
         signs = [k for k in OPENBAO_AUTHORITY_BOOLS if settings.get(k) is True]
+        if pki_settings(settings):
+            signs.append("pki")
         if signs and tls == "none":
             self.error(where, f"settings.{' and '.join(signs)} needs settings.tls (self-signed or pki): "
-                              "administrators' logins to a signing authority must not cross the network in clear.")
-        if tls == "pki":
-            self.error(where, f"settings.tls: pki {PKI_DEFERRED}; use self-signed.")
+                              "logins and signing requests to an authority must not cross the network in clear.")
         for key in ("admin_mfa",):
             if key in settings and not isinstance(settings[key], bool):
                 self.error(where, f"settings.{key} must be true or false.")
@@ -735,11 +755,28 @@ class _Checker:
                 self.error(where, f"{label}: mfa must be true or false.")
         if admins and settings.get("ssh_user_ca") is not True:
             self.error(where, "settings.admins needs settings.ssh_user_ca: true; admins ask its SSH user CA for certificates.")
-        if settings.get("pki"):
-            self.error(where, f"settings.pki {PKI_DEFERRED}. Leave it out.")
+
+    def check_pki_settings(self, where, pki):
+        """settings.pki: true, false, or a mapping of PKI_SETTINGS_DEFAULTS'
+        keys."""
+        if isinstance(pki, bool):
+            return
+        if not isinstance(pki, dict):
+            self.error(where, "settings.pki must be true, false or a mapping.")
+            return
+        for key in sorted(set(pki) - set(PKI_SETTINGS_DEFAULTS)):
+            self.error(where, f"settings.pki: unknown setting {key}.")
+        domains = pki.get("permitted_domains", PKI_SETTINGS_DEFAULTS["permitted_domains"])
+        if not isinstance(domains, list) or not domains or not all(
+                isinstance(d, str) and DOMAIN_RE.match(d) for d in domains):
+            self.error(where, "settings.pki.permitted_domains must be a list of DNS names such as home.arpa.")
+        for key in ("root_ttl", "intermediate_ttl", "cert_ttl"):
+            ttl = pki.get(key)
+            if ttl is not None and not (isinstance(ttl, str) and TTL_RE.match(ttl)):
+                self.error(where, f"settings.pki.{key} must be a duration such as 8760h, not {ttl!r}.")
 
     def check_security(self, net, config):
-        """A network's security: block (docs/plans/NETWORK-SECURITY.md,
+        """A network's security: block (docs/plans/completed/NETWORK-SECURITY.md,
         section 2.4). Runs once every network's hosts are known, since
         administrative_identity may name a host on the home network."""
         sec = net["security"]
@@ -830,10 +867,6 @@ class _Checker:
                 if "instance" in blocks[key]:
                     self.error(where, f"{key}.instance only applies with {key}.provider openbao.")
                 continue
-            if key == "pki":
-                self.error(where, f"pki.provider openbao {PKI_DEFERRED}. Use proxy-internal, the "
-                                  "proxy's own CA, or leave pki out.")
-                continue
             if not block["instance"]:
                 self.error(where, f"{key}.provider openbao needs an openbao host on network {net['name']}.")
                 continue
@@ -841,12 +874,43 @@ class _Checker:
             if bao is None:
                 continue
             other_net, settings = bao
-            if other_net != net["name"]:
-                self.error(where, f"{key}.instance {block['instance']} is on network {other_net}. A network keeps "
-                                  f"its {'secrets' if key == 'secrets' else 'certificates'} in its own OpenBao, "
-                                  "never another network's.")
-            if key == "pki" and not settings.get("pki"):
+            if key == "secrets" and other_net != net["name"]:
+                self.error(where, f"secrets.instance {block['instance']} is on network {other_net}. A network "
+                                  "keeps its secrets in its own OpenBao, never another network's.")
+            if key != "pki":
+                continue
+            # Certificates may come from the network's own OpenBao or the
+            # home network's, like administrative identity; never from
+            # another isolated network (docs/plans/completed/INTERNAL-CA.md, 3.2).
+            if other_net != net["name"] and self.networks[other_net]["type"] != "home":
+                self.error(where, f"pki.instance {block['instance']} is on network {other_net}, which isn't a "
+                                  "home network. A network may only get certificates from its own OpenBao or the "
+                                  "home network's; one isolated network never depends on another.")
+            pki_set = pki_settings(settings)
+            if not pki_set:
                 self.error(where, f"pki.instance {block['instance']} doesn't have settings.pki set.")
+            elif isinstance(pki_set.get("permitted_domains"), list) and not any(
+                    isinstance(d, str) and domain_under(net["domain"], d) for d in pki_set["permitted_domains"]):
+                self.error(where, f"the network's domain {net['domain']} isn't under the permitted domains of "
+                                  f"{block['instance']}'s root ({', '.join(map(str, pki_set['permitted_domains']))}), "
+                                  "so browsers would refuse its certificates. Change the domain, or use a root made "
+                                  "with it in settings.pki.permitted_domains.")
+
+    def check_openbao_tls_pki(self, net):
+        """settings.tls: pki means the listener's certificate comes from the
+        network's PKI instance, so the network must have one."""
+        own = self.hosts_by_network.get(net["name"], [])
+        resolved = _resolve_security(net["name"], net["security"],
+                                     next((h.get("name") for h in own if h.get("type") == "openbao"), None))
+        for h in own:
+            settings = h.get("settings")
+            if h.get("type") != "openbao" or not isinstance(settings, dict) or settings.get("tls") != "pki":
+                continue
+            if resolved["pki"]["provider"] != "openbao":
+                self.error(f"host {h.get('name')} (network {net['name']})",
+                           f"settings.tls: pki needs network {net['name']} to get certificates from an OpenBao "
+                           "(security.pki.provider openbao, such as {provider: openbao, instance: home.openbao}). "
+                           "Use self-signed, or set security.pki.")
 
     def check_principals(self, where, principals):
         if not isinstance(principals, dict):
@@ -950,6 +1014,7 @@ class _Checker:
                                   "DMZ hosts already reach each other.")
         for net, config in parsed:
             self.check_security(net, config)
+            self.check_openbao_tls_pki(net)
         for net, where, port in self.pending_vpn_ports:
             owner = self.forward_ports.get(net["name"], {}).get(("udp", port))
             if owner:
@@ -1505,7 +1570,7 @@ def network_config_deploy_order(inventory, network):
 
 def _resolve_security(network, sec, own_openbao):
     """A network's security: block with its strategy's preset filled in
-    (docs/plans/NETWORK-SECURITY.md, section 2.3). own_openbao is the name of
+    (docs/plans/completed/NETWORK-SECURITY.md, section 2.3). own_openbao is the name of
     the network's openbao host, or None. Tolerates invalid blocks, which
     the checker reports separately. No block at all is strategy current:
     exactly how the project behaved before security: existed."""
@@ -1527,7 +1592,7 @@ def _resolve_security(network, sec, own_openbao):
     if isinstance(ai.get("principals"), dict):
         principals.update({k: list(v) for k, v in ai["principals"].items() if isinstance(v, list)})
 
-    # current and centralized keep the rule from docs/plans/OPENBAO-SECRETS.md:
+    # current and centralized keep the rule from docs/plans/completed/OPENBAO-SECRETS.md:
     # a network's own openbao host, if it has one, holds its secrets.
     secrets_provider = s.get("provider", "openbao" if own else "files")
     pki_provider = p.get("provider", "proxy-internal")
@@ -1701,7 +1766,7 @@ def openbao_read_tokens(inventory, network):
     """The read-only tokens a network's openbao host makes, one per host
     that may have secrets (not routers, not the openbao host): {host, name,
     paths, file}. paths are the secrets it may read: <host>, and
-    <host>-users for postgres (docs/plans/NETWORK-SECURITY.md, 4.4)."""
+    <host>-users for postgres (docs/plans/completed/NETWORK-SECURITY.md, 4.4)."""
     tokens = []
     for vm in inventory["hosts"].values():
         if vm["network"]["name"] != network or vm["type"] in ("router", "openbao"):
@@ -1872,7 +1937,7 @@ def blocked_targets(vm, inventory, proxmox_ip=""):
                                 "port": 53})
     # Every other network's OpenBao, the home one included: an isolated
     # network has no business with another's secrets or CA
-    # (docs/plans/NETWORK-SECURITY.md, 4.4).
+    # (docs/plans/completed/NETWORK-SECURITY.md, 4.4).
     for other in inventory["hosts"].values():
         if other["type"] == "openbao" and other["network"]["name"] != net["name"]:
             port = int((other.get("settings") or {}).get("port", DEFAULT_OPENBAO_PORT))

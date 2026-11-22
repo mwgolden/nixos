@@ -4,9 +4,10 @@
 
 {
   # Which SSH CAs this host trusts and its host certificate (ssh-trust.nix),
-  # and its read-only OpenBao token (openbao-client.nix). Both written by
-  # roles/nixos_base from the network's settings.
-  imports = [ ./ssh-trust.nix ./openbao-client.nix ];
+  # its read-only OpenBao token (openbao-client.nix), and the TLS root it
+  # trusts (pki-trust.nix). All written by roles/nixos_base from the
+  # network's settings.
+  imports = [ ./ssh-trust.nix ./openbao-client.nix ./pki-trust.nix ];
 
   environment.systemPackages = with pkgs; [
               python3

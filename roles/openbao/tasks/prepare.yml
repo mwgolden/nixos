@@ -90,12 +90,3 @@
   loop_control:
     label: "{{ item.name }}"
   when: openbao_ssh_user_ca
-
-- name: Refuse settings that aren't deployed yet
-  ansible.builtin.assert:
-    that:
-      - openbao_tls in ['none', 'self-signed']
-    fail_msg: >-
-      settings of {{ vm.name }}: tls: pki isn't available; phase 4 of
-      docs/plans/NETWORK-SECURITY.md is deferred. Use self-signed.
-    quiet: true

@@ -2,7 +2,7 @@
 # network's OpenBao host when it has one. Every host type's prepare.yml
 # uses this instead of dotenv directly; dotenv stays the file reader.
 # Runs on localhost. The rules are in secrets/README.md and
-# docs/plans/OPENBAO-SECRETS.md. Sets:
+# docs/plans/completed/OPENBAO-SECRETS.md. Sets:
 #   dotenv_values        the secrets, a dict (what the roles read today)
 #   host_secrets_source  file, openbao, imported (the file's values, now
 #                        also in OpenBao), pushed (the file's values,
@@ -61,7 +61,7 @@
   when: host_secrets_use_store
   vars:
     # The network's deploy token once the openbao host has made it,
-    # otherwise the root token (docs/plans/NETWORK-SECURITY.md, 4.4).
+    # otherwise the root token (docs/plans/completed/NETWORK-SECURITY.md, 4.4).
     host_secrets_token: >-
       {{ ((lookup('ansible.builtin.file', host_secrets_deploy_token_file, errors='ignore') | default('', true) | trim)
           or (lookup('ansible.builtin.file', host_secrets_init_file) | from_json).root_token | default(''))

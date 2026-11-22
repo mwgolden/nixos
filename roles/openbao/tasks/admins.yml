@@ -1,5 +1,5 @@
 # Administrators who may ask the SSH user CA for certificates
-# (settings.admins; docs/plans/NETWORK-SECURITY.md, 4.2.4): a userpass
+# (settings.admins; docs/plans/completed/NETWORK-SECURITY.md, 4.2.4): a userpass
 # login each, a policy that lets it sign its roles and nothing else, an
 # identity entity, and TOTP for those with MFA on. Passwords and TOTP
 # enrolment are never set here; see README.md, "SSH certificates".

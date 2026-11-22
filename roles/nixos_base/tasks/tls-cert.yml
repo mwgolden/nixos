@@ -1,0 +1,187 @@
+# A TLS certificate for this VM from its network's intermediate CA
+# (security.pki: {provider: openbao}; docs/plans/completed/INTERNAL-CA.md). The key
+# is made on the VM and never leaves it; only the signing request does.
+# This machine sends that to the authority (pki-<network>/sign/hosts),
+# so the VM itself never connects to it. Kept while it is signed by the
+# intermediate in secrets/, for this host's names, with more than
+# nixos_base_tls_renew_days left; -e pki_renew=true replaces it, key and
+# all. If the authority can't be reached, the old one stays and the
+# deploy goes on.
+#
+# Files, in /etc/nixlab/tls (root-only folder): key.pem (0600), cert.pem
+# and fullchain.pem (the certificate and the intermediate, what servers
+# serve). Services read them through systemd's LoadCredential.
+#
+# Included from main.yml before the switch, and again by roles/openbao
+# once a new authority exists. Runs on the VM with become: true. Sets
+# nixos_base_tls_cert (whether the VM has one) and nixos_base_tls_changed.
+
+- name: Note where this host's TLS certificate comes from
+  ansible.builtin.set_fact:
+    nixos_base_tls_ca: "{{ nixlab | openbao_endpoint(nixos_base_pki.instance) }}"
+    nixos_base_tls_names: "{{ vm | tls_cert_names }}"
+    nixos_base_tls_intermediate: >-
+      {{ lookup('ansible.builtin.file', role_path ~ '/../../' ~ nixos_base_pki.intermediate_file,
+                errors='ignore') or '' }}
+    nixos_base_tls_changed: false
+
+- name: Read this host's TLS certificate
+  ansible.builtin.slurp:
+    src: "{{ nixos_base_tls_dir }}/cert.pem"
+  register: nixos_base_tls_current
+  failed_when: false
+
+- name: Check this host's TLS certificate
+  ansible.builtin.set_fact:
+    nixos_base_tls_state: >-
+      {{ 'renewal asked for (pki_renew)' if nixos_base_pki_renew | bool
+         else (nixos_base_tls_current.content | default('') | b64decode)
+              | tls_cert_state(nixos_base_tls_intermediate, nixos_base_tls_names, nixos_base_tls_renew_days) }}
+
+# The authority writes the intermediate to secrets/ when it sets it up. On
+# the authority's own first deploy, roles/openbao comes back here later.
+- name: Say the network's intermediate isn't set up yet
+  ansible.builtin.debug:
+    msg: >-
+      Network {{ vm.network.name }} gets TLS certificates from
+      {{ nixos_base_pki.instance }}, but {{ nixos_base_pki.intermediate_file }}
+      doesn't exist yet, so {{ vm.name }} gets none for now. Deploy
+      {{ nixos_base_pki.instance }} (with settings.pki), then this host again.
+  when: nixos_base_tls_intermediate | length == 0 and nixos_base_pki.instance != vm.id
+
+- name: Get a new TLS certificate
+  when: nixos_base_tls_state != 'keep' and nixos_base_tls_intermediate | length > 0
+  vars:
+    nixos_base_tls_via: "{{ nixos_base_tls_ca.via_router or 'localhost' }}"
+    nixos_base_tls_ca_path: >-
+      {{ '' if not nixos_base_tls_ca.ca_file
+         else ('/tmp/nixlab-' ~ nixos_base_pki.instance ~ '-tls.crt') if nixos_base_tls_ca.via_router
+         else (role_path ~ '/../../' ~ nixos_base_tls_ca.ca_file) }}
+  block:
+    - name: Make the TLS folder
+      ansible.builtin.file:
+        path: "{{ nixos_base_tls_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # A new key only when there's none, or with pki_renew (a key that may
+    # have leaked). It becomes key.pem only once its certificate arrives.
+    - name: Make a signing request
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          umask 077
+          cd {{ nixos_base_tls_dir }}
+          key=key.pem
+          if [ ! -f key.pem ] || [ "{{ nixos_base_pki_renew | bool }}" = True ]; then
+            nix-shell -p openssl --run \
+              "openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out key.pem.new"
+            key=key.pem.new
+          fi
+          nix-shell -p openssl --run \
+            "openssl req -new -key $key -subj /CN={{ nixos_base_tls_names.common_name }} -out request.csr"
+      changed_when: false
+
+    - name: Read the signing request
+      ansible.builtin.slurp:
+        src: "{{ nixos_base_tls_dir }}/request.csr"
+      register: nixos_base_tls_csr
+
+    - name: Copy the authority's certificate to the router
+      ansible.builtin.copy:
+        src: "{{ role_path }}/../../{{ nixos_base_tls_ca.ca_file }}"
+        dest: "/tmp/nixlab-{{ nixos_base_pki.instance }}-tls.crt"
+        mode: "0644"
+      delegate_to: "{{ nixos_base_tls_via }}"
+      become: false
+      when: nixos_base_tls_ca.ca_file | length > 0 and nixos_base_tls_ca.via_router | length > 0
+      failed_when: false
+
+    # From this machine (or, for an authority on an isolated network, its
+    # router), never from the VM.
+    - name: Ask {{ nixos_base_pki.instance }} to sign it
+      ansible.builtin.uri:
+        url: "{{ nixos_base_tls_ca.url }}/v1/{{ nixos_base_pki.mount }}/sign/hosts"
+        method: POST
+        headers:
+          X-Vault-Token: >-
+            {{ ((lookup('ansible.builtin.file', role_path ~ '/../../' ~ nixos_base_tls_ca.init_file,
+                        errors='ignore') or '{}') | from_json).root_token | default('') }}
+        body_format: json
+        body:
+          csr: "{{ nixos_base_tls_csr.content | b64decode }}"
+          common_name: "{{ nixos_base_tls_names.common_name }}"
+          alt_names: "{{ nixos_base_tls_names.dns | join(',') }}"
+          ip_sans: "{{ nixos_base_tls_names.ip | join(',') }}"
+        ca_path: "{{ nixos_base_tls_ca_path or omit }}"
+        timeout: 15
+        status_code: [200]
+      register: nixos_base_tls_signed
+      failed_when: false
+      delegate_to: "{{ nixos_base_tls_via }}"
+      become: false
+      no_log: true
+
+    - name: Say the TLS certificate couldn't be renewed
+      ansible.builtin.debug:
+        msg: >-
+          {{ vm.name }} needs a new TLS certificate ({{ nixos_base_tls_state }}), but
+          {{ nixos_base_pki.instance }} answered
+          {{ 'nothing' if nixos_base_tls_signed.status | default(-1) == -1
+             else 'HTTP ' ~ nixos_base_tls_signed.status }}{{ ': ' ~ (nixos_base_tls_signed.json.errors | default([]) | join('; '))
+             if nixos_base_tls_signed.json is defined else '' }}.
+          It keeps the certificate it has, if any. Deploy {{ nixos_base_pki.instance }}
+          (with settings.pki), then this host again.
+      when: nixos_base_tls_signed.status | default(-1) != 200
+
+    - name: Write the new certificate
+      ansible.builtin.copy:
+        content: "{{ nixos_base_tls_signed.json.data.certificate | trim }}\n"
+        dest: "{{ nixos_base_tls_dir }}/cert.pem.new"
+        mode: "0644"
+      when: nixos_base_tls_signed.status | default(-1) == 200
+
+    - name: Write the new certificate chain
+      ansible.builtin.copy:
+        # The certificate, then the intermediate (ca_chain).
+        content: "{{ ([nixos_base_tls_signed.json.data.certificate]
+          + nixos_base_tls_signed.json.data.ca_chain | default([nixos_base_tls_signed.json.data.issuing_ca]))
+          | map('trim') | join('\n') }}\n"
+        dest: "{{ nixos_base_tls_dir }}/fullchain.pem.new"
+        mode: "0644"
+      when: nixos_base_tls_signed.status | default(-1) == 200
+
+    # All three at once, so a key never sits next to another key's
+    # certificate.
+    - name: Put the new certificate in place
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          cd {{ nixos_base_tls_dir }}
+          if [ -f key.pem.new ]; then mv key.pem.new key.pem; fi
+          mv cert.pem.new cert.pem
+          mv fullchain.pem.new fullchain.pem
+          rm -f request.csr
+      when: nixos_base_tls_signed.status | default(-1) == 200
+
+    - name: Clean up after a refused request
+      ansible.builtin.file:
+        path: "{{ nixos_base_tls_dir }}/{{ item }}"
+        state: absent
+      loop: [key.pem.new, request.csr]
+      when: nixos_base_tls_signed.status | default(-1) != 200
+
+    - name: Note the certificate changed
+      ansible.builtin.set_fact:
+        nixos_base_tls_changed: "{{ nixos_base_tls_signed.status | default(-1) == 200 }}"
+
+- name: Look for this host's TLS certificate
+  ansible.builtin.stat:
+    path: "{{ nixos_base_tls_dir }}/fullchain.pem"
+  register: nixos_base_tls_stat
+
+- name: Note whether the VM has a TLS certificate
+  ansible.builtin.set_fact:
+    nixos_base_tls_cert: "{{ nixos_base_tls_stat.stat.exists }}"

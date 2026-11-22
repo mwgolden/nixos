@@ -28,6 +28,11 @@ network:
     strategy: centralized
     administrative_identity:
       instance: home.openbao
+    # TLS certificates (the proxy's routes, every host) from the home
+    # OpenBao's root (docs/plans/completed/INTERNAL-CA.md).
+    pki:
+      provider: openbao
+      instance: home.openbao
 
   # A second bridge behind the router for published hosts. They reach the
   # LAN only through the proxy's routes and reach: entries. See README.md.

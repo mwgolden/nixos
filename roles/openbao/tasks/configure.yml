@@ -1,8 +1,10 @@
 # Installs and switches to the openbao VM's NixOS configuration, then
 # initializes OpenBao on the first deploy, unseals it and mounts its KV
 # secrets engines. With settings.tls, makes the listener's certificate
-# first (tls.yml); with settings.ssh_user_ca, sets up the SSH user CA and
-# its administrators last (ssh-ca.yml, admins.yml). Runs on the VM with become: true, from roles/host_deploy.
+# first (tls.yml); with settings.pki, sets up the TLS root and
+# intermediates (pki.yml); with settings.ssh_user_ca, sets up the SSH user
+# CA and its administrators last (ssh-ca.yml, admins.yml). Runs on the VM
+# with become: true, from roles/host_deploy.
 
 - name: Install the shared NixOS configuration
   ansible.builtin.include_role:
@@ -19,7 +21,7 @@
 
 - name: Make the listener's key and certificate
   ansible.builtin.include_tasks: tls.yml
-  when: openbao_tls == 'self-signed'
+  when: openbao_tls != 'none'
 
 - name: Install openbao NixOS configuration
   ansible.builtin.copy:
@@ -248,6 +250,45 @@
 - name: Make and renew the network's tokens
   ansible.builtin.include_tasks: tokens.yml
   when: (nixlab | network_secrets_store(vm.network.name)).host_id | default('') == vm.id
+
+# ---- TLS root and intermediates ----
+
+- name: Set up the TLS root and intermediates
+  ansible.builtin.include_tasks: pki.yml
+  when: openbao_pki | bool
+
+# On the deploy that makes this host's own root, its listener started
+# self-signed, since there was no root to get a certificate from yet. Get
+# one now, and restart with it.
+- name: Move the listener to a certificate from this host's own root
+  when:
+    - openbao_tls == 'pki'
+    - openbao_tls_source == 'self-signed'
+    - (nixos_base_pki.instance | default('')) == vm.id
+  block:
+    - name: Get this host's TLS certificate
+      ansible.builtin.include_role:
+        name: nixos_base
+        tasks_from: tls-cert
+
+    - name: Note the root exists now
+      ansible.builtin.set_fact:
+        nixos_base_pki_root: true
+        openbao_tls_late: true
+
+    - name: Use the new certificate for the listener
+      ansible.builtin.include_tasks: tls.yml
+
+    - name: Restart OpenBao to use it
+      ansible.builtin.include_tasks: restart.yml
+      when: openbao_tls_changed | bool
+
+    - name: Say the VM trusts the root from its next deploy
+      ansible.builtin.debug:
+        msg: >-
+          {{ vm.name }}'s listener now has a certificate from its own root.
+          The VM's own trusted certificates get the root on its next deploy.
+      when: openbao_tls_source == 'pki'
 
 # ---- SSH user CA and its administrators ----
 

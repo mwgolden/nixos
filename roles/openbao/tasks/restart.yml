@@ -1,0 +1,39 @@
+# Restarts OpenBao, which seals it, then unseals it and waits for it to be
+# active. Used by configure.yml when the listener's certificate changes
+# after the first restart of a deploy. Runs on the VM.
+
+- name: Restart OpenBao with the new certificate
+  ansible.builtin.systemd_service:
+    name: openbao
+    state: restarted
+
+- name: Wait for OpenBao's API after the restart
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/seal-status"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+  register: openbao_seal
+  retries: 20
+  delay: 3
+  until: openbao_seal is succeeded
+
+- name: Unseal OpenBao after the restart
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/unseal"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    method: POST
+    body_format: json
+    body:
+      key: "{{ item }}"
+  loop: "{{ openbao_init.unseal_keys_b64[: openbao_init.unseal_threshold | int] }}"
+  when: openbao_seal.json.sealed
+  changed_when: true
+  no_log: true
+
+- name: Wait for OpenBao to be active after the restart
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/health"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+  register: openbao_health
+  retries: 20
+  delay: 3
+  until: openbao_health is succeeded

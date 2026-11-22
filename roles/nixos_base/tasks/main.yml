@@ -56,6 +56,47 @@
   ansible.builtin.include_tasks: host-cert.yml
   when: nixos_base_security.administrative_identity.ssh_host_ca | bool
 
+# A TLS certificate from the network's PKI, and trust in its root, when
+# the network's security.pki is {provider: openbao}
+# (docs/plans/completed/INTERNAL-CA.md). pki-trust.nix (imported by common.nix) adds
+# the root to the VM's trusted certificates; { } otherwise.
+- name: Note where this host's TLS certificate comes from
+  ansible.builtin.set_fact:
+    nixos_base_pki: "{{ nixlab | host_pki(vm) }}"
+    nixos_base_tls_cert: false
+    nixos_base_tls_changed: false
+    # As a fact, so the host type's own role (proxy, openbao) can use it.
+    nixos_base_tls_dir: "{{ nixos_base_tls_dir }}"
+
+- name: Get a TLS certificate
+  ansible.builtin.include_tasks: tls-cert.yml
+  when: nixos_base_pki | length > 0
+
+- name: Look for the root certificate
+  ansible.builtin.stat:
+    path: "{{ role_path }}/../../{{ nixos_base_pki.root_file }}"
+  register: nixos_base_pki_root_stat
+  delegate_to: localhost
+  become: false
+  when: nixos_base_pki | length > 0
+
+- name: Note whether this host trusts a root
+  ansible.builtin.set_fact:
+    nixos_base_pki_root: "{{ nixos_base_pki | length > 0 and nixos_base_pki_root_stat.stat.exists | default(false) }}"
+
+- name: Install the root certificate
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../{{ nixos_base_pki.root_file }}"
+    dest: /etc/nixos/nixlab-root.crt
+    mode: "0644"
+  when: nixos_base_pki_root | bool
+
+- name: Install TLS trust
+  ansible.builtin.template:
+    src: pki-trust.nix.j2
+    dest: /etc/nixos/pki-trust.nix
+    mode: "0644"
+
 # Which SSH user CA this host trusts, and its host certificate, from its
 # network's security: block. Empty ({ }) with static keys only. common.nix
 # imports it.

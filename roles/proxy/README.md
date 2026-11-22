@@ -41,7 +41,10 @@ Routes only go to hosts on the proxy's own network. Isolated networks can't reac
 
 ## HTTPS
 
-Each route gets a certificate from Caddy's own certificate authority (`tls internal`), and plain HTTP is redirected to HTTPS. The authority lives on the proxy VM. After each deploy its root certificate is copied to `secrets/<network>/<proxy>-ca.crt` on your machine. Trust that file once, and browsers stop warning:
+Plain HTTP is redirected to HTTPS. Where the certificates come from depends on the network's `security.pki`:
+
+- **`provider: openbao`** (such as `{provider: openbao, instance: home.openbao}`; see [networks/README.md](../../networks/README.md#security)): the proxy's deploy gets it a certificate for every route's name from the network's intermediate in that OpenBao, and Caddy serves it. Your machines trust that OpenBao's root once, `secrets/home/openbao-pki-root.crt`, the same file for every network that uses it, and nothing changes when the proxy is rebuilt. How to trust it, and how certificates are renewed, is in [roles/openbao](../openbao/README.md#tls-certificates). The deploy checks each route's certificate against the root. On the deploy that switches a proxy over, Caddy's own authority is deleted from the VM; remove its old `<proxy>-ca.crt` from your machines too. Until the proxy has a certificate (its OpenBao isn't deployed yet), it keeps using Caddy's own authority.
+- **`proxy-internal`** (the default): each route gets a certificate from Caddy's own certificate authority (`tls internal`), on the proxy VM. After each deploy its root certificate is copied to `secrets/<network>/<proxy>-ca.crt` on your machine. Trust that file once per proxy, and browsers stop warning:
 
 | System | How |
 |---|---|
@@ -50,7 +53,7 @@ Each route gets a certificate from Caddy's own certificate authority (`tls inter
 | macOS | Open it in Keychain Access, then set it to "Always Trust" |
 | Firefox | Settings > Privacy & Security > Certificates > View Certificates > Authorities > Import |
 
-The certificate is named `nixlab <network> <proxy>`. If the proxy VM is destroyed and created again, it makes a new authority, which has to be trusted again.
+The internal authority's certificate is named `nixlab <network> <proxy>`. If the proxy VM is destroyed and created again, it makes a new authority, which has to be trusted again.
 
 ## Who can reach it
 

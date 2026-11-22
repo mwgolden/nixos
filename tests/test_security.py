@@ -1,5 +1,5 @@
 """Tests for the security: block of network files and the network_security
-filter (docs/plans/NETWORK-SECURITY.md, phase 1).
+filter (docs/plans/completed/NETWORK-SECURITY.md, phase 1).
 
     .venv/bin/python -m unittest discover -s tests
 """
@@ -25,10 +25,17 @@ REPO_FILES = [{"file": p.stem, "config": yaml.safe_load(p.read_text())}
 
 def repo():
     """The repository's network files with every security: block removed,
-    so tests don't depend on what home or lab declare today."""
+    and openbao hosts' PKI settings that need one (pki, tls: pki) undone,
+    so tests don't depend on what the files declare today."""
     files = copy.deepcopy(REPO_FILES)
     for f in files:
         f["config"]["network"].pop("security", None)
+        for h in f["config"].get("hosts") or []:
+            settings = h.get("settings")
+            if h["type"] == "openbao" and isinstance(settings, dict):
+                settings.pop("pki", None)
+                if settings.get("tls") == "pki":
+                    settings["tls"] = "self-signed"
     return files
 
 
@@ -48,6 +55,10 @@ def add_home_openbao(files, **settings):
         hosts.append(bao)
     bao["settings"] = settings
     return files
+
+
+def openbao_of(files, network):
+    return next(h for h in config(files, network)["hosts"] if h["type"] == "openbao")
 
 
 def without_openbao(files, network):
@@ -190,11 +201,17 @@ class Presets(unittest.TestCase):
         self.assertEqual(sec["administrative_identity"]["principals"], {
             "admin": ["agent-developer-admin"], "operator": ["agent-developer-operator"]})
 
-    def test_pki_openbao_is_deferred(self):
+    def test_pki_from_home(self):
+        """docs/plans/completed/INTERNAL-CA.md: an isolated network gets its
+        certificates from the home OpenBao's root."""
         files = centralized(repo())
-        config(files, "agent-developer")["network"]["security"]["pki"] = {"provider": "openbao"}
-        found = errors(files)
-        self.assertTrue(any("pki.provider openbao isn't available" in e for e in found), found)
+        openbao_of(files, "home")["settings"]["pki"] = True
+        config(files, "agent-developer")["network"]["security"]["pki"] = {
+            "provider": "openbao", "instance": "home.openbao"}
+        self.assertEqual(errors(files), [])
+        self.assertEqual(nc.network_security(inventory(files), "agent-developer")["pki"],
+                         {"provider": "openbao", "instance": "home.openbao"})
+
     def test_no_not_deployed_warnings(self):
         self.assertFalse([w for w in warnings(centralized(repo())) if "not deployed yet" in w])
 
@@ -254,8 +271,45 @@ class Rejected(unittest.TestCase):
         set_security(files, "lab", {"secrets": {"provider": "openbao", "instance": "home.openbao"}})
         self.assertError(files, "secrets.instance home.openbao is on network home")
 
-    def test_openbao_pki_setting_is_deferred(self):
-        self.assertError(add_home_openbao(repo(), pki=True), "settings.pki isn't available")
+    def test_pki_from_another_isolated_network(self):
+        files = add_home_openbao(repo())
+        openbao_of(files, "agent-developer")["settings"] = {"tls": "self-signed", "pki": True}
+        set_security(files, "lab", {"pki": {"provider": "openbao", "instance": "agent-developer.openbao"}})
+        self.assertError(files, "pki.instance agent-developer.openbao is on network agent-developer, "
+                                "which isn't a home network")
+
+    def test_pki_on_own_network(self):
+        files = add_home_openbao(repo())
+        openbao_of(files, "agent-developer")["settings"] = {"tls": "self-signed", "pki": True}
+        set_security(files, "agent-developer", {"pki": {"provider": "openbao"}})
+        self.assertEqual(errors(files), [])
+
+    def test_pki_instance_without_pki(self):
+        files = set_security(add_home_openbao(repo()), "lab",
+                             {"pki": {"provider": "openbao", "instance": "home.openbao"}})
+        self.assertError(files, "pki.instance home.openbao doesn't have settings.pki set")
+
+    def test_pki_domain_outside_the_root(self):
+        files = set_security(add_home_openbao(repo(), pki={"permitted_domains": ["lab.example.net"]}), "lab",
+                             {"pki": {"provider": "openbao", "instance": "home.openbao"}})
+        self.assertError(files, "the network's domain lab.home.arpa isn't under the permitted domains")
+
+    def test_pki_domain_under_a_permitted_domain(self):
+        files = set_security(add_home_openbao(repo(), pki={"permitted_domains": ["example.net", "home.arpa"]}),
+                             "lab", {"pki": {"provider": "openbao", "instance": "home.openbao"}})
+        self.assertEqual(errors(files), [])
+
+    def test_pki_settings_shape(self):
+        self.assertError(add_home_openbao(repo(), pki="yes"), "settings.pki must be true, false or a mapping")
+        self.assertError(add_home_openbao(repo(), pki={"ttl": "1h"}), "settings.pki: unknown setting ttl")
+        self.assertError(add_home_openbao(repo(), pki={"permitted_domains": "home.arpa"}),
+                         "permitted_domains must be a list")
+        self.assertError(add_home_openbao(repo(), pki={"cert_ttl": "a year"}), "settings.pki.cert_ttl must be")
+
+    def test_pki_needs_tls(self):
+        self.assertError(add_home_openbao(repo(), tls="none", ssh_user_ca=False, pki=True),
+                         "settings.pki needs settings.tls")
+
     def test_secrets_openbao_without_a_host(self):
         files = set_security(without_openbao(repo(), "lab"), "lab", {"secrets": {"provider": "openbao"}})
         self.assertError(files, "secrets.provider openbao needs an openbao host on network lab")
@@ -395,8 +449,16 @@ class OpenbaoAuthority(unittest.TestCase):
     def test_bad_ttl(self):
         self.assertError(add_home_openbao(repo(), ssh_cert_max_ttl="1 day"), "ssh_cert_max_ttl must be a duration")
 
-    def test_tls_pki_not_yet(self):
-        self.assertError(add_home_openbao(repo(), tls="pki"), "settings.tls: pki isn't available")
+    def test_tls_pki_needs_a_pki_network(self):
+        self.assertError(add_home_openbao(repo(), tls="pki", pki=True),
+                         "settings.tls: pki needs network home to get certificates from an OpenBao")
+
+    def test_tls_pki_with_own_root(self):
+        files = add_home_openbao(repo(), tls="pki", pki=True)
+        set_security(files, "home", {"strategy": "centralized", "secrets": {"provider": "files"},
+                                     "administrative_identity": {"instance": "home.openbao"},
+                                     "pki": {"provider": "openbao", "instance": "home.openbao"}})
+        self.assertEqual(errors(files), [])
 
 
 class Filters(unittest.TestCase):

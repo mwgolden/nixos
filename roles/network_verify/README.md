@@ -24,6 +24,7 @@ On each VM, over SSH (through the router on an isolated network):
 | DMZ | On a network with a DMZ: from the DMZ, SSH on each LAN host is dropped (unless a DMZ rule allows it), and each DMZ rule's port answers or refuses. From the LAN, SSH on each DMZ host answers. |
 | Listening services | Nothing listens on a non-loopback TCP port except 22 and the host type's own ports, from `roles/<type>/tasks/ports.yml` |
 | Proxy routes | On a proxy, each route answers over HTTPS. A 502 or 504 means its backend isn't answering. |
+| TLS certificate | On a network with `security.pki` from an OpenBao, the VM has a certificate for its names that hasn't expired. One that expires within 30 days, or comes from an older intermediate, is only a warning, with the command that renews it. |
 
 From this machine:
 

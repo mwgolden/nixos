@@ -1,0 +1,351 @@
+# The TLS root CA and its intermediates (settings.pki;
+# docs/plans/completed/INTERNAL-CA.md). Included from configure.yml once OpenBao is
+# unsealed. Runs on the VM.
+#
+# - pki/: the root. Its key is made inside OpenBao and never leaves it. It
+#   is limited by name constraints to settings.pki.permitted_domains and
+#   signs intermediates only. Its certificate goes to
+#   secrets/<network>/<host>-pki-root.crt, the one file your machines trust.
+# - pki-<network>/: one intermediate for each network whose security.pki
+#   names this host (the pki_networks filter), limited to that network's
+#   domain, with one role, hosts, that signs its hosts' certificates.
+#   Re-signed when fewer than openbao_pki_resign_days are left, when the
+#   network's domain changed, or with -e openbao_pki_rotate=<network>.
+#   Each certificate goes to secrets/<network>/<host>-pki-<network>.crt,
+#   where the hosts' deploys check their certificates against it.
+
+- name: List the secrets engines for the PKI
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/mounts"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+  register: openbao_pki_mounts
+  no_log: true
+
+# ---- The root ----
+
+- name: Mount the root's engine
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/mounts/{{ openbao_pki_root_mount }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      type: pki
+      description: nixlab TLS root (docs/plans/completed/INTERNAL-CA.md)
+      config:
+        max_lease_ttl: "{{ openbao_pki_settings.root_ttl }}"
+    status_code: [200, 204]
+  when: (openbao_pki_root_mount ~ '/') not in openbao_pki_mounts.json.data
+  changed_when: true
+  no_log: true
+
+# 204 and no body while it has no root yet.
+- name: Read the root certificate
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_root_mount }}/ca/pem"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    return_content: true
+    status_code: [200, 204]
+  register: openbao_pki_root_read
+
+- name: Make the root
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_root_mount }}/root/generate/internal"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      common_name: "{{ openbao_pki_root_name }}"
+      issuer_name: root
+      key_name: root
+      key_type: ec
+      key_bits: 384
+      ttl: "{{ openbao_pki_settings.root_ttl }}"
+      permitted_dns_domains: "{{ openbao_pki_settings.permitted_domains }}"
+      # It signs intermediates, and they sign only hosts.
+      max_path_length: 1
+  register: openbao_pki_root_new
+  when: "'BEGIN CERTIFICATE' not in openbao_pki_root_read.content | default('')"
+  changed_when: true
+  no_log: true
+
+- name: Note the root certificate
+  ansible.builtin.set_fact:
+    openbao_pki_root_pem: >-
+      {{ (openbao_pki_root_new.json.data.certificate if openbao_pki_root_new is changed
+          else openbao_pki_root_read.content) | trim }}
+
+- name: Look for the root certificate in secrets/
+  ansible.builtin.stat:
+    path: "{{ openbao_pki_root_file }}"
+  register: openbao_pki_root_stat
+  delegate_to: localhost
+  become: false
+
+# Like the SSH CAs: a root that changed (a wiped data disk) would leave
+# every machine trusting a root that no longer signs anything.
+- name: Check the root is the one your machines trust
+  ansible.builtin.assert:
+    that:
+      - >-
+        (lookup('ansible.builtin.file', openbao_pki_root_file) | x509_fingerprint)
+        == (openbao_pki_root_pem | x509_fingerprint)
+    fail_msg: >-
+      OpenBao on {{ vm.name }} has a different TLS root than
+      {{ openbao_pki_root_file_short }}, the one your machines trust; its data
+      disk is probably new or was wiped. Restore a backup
+      (playbooks/openbao-backup.yaml) to keep the old root. To accept the
+      new one, move that file away and redeploy; then trust the new file
+      on your machines and redeploy every network that uses
+      {{ vm.id }} (security.pki).
+    quiet: true
+  when: openbao_pki_root_stat.stat.exists
+
+- name: Write the root certificate to {{ openbao_pki_root_file_short }}
+  ansible.builtin.copy:
+    content: "{{ openbao_pki_root_pem }}\n"
+    dest: "{{ openbao_pki_root_file }}"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  when: not openbao_pki_root_stat.stat.exists
+
+# Near its end, the root signs intermediates that end with it, instead of
+# refusing.
+- name: Let the root shorten what it signs near its end
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_root_mount }}/issuer/default"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      leaf_not_after_behavior: truncate
+  changed_when: false
+  no_log: true
+
+# ---- One intermediate per network ----
+
+- name: Mount each network's intermediate engine
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/mounts/{{ item.mount }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      type: pki
+      description: "nixlab TLS intermediate for network {{ item.network }}"
+      config:
+        max_lease_ttl: "{{ openbao_pki_settings.intermediate_ttl }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_pki_networks }}"
+  loop_control:
+    label: "{{ item.mount }}"
+  when: (item.mount ~ '/') not in openbao_pki_mounts.json.data
+  changed_when: true
+  no_log: true
+
+- name: Read each intermediate certificate
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ item.mount }}/ca/pem"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    return_content: true
+    status_code: [200, 204]
+  loop: "{{ openbao_pki_networks }}"
+  loop_control:
+    label: "{{ item.mount }}"
+  register: openbao_pki_int_read
+
+# Missing, fewer than openbao_pki_resign_days left (so a year's
+# certificate still fits under it), for another domain, or asked for with
+# -e openbao_pki_rotate=<network>.
+- name: Note which intermediates need signing
+  ansible.builtin.set_fact:
+    openbao_pki_to_sign: >-
+      {%- set out = [] -%}
+      {%- for r in openbao_pki_int_read.results -%}
+      {%-   set pem = r.content | default('') -%}
+      {%-   if 'BEGIN CERTIFICATE' not in pem
+              or (pem | x509_days_left) < openbao_pki_resign_days | int
+              or (pem | x509_permitted_dns) != [r.item.domain]
+              or openbao_pki_rotate == r.item.network -%}
+      {%-     set _ = out.append(r.item) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+# A new key each time, inside OpenBao. The old issuer stays in the mount,
+# so certificates it signed still chain to the root until they expire.
+- name: Make each new intermediate's key and request
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ item.mount }}/intermediate/generate/internal"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      common_name: "{{ openbao_pki_intermediate_name | replace('NETWORK', item.network) }}"
+      key_type: ec
+      key_bits: 256
+  loop: "{{ openbao_pki_to_sign }}"
+  loop_control:
+    label: "{{ item.mount }}"
+  register: openbao_pki_csrs
+  changed_when: true
+  no_log: true
+
+# Limited to the network's domain: browsers refuse anything else it signs,
+# even if this OpenBao is misused. (OpenBao can't add IP limits; the
+# hosts role below limits addresses when signing.)
+- name: Sign each new intermediate with the root
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_root_mount }}/root/sign-intermediate"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      csr: "{{ item.json.data.csr }}"
+      common_name: "{{ openbao_pki_intermediate_name | replace('NETWORK', item.item.network) }}"
+      ttl: "{{ openbao_pki_settings.intermediate_ttl }}"
+      permitted_dns_domains: ["{{ item.item.domain }}"]
+      max_path_length: 0
+      use_csr_values: false
+  loop: "{{ openbao_pki_csrs.results }}"
+  loop_control:
+    label: "{{ item.item.mount }}"
+  register: openbao_pki_signed
+  changed_when: true
+  no_log: true
+
+- name: Install each new intermediate
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ item.item.item.mount }}/intermediate/set-signed"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      certificate: "{{ item.json.data.certificate }}"
+  loop: "{{ openbao_pki_signed.results }}"
+  loop_control:
+    label: "{{ item.item.item.mount }}"
+  register: openbao_pki_installed
+  changed_when: true
+  no_log: true
+
+# Otherwise the mount keeps signing with the old one.
+- name: Make each new intermediate the one that signs
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ item.item.item.item.mount }}/config/issuers"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      default: "{{ item.json.data.imported_issuers | first }}"
+  loop: "{{ openbao_pki_installed.results }}"
+  loop_control:
+    label: "{{ item.item.item.item.mount }}"
+  when: item.json.data.imported_issuers | default([], true) | length > 0
+  changed_when: true
+  no_log: true
+
+- name: Write each network's signing role
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ item.mount }}/roles/hosts"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    body_format: json
+    body:
+      allowed_domains: ["{{ item.domain }}"]
+      allow_subdomains: true
+      allow_bare_domains: false
+      allow_localhost: false
+      allow_wildcard_certificates: false
+      allow_glob_domains: false
+      enforce_hostnames: true
+      allow_ip_sans: true
+      allowed_ip_sans_cidr: "{{ item.ip_cidrs }}"
+      server_flag: true
+      client_flag: false
+      key_type: ec
+      key_bits: 256
+      # Names come from the deploy's request (tls_cert_names), not the CSR.
+      use_csr_common_name: false
+      use_csr_sans: false
+      ttl: "{{ openbao_pki_settings.cert_ttl }}"
+      max_ttl: "{{ openbao_pki_settings.cert_ttl }}"
+      # Keep a record of every certificate issued: bao list <mount>/certs.
+      no_store: false
+    status_code: [200, 204]
+  loop: "{{ openbao_pki_networks }}"
+  loop_control:
+    label: "{{ item.mount }}"
+  changed_when: false
+  no_log: true
+
+- name: Read each network's current intermediate
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ item.mount }}/ca/pem"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    return_content: true
+  loop: "{{ openbao_pki_networks }}"
+  loop_control:
+    label: "{{ item.mount }}"
+  register: openbao_pki_int_current
+
+- name: Write each intermediate certificate to secrets/
+  ansible.builtin.copy:
+    content: "{{ item.content | trim }}\n"
+    dest: "{{ role_path }}/../../{{ item.item.file }}"
+    mode: "0644"
+  loop: "{{ openbao_pki_int_current.results }}"
+  loop_control:
+    label: "{{ item.item.file }}"
+  delegate_to: localhost
+  become: false
+
+# ---- Networks that no longer use this host ----
+
+- name: Note intermediates no network uses
+  ansible.builtin.set_fact:
+    openbao_pki_stale: "{{ openbao_pki_mounts.json.data | list | pki_stale_mounts(nixlab, vm.id) }}"
+
+- name: Say which intermediates no network uses
+  ansible.builtin.debug:
+    msg: >-
+      {{ openbao_pki_stale | join(', ') }} on {{ vm.name }}
+      {{ 'are intermediates' if openbao_pki_stale | length > 1 else 'is an intermediate' }}
+      that no network's security.pki uses any more. Certificates it signed
+      keep working until they expire. To remove {{ 'them' if openbao_pki_stale | length > 1 else 'it' }},
+      redeploy with -e openbao_pki_prune=true.
+  when: openbao_pki_stale | length > 0 and not openbao_pki_prune | bool
+
+- name: Remove intermediates no network uses
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/mounts/{{ item }}"
+    ca_path: "{{ openbao_uri_ca or omit }}"
+    method: DELETE
+    headers:
+      X-Vault-Token: "{{ openbao_init.root_token }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_pki_stale }}"
+  when: openbao_pki_prune | bool
+  changed_when: true
+  no_log: true

@@ -25,6 +25,23 @@
     name: nixos_base
     tasks_from: switch
 
+# LoadCredential copies the files when Caddy starts, so neither a reload
+# (which is what a switch does to Caddy) nor a running Caddy sees a new
+# certificate, or the files at all on the switch that adds them.
+- name: Look for the certificate Caddy was given
+  ansible.builtin.stat:
+    path: /run/credentials/caddy.service/fullchain.pem
+  register: proxy_credential
+  when: proxy_pki | bool
+
+- name: Restart Caddy with the certificate
+  ansible.builtin.systemd_service:
+    name: caddy
+    state: restarted
+  when: >-
+    proxy_pki | bool and (nixos_base_tls_changed | default(false) | bool
+                          or not proxy_credential.stat.exists)
+
 - name: Check Caddy is running
   ansible.builtin.command:
     cmd: systemctl is-active caddy
@@ -33,10 +50,12 @@
 # Asks Caddy on the VM itself for each name, so DNS doesn't matter here.
 # 000 means no HTTPS answer yet: Caddy may still be making the
 # certificate. 502 means the backend didn't answer.
+# With the network's PKI, the answer must also verify against its root.
 - name: Try each route
   ansible.builtin.command:
     cmd: >-
-      curl --silent --insecure --output /dev/null --max-time 10
+      curl --silent {{ '--cacert /etc/nixos/nixlab-root.crt' if proxy_pki else '--insecure' }}
+      --output /dev/null --max-time 10
       --write-out '%{http_code}'
       --resolve {{ item.fqdn }}:443:127.0.0.1 https://{{ item.fqdn }}/
   register: route_checks
@@ -54,7 +73,8 @@
     that:
       - item.stdout != '000'
     fail_msg: >-
-      Caddy didn't answer https://{{ item.item.fqdn }}/ on the proxy. See
+      Caddy didn't answer https://{{ item.item.fqdn }}/ on the proxy{{
+      ' with a certificate that verifies against ' ~ proxy_root_file_short if proxy_pki else '' }}. See
       'journalctl -u caddy' on {{ vm.name }}.
     quiet: true
   loop: "{{ route_checks.results }}"
@@ -67,6 +87,30 @@
       {{ dict(route_checks.results | map(attribute='item.fqdn')
               | zip(route_checks.results | map(attribute='stdout')) | list) }}
 
+# Caddy's own authority isn't used with the network's PKI. Its key would
+# still sign anything for machines that trust secrets/<network>/<proxy>-ca.crt,
+# so it goes (docs/plans/completed/INTERNAL-CA.md, decision 6).
+- name: Remove Caddy's own authority
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      for d in $(find /var/lib/caddy -type d \( -path '*/pki/authorities/local' -o -path '*/certificates/local' \)); do
+        rm -rf "$d"
+        echo "removed $d"
+      done
+  register: proxy_ca_removed
+  changed_when: proxy_ca_removed.stdout | length > 0
+  when: proxy_pki | bool
+
+- name: Say Caddy's own authority is gone
+  ansible.builtin.debug:
+    msg: >-
+      Removed Caddy's own certificate authority from {{ vm.name }}: it now
+      serves a certificate from {{ nixos_base_pki.instance }}. If your
+      machines trust secrets/{{ vm.network.name }}/{{ vm.name }}-ca.crt,
+      remove it from them; {{ proxy_root_file_short }} replaces it.
+  when: proxy_ca_removed is changed
+
 # Caddy makes the authority the first time it needs a certificate.
 - name: Find Caddy's root certificate
   ansible.builtin.find:
@@ -74,7 +118,7 @@
     recurse: true
     patterns: root.crt
   register: ca_files
-  when: proxy_routes | length > 0
+  when: proxy_routes | length > 0 and not proxy_pki | bool
 
 - name: Copy the root certificate to this machine
   ansible.builtin.fetch:
@@ -83,4 +127,5 @@
     flat: true
   when:
     - proxy_routes | length > 0
+    - not proxy_pki | bool
     - ca_files.files | selectattr('path', 'search', '/pki/authorities/local/') | list | length > 0

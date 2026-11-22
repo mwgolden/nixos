@@ -39,7 +39,7 @@ A move is defined by `vm_id`, not by name. To move `home.ws` (VM 119) to `lab`:
 3. Copy its secrets file, if it has one, from `secrets/home/` to `secrets/lab/` (see [Secrets](#secrets-are-found-by-name)).
 4. Run `ansible-playbook playbooks/deploy-host.yaml -e network=lab -e host=ws`.
 
-The deploy finds VM 119 where it was last deployed, from the address recorded in its Proxmox notes. It then moves the VM's network card to the new bridge and the VM to its new address, and updates the VM's `net-<network>` tag. The diagrams of both networks are rewritten.
+The deploy finds VM 119 where it was last deployed, from the address recorded in its Proxmox notes. It then moves the VM's network card to the new bridge and the VM to its new address, and updates the VM's `net-<network>` tag. The diagrams of both networks are rewritten. If the new network gets TLS certificates from an OpenBao (`security.pki`), the deploy gets the host a new one for its new names; the old one is for names that no longer exist.
 
 The host can be renamed in the same move only if you also rename the VM in Proxmox first. Deploys never rename VMs (see case 2 below).
 

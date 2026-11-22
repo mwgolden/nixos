@@ -18,7 +18,7 @@ hosts:
       key_shares: 1        # unseal keys made on the first deploy
       key_threshold: 1     # how many of them it takes to unseal
       kv_mounts: [secret]  # your own KV version 2 engines; created if missing, never deleted
-      tls: none            # or self-signed: HTTPS, see "HTTPS" below
+      tls: none            # or self-signed, or pki: HTTPS, see "HTTPS" below
       admin_sources: []    # addresses or subnets allowed to reach the port; [] is anyone
       # An SSH user CA for administrators; see "SSH certificates" below.
       ssh_user_ca: false   # needs tls
@@ -27,6 +27,8 @@ hosts:
       ssh_host_cert_ttl: 8760h
       admin_mfa: false     # true: every admin also enters a TOTP code
       admins: []           # [{name: alice, roles: [homelab-admin], mfa: true}]
+      # A TLS root CA for every network's certificates; see "TLS certificates" below.
+      pki: false           # true, or {permitted_domains, root_ttl, intermediate_ttl, cert_ttl}; needs tls
 ```
 
 The defaults are in [defaults/main.yml](defaults/main.yml).
@@ -121,7 +123,9 @@ export BAO_ADDR=https://192.168.1.20:8200
 export BAO_CACERT=secrets/home/openbao-tls.crt
 ```
 
-A new certificate is made when fewer than 30 days are left or the names change (another address), and OpenBao is restarted and unsealed to use it. Clients then need the new file. There's no `tls: pki`: a TLS hierarchy in OpenBao was phase 4 of [docs/plans/NETWORK-SECURITY.md](../../docs/plans/NETWORK-SECURITY.md), which is deferred.
+A new certificate is made when fewer than 30 days are left or the names change (another address), and OpenBao is restarted and unsealed to use it. Clients then need the new file.
+
+With `tls: pki`, the listener uses the host's own certificate from its network's PKI instead: the network needs `security.pki` with an OpenBao (see [TLS certificates](#tls-certificates)), and its deploy gets the certificate like any other host's. `secrets/<network>/<host>-tls.crt` then holds the root, so `BAO_CACERT` and everything else that uses the file keeps working, and it no longer changes when the certificate is renewed. Until the host has a certificate (its authority isn't deployed yet), the listener stays self-signed and the deploy says so. On the deploy that makes this host's own root, it starts self-signed, gets its certificate once the root exists, and restarts with it.
 
 `admin_sources` limits who can reach the port, such as `[192.168.1.50]` for one desktop. Include the machine you deploy from: the deploy's own check of the port runs there (from the router on an isolated network, which is already in the network's subnet).
 
@@ -190,6 +194,49 @@ scripts/ssh-cert --trust-hosts home lab >> ~/.ssh/known_hosts
 
 That adds one `@cert-authority` line per network. A host with a certificate is also still accepted by a `known_hosts` entry for its key. This CA deploys its own certificate only on its second deploy, since the CA doesn't exist yet during the first one.
 
+## TLS certificates
+
+With `pki: true`, this host is a TLS certificate authority for every network whose `security.pki` names it: one root, trusted once on your machines, and an intermediate per network that signs that network's hosts' certificates. The design is in [docs/plans/completed/INTERNAL-CA.md](../../docs/plans/completed/INTERNAL-CA.md); the network side is in [networks/README.md](../../networks/README.md#security).
+
+```yaml
+# networks/lab.yaml
+network:
+  security:
+    pki: {provider: openbao, instance: home.openbao}
+```
+
+Every deploy of this host:
+
+1. Mounts a PKI engine at `pki/` and makes the root inside it if there's none: ECDSA P-384, valid for `root_ttl` (10 years), its key never leaving OpenBao. It is limited by name constraints to `permitted_domains` (`home.arpa`): browsers refuse anything it signs for any other name, so trusting it can't be used against the rest of the internet. That list is only read when the root is made.
+2. Writes the root's certificate to `secrets/<network>/<host>-pki-root.crt`. If the root ever differs from that file (a wiped data disk), the deploy stops rather than issue certificates no one trusts: restore a [backup](#backups), or move the file away to accept the new root, then trust it on your machines and redeploy every network that uses it.
+3. For each network that uses it, mounts `pki-<network>/` with an intermediate (P-256, valid for `intermediate_ttl`, 5 years) signed by the root and limited to that network's domain, such as `lab.home.arpa`. It is signed again when fewer than 400 days are left, when the network's domain changes, or with `-e openbao_pki_rotate=<network>`. Its certificate goes to `secrets/<network>/<host>-pki-<network>.crt`.
+4. Writes each intermediate's signing role, `hosts`: names under the network's domain and addresses in its subnets only, server certificates, valid for `cert_ttl` (a year).
+5. Lists intermediates that no network uses any more. `-e openbao_pki_prune=true` removes them.
+
+Each host on a network that uses it gets a certificate from its deploy ([roles/nixos_base, tls-cert.yml](../nixos_base/tasks/tls-cert.yml)), for `<name>.<domain>`, its addresses and, on a proxy, every route's name. The key is made on the VM; only the signing request leaves it, and this machine, not the VM, sends it here. The certificate is kept while it has more than 30 days left and the same names; `-e pki_renew=true` replaces it and its key. If this host can't be reached, the old one stays. The files are in `/etc/nixlab/tls` on the VM: `key.pem`, `cert.pem` and `fullchain.pem`. Every such VM also trusts the root (`security.pki.certificateFiles`). The [proxy](../proxy/README.md#https) serves the certificate for its routes, and an openbao host with `tls: pki` for its listener.
+
+Trust the root once on each of your machines (`secrets/home/openbao-pki-root.crt` for a home openbao host):
+
+| System | How |
+|---|---|
+| Linux (Debian, Ubuntu) | `sudo cp secrets/home/openbao-pki-root.crt /usr/local/share/ca-certificates/nixlab-root.crt && sudo update-ca-certificates` |
+| NixOS | Add the file to `security.pki.certificateFiles` |
+| macOS | Open it in Keychain Access, then set it to "Always Trust" |
+| Firefox | Settings > Privacy & Security > Certificates > View Certificates > Authorities > Import |
+| iOS | Install it as a profile, then turn it on in Settings > General > About > Certificate Trust Settings |
+
+With the root token (`BAO_TOKEN`, `BAO_ADDR` and `BAO_CACERT` as in [Using OpenBao](#using-openbao)):
+
+```bash
+bao list pki-lab/certs                                  # serial numbers of every certificate issued for lab
+bao read pki-lab/cert/<serial>                          # one of them
+bao write pki-lab/revoke serial_number=<serial>         # recorded, but clients don't check (see below)
+```
+
+Clients don't check revocation for a private root, and isolated hosts couldn't reach this host to fetch a list. For a key that leaked, redeploy the host with `-e pki_renew=true`; the old certificate stays usable by whoever has its key until it expires. For a network you no longer trust, `-e openbao_pki_rotate=<network>` and redeploy that network.
+
+The audit log records every certificate issued. The deploys use the root token to ask for certificates, as they do for SSH host certificates.
+
 ## The network's tokens
 
 On a network whose secrets this host keeps, every deploy of it also makes and renews narrower tokens than the root token. Each is an orphan (revoking the root token doesn't revoke it), periodic (768h, renewed on every deploy), and named, so the audit log says whose it was:
@@ -252,7 +299,7 @@ Edit the host's entry or the files here and redeploy. An existing VM is updated 
 |---|---|
 | `files/configuration.nix` | NixOS configuration: OpenBao with raft storage, its user and the data disk mount |
 | `templates/openbao.nix.j2` | Generated settings: listener (and its TLS), API address, UI, audit log, firewall |
-| `tasks/` | `prepare.yml` (settings, saved keys), `configure.yml` (disk, switch, restart, init, unseal, KV mounts), `tls.yml` (the listener's certificate), `tokens.yml` (the network's deploy and read-only tokens), `ssh-ca.yml` (an SSH CA's key), `ssh-user-roles.yml` and `ssh-host-roles.yml` (their signing roles), `admins.yml` (logins, policies, MFA), `backup.yml` (a snapshot), `verify.yml`, `ports.yml` |
+| `tasks/` | `prepare.yml` (settings, saved keys), `configure.yml` (disk, switch, restart, init, unseal, KV mounts), `tls.yml` (the listener's certificate), `restart.yml` (restart and unseal after a new one), `pki.yml` (the TLS root and intermediates), `tokens.yml` (the network's deploy and read-only tokens), `ssh-ca.yml` (an SSH CA's key), `ssh-user-roles.yml` and `ssh-host-roles.yml` (their signing roles), `admins.yml` (logins, policies, MFA), `backup.yml` (a snapshot), `verify.yml`, `ports.yml` |
 | [`../host_secrets/`](../host_secrets/tasks/main.yml) | How the other hosts' deploys read their secrets from here (the `network_secrets_store` filter in [plugins/filter/network_config.py](../../plugins/filter/network_config.py) says where) |
 
 ## Removing it
@@ -264,3 +311,5 @@ ansible-playbook playbooks/destroy-host.yaml -e network=lab -e host=openbao
 This permanently deletes the VM, its data disk and every secret in it, including the other hosts' secrets imported from their `.env` files: any whose file you deleted after the import is lost. The playbook lists those hosts before deleting. It asks you to type the host name. Remove the entry from the network file too, or the next deploy creates it again, and move `secrets/<network>/<host>-init.json` away, or that deploy stops because the keys don't match the new, empty OpenBao.
 
 If this host is an SSH user CA, no one can get new certificates afterwards, on any network that trusts it; logins with static keys keep working. `secrets/<network>/<host>-ssh-user-ca.pub` stays, and a new CA on the same host stops at it until you move it away (then redeploy every host that trusts the new one).
+
+If this host is a TLS root (`pki`), hosts keep the certificates they have until they expire, but none get new ones, and a new openbao host makes a new root, which your machines have to trust again. `secrets/<network>/<host>-pki-root.crt` stays, and stops the new one's deploy until you move it away. A [backup](#backups) restored to the new host keeps the old root.

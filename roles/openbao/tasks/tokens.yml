@@ -1,5 +1,5 @@
 # Tokens narrower than the root token, for the network whose secrets this
-# host keeps (docs/plans/NETWORK-SECURITY.md, 4.4):
+# host keeps (docs/plans/completed/NETWORK-SECURITY.md, 4.4):
 #   deploy-<network>   read and write <network>/*, for the other hosts'
 #                      deploys (roles/host_secrets): secrets/<network>/<host>-deploy-token
 #   <network>-<host>-read  read the host's own secrets and nothing else:

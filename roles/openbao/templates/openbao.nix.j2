@@ -21,7 +21,7 @@
       tls_min_version = "tls12";
 {% endif %}
     };
-{% if openbao_ssh_user_ca or openbao_ssh_host_ca %}
+{% if openbao_ssh_user_ca or openbao_ssh_host_ca or openbao_pki | bool %}
 
     # Every request and answer, with secrets hashed. OpenBao only accepts
     # audit devices from its configuration, not through the API.

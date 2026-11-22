@@ -13,3 +13,9 @@ proxy_vm_name: "{{ vm.name }}"
 proxy_ca_file: "{{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.name }}-ca.crt"
 # Shown in the certificate, so you can tell which proxy it belongs to.
 proxy_ca_name: "nixlab {{ vm.network.name }} {{ vm.name }}"
+# Whether Caddy serves this host's certificate from the network's PKI
+# (security.pki; roles/nixos_base, tls-cert.yml) instead of its own
+# authority. Only once the host has one: until then, tls internal.
+proxy_pki: "{{ nixos_base_tls_cert | default(false) | bool }}"
+# The root clients trust in that case.
+proxy_root_file_short: "{{ nixos_base_pki.root_file | default('') }}"
