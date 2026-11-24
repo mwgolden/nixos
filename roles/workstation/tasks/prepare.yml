@@ -151,12 +151,34 @@
          + (workstation_tools | workstation_package_manager_errors(workstation_packages,
             'settings of ' ~ vm.name ~ ' in networks/' ~ vm.network.name ~ '.yaml')) }}
 
+# The user can log in with a certificate when the network trusts an SSH user
+# CA whose public key is here (nixos_base only installs the trust then) and
+# gives the user a principal. Empty when it can't.
+- name: Note the certificate login
+  ansible.builtin.set_fact:
+    workstation_cert_instance: "{{ workstation_ca_instance if workstation_ca_key | length > 0 else '' }}"
+    workstation_cert_principals: >-
+      {{ (workstation_security | ssh_trust_principals(workstation_user))[workstation_user] | default([])
+         if workstation_ca_key | length > 0 else [] }}
+  vars:
+    workstation_security: "{{ nixlab | network_security(vm.network.name) }}"
+    workstation_ca_instance: "{{ workstation_security.administrative_identity.instance }}"
+    workstation_ca_key: >-
+      {{ (lookup('ansible.builtin.file',
+                 role_path ~ '/../../secrets/' ~ (workstation_ca_instance | replace('.', '/', 1)) ~ '-ssh-user-ca.pub',
+                 errors='ignore') or '') | trim
+         if workstation_ca_instance else '' }}
+
 - name: Require a way to log in
   ansible.builtin.assert:
     that:
-      - workstation_ssh_keys | length > 0 or workstation_password_hash != ''
+      - >-
+        workstation_ssh_keys | length > 0
+        or workstation_password_hash != ''
+        or workstation_cert_principals | length > 0
     fail_msg: >-
       {{ vm.name }}'s user {{ workstation_user }} would have no way to log in.
-      Add settings.ssh_key_files in networks/{{ vm.network.name }}.yaml, or a password
-      hash in {{ host_secrets_where }} (see roles/workstation/env.example).
+      Add settings.ssh_key_files in networks/{{ vm.network.name }}.yaml, a password
+      hash in {{ host_secrets_where }} (see roles/workstation/env.example), or
+      have the network trust a deployed SSH user CA (security.administrative_identity).
     quiet: true

@@ -25,7 +25,7 @@ hosts:
           version: "0.8.4"
 ```
 
-The user needs at least one SSH key, or a password (below). The defaults are in [defaults/main.yml](defaults/main.yml).
+The user needs a way to log in: an SSH key, a password (below), or an [SSH certificate](../openbao/README.md#ssh-certificates) when the network trusts a deployed SSH user CA. A certificate for `<network>-operator` logs in as this user, so `ssh_key_files` is optional on those networks. The defaults are in [defaults/main.yml](defaults/main.yml).
 
 - **`user`:** lowercase letters, digits, `_` and `-`, up to 32. Not `root`, `admin` or another account NixOS uses.
 - **`ssh_key_files`:** paths to `.pub` files on the machine running Ansible, as for `NIXOS_DEPLOYMENT_PUBLIC_KEY`. Use a full path or one starting with `~`. Every key line in a file is added, so a file in `authorized_keys` format works too. The comment at the end of a key may only have letters, digits, spaces and `@ . _ + = : , / -`.

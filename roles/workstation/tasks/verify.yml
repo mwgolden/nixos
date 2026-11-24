@@ -30,5 +30,11 @@
       The workstation is up: ssh {{ workstation_user }}@{{ final.ip }}.
       {%- endif %}
       {% if workstation_ssh_keys | length == 0 -%}
+      {% if workstation_cert_principals | length > 0 -%}
+      It has no SSH keys, so log in with a certificate: scripts/ssh-cert
+      --instance {{ workstation_cert_instance }} {{ workstation_cert_principals | join(' ') }}
+      (see roles/openbao/README.md, "Getting a certificate").
+      {%- else -%}
       It has no SSH keys, so log in on the Proxmox console with the password.
+      {%- endif %}
       {%- endif %}
