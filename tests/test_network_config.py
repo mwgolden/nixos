@@ -209,6 +209,39 @@ class Mutations(unittest.TestCase):
             {"name": "ws", "type": "workstation", "vm_id": 120, "ip": "192.168.1.20"})
         self.assertEqual(errors(self.files), [])
 
+    # A gitea_runner registers with a gitea host on its own network.
+
+    def runner(self, settings=None):
+        host = {"name": "runner", "type": "gitea_runner", "vm_id": 120, "ip": "192.168.1.20"}
+        if settings is not None:
+            host["settings"] = settings
+        return host
+
+    def test_gitea_runner_type(self):
+        self.by_name["home"]["hosts"].append(self.runner())
+        self.assertEqual(errors(self.files), [])
+
+    def test_gitea_runner_names_its_gitea(self):
+        self.by_name["home"]["hosts"].append(self.runner({"gitea": "gitea"}))
+        self.assertEqual(errors(self.files), [])
+
+    def test_gitea_runner_without_a_gitea(self):
+        self.by_name["home"]["hosts"] = [h for h in self.by_name["home"]["hosts"] if h["type"] != "gitea"]
+        self.by_name["home"]["hosts"].append(self.runner())
+        self.assertError("needs a gitea host on its network to register with. There is none.")
+
+    def test_gitea_runner_names_a_gitea_elsewhere(self):
+        # lab has no gitea; home's doesn't count.
+        self.by_name["home"]["hosts"].append(self.runner({"gitea": "postgres"}))
+        self.assertError("settings.gitea is 'postgres', which is not a gitea host on this network")
+
+    def test_gitea_runner_with_two_giteas(self):
+        self.by_name["home"]["hosts"].append(
+            {"name": "gitea2", "type": "gitea", "vm_id": 121, "ip": "192.168.1.21",
+             "data_disk": {"size_gb": 10, "storage": "local-lvm"}})
+        self.by_name["home"]["hosts"].append(self.runner())
+        self.assertError("There are 2 (gitea, gitea2); name one in settings.gitea.")
+
     # A network's openbao host keeps the network's secrets (see
     # network_secrets_store), so there can be only one, and the network's
     # name has to work as the KV mount holding them.

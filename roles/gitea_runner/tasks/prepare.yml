@@ -1,0 +1,85 @@
+# Checks the gitea_runner host's settings and gets a registration token
+# from its Gitea, before anything changes. Runs on localhost from
+# roles/host_deploy. Facts it sets land on the VM's inventory entry, where
+# configure.yml and verify.yml use them.
+
+- name: Check the runner settings
+  ansible.builtin.assert:
+    that:
+      - gitea_runner_gitea | length > 0
+      - gitea_runner_capacity | string is match('^[1-9][0-9]*$')
+      - gitea_runner_cache_port | string is match('^[1-9][0-9]*$')
+      - gitea_runner_cache_port | int != 22 and gitea_runner_cache_port | int < 65536
+      - gitea_runner_labels is sequence and gitea_runner_labels is not string
+      - gitea_runner_labels | length > 0
+      - gitea_runner_labels | reject('match', '^[A-Za-z0-9._-]+:(host|docker://\S+)$') | list | length == 0
+      - gitea_runner_docker or gitea_runner_labels | select('search', ':docker://') | list | length == 0
+      - gitea_runner_docker or vm.data_disk | length == 0
+    fail_msg: >-
+      Check the settings of {{ vm.name }} in networks/{{ vm.network.name }}.yaml:
+      gitea must name a gitea host on the network (or be left out when there
+      is only one), capacity a whole number of jobs, at least 1, and
+      cache_port a port other than 22. Each of labels must look like
+      ubuntu-latest:docker://<image> or native:host, and docker:// labels
+      need docker: true. The data_disk holds Docker's data, so it also needs
+      docker: true.
+    quiet: true
+
+# From the gitea host's secrets: secrets/<network>/<gitea>.env, or the
+# network's OpenBao host; see roles/host_secrets.
+- name: Read the Gitea admin login
+  ansible.builtin.include_role:
+    name: host_secrets
+  vars:
+    host_secrets_name: "{{ gitea_runner_gitea.name }}"
+    host_secrets_missing_hint: >-
+      The runner logs in to Gitea as its admin to get a registration token.
+      Deploy {{ gitea_runner_gitea.name }} first; see roles/gitea/README.md.
+
+- name: Note the Gitea admin login
+  ansible.builtin.set_fact:
+    gitea_runner_admin_user: "{{ dotenv_values.GITEA_ADMIN_USER | default('') }}"
+    gitea_runner_admin_password: "{{ dotenv_values.GITEA_ADMIN_PASSWORD | default('') }}"
+    gitea_runner_admin_where: "{{ host_secrets_where }}"
+  no_log: true
+
+# Gitea hands out the same instance-wide token until it is used up or
+# reset, so this changes nothing on a redeploy.
+- name: Get a runner registration token from Gitea
+  ansible.builtin.uri:
+    url: "{{ gitea_runner_gitea_url }}api/v1/admin/actions/runners/registration-token"
+    method: POST
+    user: "{{ gitea_runner_admin_user }}"
+    password: "{{ gitea_runner_admin_password }}"
+    force_basic_auth: true
+    status_code: [200, 201]
+    return_content: true
+  register: gitea_runner_token_reply
+  delegate_to: "{{ gitea_runner_gitea_via | trim }}"
+  no_log: true
+  failed_when: false
+
+- name: Require a registration token
+  ansible.builtin.assert:
+    that:
+      - gitea_runner_token_reply.status | default(0) in [200, 201]
+      - (gitea_runner_token_reply.json | default({})).token | default('') | length > 0
+    fail_msg: >-
+      Gitea at {{ gitea_runner_gitea_url }} didn't give a runner registration
+      token (HTTP {{ gitea_runner_token_reply.status | default('-') }}
+      {{- ': ' ~ gitea_runner_token_reply.msg if gitea_runner_token_reply.msg is defined else '' }}).
+      {% if gitea_runner_token_reply.status | default(0) in [401, 403] -%}
+      Check the admin login in {{ gitea_runner_admin_where }} matches Gitea's, or
+      redeploy {{ gitea_runner_gitea.name }} to apply it.
+      {%- elif gitea_runner_token_reply.status | default(0) == 404 -%}
+      Gitea's Actions may be off: check actions.ENABLED in roles/gitea.
+      {%- else -%}
+      Deploy {{ gitea_runner_gitea.name }} first:
+      ansible-playbook playbooks/deploy-host.yaml -e network={{ vm.network.name }} -e host={{ gitea_runner_gitea.name }}
+      {%- endif %}
+    quiet: true
+
+- name: Note the registration token
+  ansible.builtin.set_fact:
+    gitea_runner_token: "{{ gitea_runner_token_reply.json.token }}"
+  no_log: true

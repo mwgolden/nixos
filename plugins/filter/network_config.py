@@ -15,7 +15,7 @@ import ipaddress
 import re
 
 NETWORK_TYPES = ("home", "isolated")
-HOST_TYPES = ("webserver", "postgres", "gitea", "garage", "router", "proxy", "ldap", "nats", "openbao", "monitoring", "workstation")
+HOST_TYPES = ("webserver", "postgres", "gitea", "garage", "router", "proxy", "ldap", "nats", "openbao", "monitoring", "workstation", "gitea_runner")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 PORT_FORWARD_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -684,6 +684,25 @@ class _Checker:
                 self.warn(where, f"serves external routes ({', '.join(external)}) but is on the LAN. "
                                  f"Network {net['name']} has a DMZ; consider zone: dmz for the proxy.")
 
+    def check_gitea_runners(self, net, hosts):
+        """Each gitea_runner host registers with a gitea host on its own
+        network: the one its settings.gitea names, or the only one there."""
+        giteas = [h.get("name") for h in hosts if h.get("type") == "gitea"]
+        for host in hosts:
+            if host.get("type") != "gitea_runner":
+                continue
+            where = f"host {host.get('name')} (network {net['name']})"
+            settings = host.get("settings") if isinstance(host.get("settings"), dict) else {}
+            wanted = settings.get("gitea") or ""
+            if wanted:
+                if wanted not in giteas:
+                    self.error(where, f"settings.gitea is '{wanted}', which is not a gitea host on this "
+                                      f"network. Its gitea hosts: {', '.join(giteas) or 'none'}.")
+            elif len(giteas) != 1:
+                self.error(where, "a gitea_runner host needs a gitea host on its network to register with. "
+                                  + (f"There are {len(giteas)} ({', '.join(giteas)}); name one in settings.gitea."
+                                     if giteas else "There is none."))
+
     def check_secrets_mount(self, net, openbao):
         """The network's name is also the KV mount its openbao host keeps
         the network's secrets in (network_secrets_store), so it must be a
@@ -985,7 +1004,8 @@ class _Checker:
                                          f"({', '.join(h.get('name') for h in openbaos)}); it holds the network's secrets.")
             elif openbaos:
                 self.check_secrets_mount(net, openbaos[0])
-            routes = self.routes.get(net["name"], {})
+            self.check_gitea_runners(net, hosts)
+            routes =self.routes.get(net["name"], {})
             if routes and not proxies:
                 self.error(net["where"], f"hosts here have proxy: routes ({', '.join(sorted(routes))}) "
                                          "but the network has no host of type proxy.")
@@ -1561,11 +1581,14 @@ def network_config_deploy_order(inventory, network):
     first (everything else reaches the network through it), then its
     openbao host (the other hosts' deploys read their secrets from it, see
     network_secrets_store), then the rest in the order the network file
-    lists them."""
+    lists them, except gitea_runner hosts, which go last: they register
+    with the network's gitea host, so it must be up first."""
     hosts = [h for h in inventory["hosts"].values() if h["network"]["name"] == network]
+    first, last = ("router", "openbao"), ("gitea_runner",)
     return ([h["id"] for h in hosts if h["type"] == "router"]
             + [h["id"] for h in hosts if h["type"] == "openbao"]
-            + [h["id"] for h in hosts if h["type"] not in ("router", "openbao")])
+            + [h["id"] for h in hosts if h["type"] not in first + last]
+            + [h["id"] for h in hosts if h["type"] in last])
 
 
 def _resolve_security(network, sec, own_openbao):

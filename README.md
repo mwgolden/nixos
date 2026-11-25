@@ -14,7 +14,7 @@ On top of that, the project manages the parts that make a network:
 - **Isolated networks:** a Proxmox bridge with no physical port, behind a NixOS router VM that does NAT, the firewall, DHCP and DNS. The lab reaches the internet but not your home LAN.
 - **A DMZ:** an optional second bridge behind the same router for published hosts, such as the reverse proxy. If one of them is taken over, it still can't reach the rest of the lab, apart from the specific ports the configuration allows.
 - **Ways in from home**, from narrowest to widest: port forwards, published HTTPS routes through a Caddy reverse proxy, and a WireGuard VPN.
-- **Services:** PostgreSQL, Gitea, Garage (S3), LDAP, NATS with JetStream, OpenBao for secrets, Prometheus and Grafana, nginx, and a workstation with a non-root user, each a host type with its own role.
+- **Services:** PostgreSQL, Gitea with an Actions runner, Garage (S3), LDAP, NATS with JetStream, OpenBao for secrets, Prometheus and Grafana, nginx, and a workstation with a non-root user, each a host type with its own role.
 - **Checks:** files are validated before anything changes, and every deploy ends by testing the network: addresses, DNS, internet access, isolation and DMZ rules.
 
 The design and its decisions are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -240,6 +240,7 @@ Each host type is a role in [roles/](roles/), with a README that explains its se
 - [webserver](roles/webserver/README.md): nginx serving static files
 - [postgres](roles/postgres/README.md): PostgreSQL on a separate data disk, with optional AdventureWorks sample data. [Database users](roles/postgres/USERS.md) are set up on deploy; `playbooks/postgres-users.yaml` applies changes to them alone.
 - [gitea](roles/gitea/README.md): Gitea Git server on a separate data disk
+- [gitea_runner](roles/gitea_runner/README.md): a Gitea Actions runner (act_runner) with Docker, registered with the network's gitea host
 - [garage](roles/garage/README.md): Garage S3-compatible object storage on a separate data disk
 - [router](roles/router/README.md): connects an isolated bridge (and its DMZ) to the internet with DHCP, NAT and a firewall that blocks the home LAN
 - [proxy](roles/proxy/README.md): Caddy reverse proxy that serves other hosts' web services under HTTPS names, built from their `proxy:` entries

@@ -1,0 +1,20 @@
+# Checks the runner is up and says where to find it. Runs on localhost from
+# roles/host_deploy; the check itself runs on the VM.
+
+- name: Check the runner is running
+  ansible.builtin.command:
+    cmd: systemctl is-active {{ gitea_runner_service }}
+  register: gitea_runner_check
+  retries: 10
+  delay: 3
+  until: gitea_runner_check.rc == 0
+  changed_when: false
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+
+- name: Show where the runner is
+  ansible.builtin.debug:
+    msg: >-
+      Runner {{ vm.name }} is registered with Gitea on {{ gitea_runner_gitea.name }}
+      and takes jobs for runs-on: {{ gitea_runner_labels | map('split', ':') | map('first') | join(', ') }}.
+      It is listed under Site Administration > Actions > Runners.

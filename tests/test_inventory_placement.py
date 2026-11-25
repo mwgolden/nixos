@@ -111,6 +111,15 @@ class DeployOrder(unittest.TestCase):
         self.assertEqual(nc.network_config_deploy_order(inv, "home"),
                          ["home.bao", "home.webserver", "home.gitea", "home.garage"])
 
+    def test_gitea_runner_last(self):
+        # It registers with the gitea host, so that goes first wherever the
+        # file lists the runner.
+        configs = {p.stem: yaml.safe_load(p.read_text()) for p in FIXTURES.glob("*.yaml")}
+        configs["home"]["hosts"].insert(0, {"name": "runner", "type": "gitea_runner",
+                                            "vm_id": 120, "ip": "192.168.1.20"})
+        self.assertEqual(nc.network_config_deploy_order(nc.network_config_inventory(configs), "home"),
+                         ["home.webserver", "home.gitea", "home.garage", "home.runner"])
+
 
 def inventory_with_openbao():
     """The fixtures with an openbao host last in lab (reached through its

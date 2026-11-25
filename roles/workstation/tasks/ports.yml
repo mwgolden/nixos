@@ -3,4 +3,4 @@
 
 - name: Note the ports workstation listens on
   ansible.builtin.set_fact:
-    verify_expected_ports: []
+    verify_expected_ports: "{{ workstation_exposed_tcp_ports }}"

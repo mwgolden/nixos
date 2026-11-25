@@ -1,0 +1,64 @@
+# Defaults for gitea_runner hosts. Set any of gitea_runner_settings_defaults
+# under the host's settings: in its network file.
+
+gitea_runner_settings_defaults:
+  # The gitea host on this network to register with. Left empty, the
+  # network's only gitea host.
+  gitea: ""
+  # How many jobs run at once.
+  capacity: 1
+  # Run Docker, for jobs whose label points at a docker:// image.
+  docker: true
+  # What workflows ask for in runs-on:, and where each runs.
+  #   <label>:docker://<image>  in a fresh container of that image
+  #   <label>:host              straight on the VM, as the runner's user
+  # host jobs can use Docker too, which makes them root on the VM in effect.
+  labels:
+    - ubuntu-latest:docker://docker.gitea.com/runner-images:ubuntu-latest
+    - ubuntu-24.04:docker://docker.gitea.com/runner-images:ubuntu-24.04
+  # Port of the runner's cache server, for actions/cache. Only the job
+  # containers and the VM itself may connect.
+  cache_port: 8088
+
+gitea_runner_settings: "{{ gitea_runner_settings_defaults | combine(vm.settings) }}"
+
+# The names the configuration templates and tasks use.
+gitea_runner_capacity: "{{ gitea_runner_settings.capacity }}"
+gitea_runner_docker: "{{ gitea_runner_settings.docker | bool }}"
+gitea_runner_labels: "{{ gitea_runner_settings.labels }}"
+gitea_runner_cache_port: "{{ gitea_runner_settings.cache_port }}"
+
+# The gitea host it registers with: settings.gitea, or the network's only
+# one. The validator checks there is one.
+gitea_runner_giteas: >-
+  {{ nixlab.hosts.values() | selectattr('network.name', 'equalto', vm.network.name)
+     | selectattr('type', 'equalto', 'gitea') | list }}
+gitea_runner_gitea: >-
+  {{ (gitea_runner_giteas | selectattr('name', 'equalto', gitea_runner_settings.gitea)
+      if gitea_runner_settings.gitea else gitea_runner_giteas) | first | default({}) }}
+gitea_runner_gitea_port: "{{ (gitea_runner_gitea.settings | default({})).http_port | default(3000) }}"
+# The runner talks to Gitea directly on the network. Jobs clone from the
+# address Gitea gives them, its ROOT_URL, which may be the proxy's.
+gitea_runner_gitea_url: "http://{{ gitea_runner_gitea.ip | default('') }}:{{ gitea_runner_gitea_port }}/"
+# Where requests to Gitea are made from: its router on an isolated
+# network, which is the only thing that can reach it.
+gitea_runner_gitea_via: >-
+  {{ gitea_runner_gitea.network.router_id
+     if (gitea_runner_gitea.network | default({})).type | default('') == 'isolated' else 'localhost' }}
+# The proxy's route to Gitea's web interface, or {}.
+gitea_runner_gitea_route: >-
+  {{ vm.network.proxy_routes | selectattr('host', 'equalto', gitea_runner_gitea.name | default(''))
+     | selectattr('port', 'equalto', gitea_runner_gitea_port | int) | first | default({}) }}
+
+# The registration token, root only. systemd hands it to the runner.
+gitea_runner_token_file: /etc/gitea-runner/token.env
+# The runner's state: its registration (.runner) and settings.
+gitea_runner_state_dir: /var/lib/gitea-runner/default
+gitea_runner_service: gitea-runner-default
+
+# The proxy's own certificate authority, on a network without security.pki.
+# Jobs that clone through the proxy need to trust it.
+gitea_runner_proxy_ca_file: >-
+  {{ role_path }}/../../secrets/{{ vm.network.name }}/{{ vm.network.proxy }}-ca.crt
+
+data_disk_device: "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_gitea_runner-data"

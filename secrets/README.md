@@ -23,6 +23,7 @@ Everything here except this README is gitignored. Each file holds `KEY=value` li
 | Host type | File | Example |
 |---|---|---|
 | gitea | `<host>.env`: the admin login | [roles/gitea/env.example](../roles/gitea/env.example) |
+| gitea_runner | none: it reads its gitea host's admin login to get a registration token | |
 | postgres | `<host>.env`: the admin login | [roles/postgres/env.example](../roles/postgres/env.example) |
 | postgres | `<host>-users.env`: one `<USER>_PASSWORD` per user | [roles/postgres/users-env.example](../roles/postgres/users-env.example) |
 | garage | `<host>.env`: the S3 access key | [roles/garage/env.example](../roles/garage/env.example) |

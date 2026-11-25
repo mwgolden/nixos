@@ -20,4 +20,8 @@
 {% endfor %}
     ];
   };
+
+  # Ports forwarded to this VM by its expose: entries in the network file.
+  networking.firewall.allowedTCPPorts = [ {{ workstation_exposed_tcp_ports | join(' ') }} ];
+  networking.firewall.allowedUDPPorts = [ {{ workstation_exposed_udp_ports | join(' ') }} ];
 }

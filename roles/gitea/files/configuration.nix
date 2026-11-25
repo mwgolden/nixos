@@ -23,6 +23,9 @@
       # session.COOKIE_SECURE is in gitea.nix: it depends on the proxy.
       # Git over SSH goes through the system's SSH server as the gitea user.
       server.START_SSH_SERVER = false;
+      # Gitea Actions, for workflows in .gitea/workflows. Jobs run on
+      # gitea_runner hosts (roles/gitea_runner).
+      actions.ENABLED = true;
     };
   };
 

@@ -1,0 +1,118 @@
+# Installs and switches to the gitea_runner VM's NixOS configuration, then
+# checks the runner registered with Gitea. Runs on the VM with become: true,
+# from roles/host_deploy.
+
+- name: Install the shared NixOS configuration
+  ansible.builtin.include_role:
+    name: nixos_base
+  vars:
+    nixos_base_hostname: "{{ vm.name }}"
+    nixos_base_data_disk_serial: "{{ 'gitea_runner-data' if vm.data_disk else '' }}"
+
+# Without security.pki, the proxy signs Gitea's address with its own
+# authority, which the VM must trust for jobs to clone through it.
+- name: Look for the proxy's certificate authority
+  ansible.builtin.stat:
+    path: "{{ gitea_runner_proxy_ca_file | trim }}"
+  register: gitea_runner_proxy_ca_stat
+  delegate_to: localhost
+  become: false
+  when: gitea_runner_gitea_route | length > 0 and not nixos_base_pki_root | bool
+
+- name: Note whether to trust the proxy's certificate authority
+  ansible.builtin.set_fact:
+    gitea_runner_proxy_ca: >-
+      {{ gitea_runner_gitea_route | length > 0 and not nixos_base_pki_root | bool
+         and (gitea_runner_proxy_ca_stat.stat | default({})).exists | default(false) }}
+
+- name: Say jobs can't clone through the proxy yet
+  ansible.builtin.debug:
+    msg: >-
+      Gitea is behind {{ vm.network.proxy }}, whose certificate authority isn't in
+      secrets/{{ vm.network.name }}/{{ vm.network.proxy }}-ca.crt yet, so jobs on
+      {{ vm.name }} won't trust its address. Deploy {{ vm.network.proxy }}, then
+      {{ vm.name }} again.
+  when: gitea_runner_gitea_route | length > 0 and not nixos_base_pki_root | bool and not gitea_runner_proxy_ca | bool
+
+- name: Install the proxy's certificate authority
+  ansible.builtin.copy:
+    src: "{{ gitea_runner_proxy_ca_file | trim }}"
+    dest: /etc/nixos/gitea-proxy-ca.crt
+    mode: "0644"
+  when: gitea_runner_proxy_ca | bool
+
+- name: Create the folder for the registration token
+  ansible.builtin.file:
+    path: "{{ gitea_runner_token_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Before the switch, so the runner finds it on its first start.
+- name: Install the registration token
+  ansible.builtin.copy:
+    dest: "{{ gitea_runner_token_file }}"
+    content: |
+      TOKEN={{ gitea_runner_token }}
+    owner: root
+    group: root
+    mode: "0600"
+  register: gitea_runner_token_env
+  no_log: true
+
+- name: Install runner settings
+  ansible.builtin.template:
+    src: gitea_runner.nix.j2
+    dest: /etc/nixos/gitea_runner.nix
+    mode: "0644"
+
+- name: Install gitea_runner NixOS configuration
+  ansible.builtin.copy:
+    src: configuration.nix
+    dest: /etc/nixos/configuration.nix
+    mode: "0644"
+
+- name: Switch to the configuration and move to the gitea_runner address
+  ansible.builtin.include_role:
+    name: nixos_base
+    tasks_from: switch
+
+- name: Check the data disk is mounted
+  ansible.builtin.command:
+    cmd: findmnt --source {{ data_disk_device }} --target /var/lib/docker
+  changed_when: false
+  when: vm.data_disk | length > 0
+
+# A new token means Gitea's tokens were reset, or it is a new Gitea, which
+# doesn't know the old registration. Registering again adds the runner
+# afresh; the old entry shows offline in Gitea until it is deleted there.
+- name: Register again with the new token
+  when: gitea_runner_token_env.changed
+  block:
+    - name: Forget the old registration
+      ansible.builtin.file:
+        path: "{{ gitea_runner_state_dir }}/.runner"
+        state: absent
+
+    - name: Restart the runner
+      ansible.builtin.systemd_service:
+        name: "{{ gitea_runner_service }}"
+        state: restarted
+
+- name: Wait for the runner to register with Gitea
+  ansible.builtin.stat:
+    path: "{{ gitea_runner_state_dir }}/.runner"
+  register: gitea_runner_registration
+  retries: 20
+  delay: 3
+  until: gitea_runner_registration.stat.exists
+
+- name: Check the runner is running
+  ansible.builtin.command:
+    cmd: systemctl is-active {{ gitea_runner_service }}
+  register: gitea_runner_active
+  retries: 10
+  delay: 3
+  until: gitea_runner_active.rc == 0
+  changed_when: false

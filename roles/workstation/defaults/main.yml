@@ -31,6 +31,10 @@ workstation_sudo: "{{ workstation_settings.sudo }}"
 workstation_packages: "{{ workstation_settings.packages }}"
 workstation_environment: "{{ workstation_settings.environment }}"
 workstation_tools: "{{ workstation_settings.tools }}"
+# Ports the router forwards to this VM (its expose: entries), opened in the
+# VM's firewall. SSH (22) is already open.
+workstation_exposed_tcp_ports: "{{ vm.expose | selectattr('proto', 'equalto', 'tcp') | map(attribute='port') | reject('equalto', 22) | unique | list }}"
+workstation_exposed_udp_ports: "{{ vm.expose | selectattr('proto', 'equalto', 'udp') | map(attribute='port') | unique | list }}"
 
 # -e workstation_upgrade=true also upgrades unpinned npm and uv tools, and
 # runs the curl install scripts again.

@@ -192,7 +192,7 @@ On an isolated network, its VMs and VPN clients use `ssh dev@ws.lab.home.arpa`. 
 
 Redeploy the router, then `ssh -p 2222 dev@192.168.1.13`.
 
-The VM listens on nothing but SSH. To use a service you run on it, forward the port over SSH, such as `ssh -L 8000:127.0.0.1:8000 dev@<ip>`.
+The VM's firewall allows SSH and the ports in the host's `expose:` entries, nothing else. To use a service you run on it, either forward the port over SSH, such as `ssh -L 8000:127.0.0.1:8000 dev@<ip>`, or add an `expose:` entry for it and redeploy both the router and the workstation. A service reached through `expose:` has to listen on `0.0.0.0`, not just `127.0.0.1`.
 
 ## Making changes
 

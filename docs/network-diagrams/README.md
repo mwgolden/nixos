@@ -4,12 +4,12 @@ One file per network, written when the network is deployed or changed. Don't edi
 
 | Network | Type | Subnet | Bridge | Router WAN | TLS certificates | Hosts deployed |
 |---|---|---|---|---|---|---|
-| [agent-developer](agent-developer.md) | isolated | 10.3.1.0/24 | vmbr10 | 192.168.1.31 | home.openbao root | 8 of 8 |
+| [agent-developer](agent-developer.md) | isolated | 10.3.1.0/24 | vmbr10 | 192.168.1.31 | home.openbao root | 10 of 10 |
 | [home](home.md) | home | 192.168.1.0/24 | vmbr0 | — | home.openbao root | 3 of 3 |
 
 ```mermaid
 flowchart TB
-    n_agent_developer["agent-developer<br/>10.3.1.0/24 on vmbr10<br/>DMZ 10.3.2.0/24 on vmbr11<br/>8 hosts"]
+    n_agent_developer["agent-developer<br/>10.3.1.0/24 on vmbr10<br/>DMZ 10.3.2.0/24 on vmbr11<br/>10 hosts"]
     n_home["home<br/>192.168.1.0/24 on vmbr0<br/>3 hosts"]
     n_home <-->|"router WAN 192.168.1.31"| n_agent_developer
 ```

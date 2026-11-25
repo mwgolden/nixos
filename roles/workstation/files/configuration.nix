@@ -66,7 +66,6 @@
     fi
   '';
 
-  # SSH (22) is opened automatically by services.openssh. Nothing else
-  # listens.
-  networking.firewall.allowedTCPPorts = [ ];
+  # SSH (22) is opened automatically by services.openssh. workstation.nix
+  # opens the ports the host's expose: entries forward to it.
 }
